@@ -135,3 +135,10 @@ Thumbs.db
 
 # Logs
 *.log
+
+# History
+download_history.json
+
+# OAuth credentials
+client_secrets.json
+token.pickle
