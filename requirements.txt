@@ -1,0 +1,4 @@
+requests
+moviepy
+yt-dlp
+python-dotenv
