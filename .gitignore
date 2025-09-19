@@ -142,6 +142,7 @@ download_history.json
 # OAuth credentials
 client_secrets.json
 token.pickle
+instagram_session.json
 
 # Working directories
 pins/

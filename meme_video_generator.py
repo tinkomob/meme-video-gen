@@ -20,6 +20,11 @@ try:
 except Exception:
     build = None
 
+try:
+    from instagrapi import Client
+except Exception:
+    Client = None
+
 # Load environment variables from .env file
 load_dotenv()
 
@@ -398,7 +403,7 @@ def extract_random_audio_clip(audio_path: str, clip_duration: int = 10, output_p
     Returns the path to the clipped audio file.
     """
     try:
-        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        from moviepy import AudioFileClip
         
         audio_clip = AudioFileClip(audio_path)
         total_duration = audio_clip.duration
@@ -568,7 +573,7 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
         # Add audio if provided
         if audio_path and os.path.exists(audio_path):
             print(f"Adding audio from {audio_path} to video")
-            from moviepy.audio.io.AudioFileClip import AudioFileClip
+            from moviepy import AudioFileClip
             audio_clip = AudioFileClip(audio_path)
             print(f"Audio duration: {audio_clip.duration}, Video duration: {final_clip.duration}")
             # Trim audio to match video duration
@@ -621,6 +626,26 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
                 base_clip.close()
         except Exception:
             pass
+
+
+def generate_thumbnail(video_path: str, output_path: str, time: float = 1.0):
+    """
+    Generates a thumbnail image from the video at the specified time.
+    """
+    try:
+        from moviepy import VideoFileClip
+        from PIL import Image
+        import numpy as np
+
+        with VideoFileClip(video_path) as clip:
+            frame = clip.get_frame(time)
+            img = Image.fromarray(frame)
+            img.save(output_path)
+            print(f"Generated thumbnail: {output_path}")
+            return output_path
+    except Exception as e:
+        print(f"Error generating thumbnail: {e}")
+        return None
 
 
 def add_text_to_video(input_path, output_path, text, position=("center", "bottom")):
@@ -899,7 +924,8 @@ def main():
     parser.add_argument('--music-json', default='music_playlists.json', help='Path to JSON file with array of music playlist URLs')
     parser.add_argument('--audio-duration', type=int, default=10, help='Duration of random audio clip in seconds')
     parser.add_argument('--audio-dir', default='audio', help='Directory to store downloaded audio')
-    parser.add_argument('--no-upload', action='store_true', help='Skip uploading the generated video to YouTube Shorts')
+    parser.add_argument('--no-upload', action='store_true', help='Skip uploading the generated video to YouTube Shorts and Instagram Reels')
+    parser.add_argument('--instagram-only', action='store_true', help='Upload only to Instagram Reels, skip YouTube Shorts')
     parser.add_argument('--force-shorts', action='store_true', help='Ensure uploaded video is <= 60s by trimming if needed')
     parser.add_argument('--title', default='Funny Meme Short', help='Title for YouTube upload')
     parser.add_argument('--description', default='', help='Description for YouTube upload')
@@ -944,6 +970,10 @@ def main():
     is_youtube = False
     convert_to_tiktok_format(downloaded_path, output_mp4_path, is_youtube=is_youtube, audio_path=audio_clip_path)
 
+    # Generate thumbnail for uploads
+    thumbnail_path = "thumbnail.jpg"
+    generate_thumbnail(output_mp4_path, thumbnail_path)
+
     # The final video is the converted one without text
     final_video_path = output_mp4_path
 
@@ -955,7 +985,7 @@ def main():
         except Exception:
             pass
 
-    if not args.no_upload:
+    if not args.no_upload and not args.instagram_only:
         if build is None:
             print('YouTube upload dependencies are not installed. Run: pip install google-api-python-client google-auth-oauthlib google-auth-httplib2')
         else:
@@ -986,6 +1016,105 @@ def main():
             except Exception as e:
                 print(f'YouTube upload failed: {e}')
 
+    # Instagram Reels upload
+    if not args.no_upload:
+        if Client is None:
+            print('Instagram upload dependencies are not installed. Run: pip install instagrapi')
+        else:
+            instagram_username = os.getenv('INSTAGRAM_USERNAME')
+            instagram_password = os.getenv('INSTAGRAM_PASSWORD')
+            if not instagram_username or not instagram_password:
+                print('Instagram credentials not found in environment variables')
+            else:
+                try:
+                    from instagrapi.exceptions import LoginRequired
+                    import logging
+                    logger = logging.getLogger()
+
+                    cl = Client()
+                    # Add delays to mimic human behavior
+                    cl.delay_range = [1, 3]
+
+                    # Try to load existing session
+                    session_file = "instagram_session.json"
+                    session = None
+                    if os.path.exists(session_file):
+                        try:
+                            session = cl.load_settings(session_file)
+                        except Exception as e:
+                            logger.info("Could not load session file: %s" % e)
+                            session = None
+
+                    login_via_session = False
+                    login_via_pw = False
+
+                    if session:
+                        try:
+                            cl.set_settings(session)
+                            cl.login(instagram_username, instagram_password)
+
+                            # Check if session is valid
+                            try:
+                                cl.get_timeline_feed()
+                                login_via_session = True
+                            except LoginRequired:
+                                logger.info("Session is invalid, need to login via username and password")
+
+                                old_session = cl.get_settings()
+
+                                # Use the same device uuids across logins
+                                cl.set_settings({})
+                                cl.set_uuids(old_session["uuids"])
+
+                                cl.login(instagram_username, instagram_password)
+                                login_via_session = True  # Successfully logged in with password after session
+                        except Exception as e:
+                            logger.info("Couldn't login user using session information: %s" % e)
+
+                    if not login_via_session:
+                        try:
+                            logger.info("Attempting to login via username and password. username: %s" % instagram_username)
+                            if cl.login(instagram_username, instagram_password):
+                                login_via_pw = True
+                        except Exception as e:
+                            logger.info("Couldn't login user using username and password: %s" % e)
+
+                    if not login_via_pw and not login_via_session:
+                        raise Exception("Couldn't login user with either password or session")
+
+                    # Save session for future use
+                    cl.dump_settings(session_file)
+
+                    # Generate metadata for Instagram
+                    generated = generate_metadata_from_source(chosen_pinterest, download_meta, audio_path)
+                    caption = generated.get('description', '')
+                    
+                    # Remove #Shorts from description for Instagram
+                    caption = caption.replace('#Shorts', '').strip()
+                    
+                    # Add song information if available
+                    if audio_clip_path or audio_path:
+                        song_title = get_song_title(audio_clip_path or audio_path)
+                        if song_title and song_title != audio_clip_path and song_title != audio_path:
+                            caption = f"♪ {song_title} ♪\n\n{caption}"
+                    
+                    # Add hashtags (excluding 'shorts')
+                    tags = generated.get('tags', [])
+                    # Remove 'shorts' tag if present
+                    tags = [tag for tag in tags if tag.lower() != 'shorts']
+                    hashtags = ' '.join(f'#{tag}' for tag in tags)
+                    if hashtags:
+                        caption += f'\n\n{hashtags}'
+                    # Upload to Reels
+                    media = cl.clip_upload(
+                        path=final_video_path,
+                        caption=caption,
+                        thumbnail=thumbnail_path
+                    )
+                    print(f'Uploaded to Instagram Reels: https://www.instagram.com/reel/{media.code}/')
+                except Exception as e:
+                    print(f'Instagram upload failed: {e}')
+
     # Clean up the temporary files (retry once if locked)
     if downloaded_path and os.path.exists(downloaded_path):
         try:
@@ -999,6 +1128,14 @@ def main():
                 print(f"Cleaned up temporary file after retry: {downloaded_path}")
             except OSError as e2:
                 print(f"Could not remove temporary file: {e2}")
+
+    # Clean up thumbnail
+    if thumbnail_path and os.path.exists(thumbnail_path):
+        try:
+            os.remove(thumbnail_path)
+            print(f"Cleaned up thumbnail: {thumbnail_path}")
+        except Exception:
+            pass
 
     # Clean up working directories and update .gitignore
     for d in [args.pins_dir, args.audio_dir]:
