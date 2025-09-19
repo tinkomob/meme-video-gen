@@ -142,3 +142,7 @@ download_history.json
 # OAuth credentials
 client_secrets.json
 token.pickle
+
+# Working directories
+pins/
+audio/

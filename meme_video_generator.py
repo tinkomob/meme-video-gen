@@ -4,8 +4,10 @@ import random
 import warnings
 import argparse
 import json
+import shutil
 from dotenv import load_dotenv
 from moviepy import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, TextClip, vfx, concatenate_videoclips
+from moviepy.audio.AudioClip import concatenate_audioclips
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
@@ -166,6 +168,274 @@ def get_random_meme_url(source='all'):
     print(f"Failed to get meme from {source} source(s)")
     return None
 
+def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'audio', audio_format: str = 'mp3'):
+    """
+    Downloads a random song from a YouTube/YouTube Music playlist as audio using yt-dlp Python API.
+    Returns the path to the downloaded audio file.
+    """
+    import yt_dlp
+
+    try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        list_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'extract_flat': 'in_playlist',
+            'ignoreerrors': True,
+        }
+        with yt_dlp.YoutubeDL(list_opts) as ydl:
+            info = ydl.extract_info(playlist_url, download=False)
+        entries = (info or {}).get('entries') or []
+        ids = []
+        for e in entries:
+            if not e:
+                continue
+            vid = e.get('id') or e.get('url')
+            if vid and len(vid) >= 6:
+                ids.append(vid)
+        if not ids:
+            print('No videos found in playlist')
+            return None
+        video_id = random.choice(ids)
+        if not video_id.startswith('http'):
+            video_url = f'https://www.youtube.com/watch?v={video_id}'
+        else:
+            video_url = video_id
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': audio_format,
+                'preferredquality': '192',
+            }],
+            'quiet': True,
+            'no_warnings': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            ydl.download([video_url])
+
+        expected_path = os.path.join(output_dir, f"{video_id}.{audio_format}")
+        if os.path.exists(expected_path):
+            print(f'Downloaded audio: {expected_path}')
+            return expected_path
+        # Fallback: find any mp3 created for this id
+        for root, _, files in os.walk(output_dir):
+            for f in files:
+                if f.startswith(video_id) and f.lower().endswith(f'.{audio_format}'):
+                    p = os.path.join(root, f)
+                    print(f'Downloaded audio: {p}')
+                    return p
+        print('Audio download failed')
+        return None
+    except Exception as e:
+        print(f"Error downloading song: {e}")
+        return None
+
+def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 30, min_resolution: tuple | None = None):
+    """
+    Scrapes media from a Pinterest board/pin URL and downloads them locally using pinterest-dl.
+    For search URLs, uses web scraping to get images.
+    Returns a single local file path randomly chosen from the downloaded items.
+    """
+    try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Check if it's a search URL
+        if 'search/pins' in board_url:
+            return scrape_pinterest_search(board_url, output_dir, num, min_resolution)
+        
+        # Original board scraping logic
+        from pinterest_dl import PinterestDL
+        client = PinterestDL.with_api(timeout=3, verbose=False)
+        # First scrape the media
+        kwargs = {'url': board_url, 'num': num}
+        if min_resolution is not None:
+            kwargs['min_resolution'] = min_resolution
+        scraped_medias = client.scrape(**kwargs)
+        if not scraped_medias:
+            print('No media scraped from Pinterest URL')
+            return None
+        # Then download
+        downloaded_items = PinterestDL.download_media(
+            media=scraped_medias,
+            output_dir=output_dir,
+            download_streams=True,
+        )
+        candidates = []
+        try:
+            for item in downloaded_items or []:
+                if isinstance(item, str) and os.path.isfile(item):
+                    candidates.append(item)
+                elif isinstance(item, dict):
+                    p = item.get('path') or item.get('filepath') or item.get('file')
+                    if p and os.path.isfile(p):
+                        candidates.append(p)
+        except Exception:
+            pass
+        if not candidates:
+            try:
+                for root, _, files in os.walk(output_dir):
+                    for f in files:
+                        if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov')):
+                            candidates.append(os.path.join(root, f))
+            except Exception:
+                pass
+        if not candidates:
+            print('No media downloaded from Pinterest URL')
+            return None
+        choice = random.choice(candidates)
+        print(f"Picked local media from Pinterest: {choice}")
+        return choice
+    except Exception as e:
+        import traceback
+        print(f"Failed to scrape Pinterest: {e}")
+        print(traceback.format_exc())
+        return None
+
+def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int = 30, min_resolution: tuple | None = None):
+    """
+    Scrapes images from Pinterest search results using web scraping.
+    Returns a single local file path randomly chosen from the downloaded items.
+    """
+    try:
+        import requests
+        from bs4 import BeautifulSoup
+        import urllib.parse
+        
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(search_url, headers=headers, timeout=10)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Find image URLs in the search results
+        image_urls = []
+        
+        # Look for img tags with Pinterest image URLs
+        for img in soup.find_all('img'):
+            src = img.get('src')
+            if src and ('pinimg.com' in src or 'pinterest.com' in src):
+                # Convert relative URLs to absolute
+                if src.startswith('//'):
+                    src = 'https:' + src
+                elif src.startswith('/'):
+                    src = 'https://www.pinterest.com' + src
+                
+                # Get higher resolution version if available
+                if '236x' in src:
+                    src = src.replace('236x', '564x')
+                elif '474x' in src:
+                    src = src.replace('474x', '736x')
+                
+                image_urls.append(src)
+        
+        if not image_urls:
+            print('No images found in Pinterest search results. Pinterest search pages load content dynamically with JavaScript.')
+            print('Consider using Pinterest board URLs instead, or try other sources like meme-api or YouTube.')
+            return None
+        
+        # Limit to num images
+        image_urls = image_urls[:num]
+        
+        # Download images
+        downloaded_files = []
+        for i, img_url in enumerate(image_urls):
+            try:
+                img_response = requests.get(img_url, headers=headers, timeout=10)
+                img_response.raise_for_status()
+                
+                # Determine file extension
+                content_type = img_response.headers.get('content-type', '')
+                if 'jpeg' in content_type or 'jpg' in content_type:
+                    ext = '.jpg'
+                elif 'png' in content_type:
+                    ext = '.png'
+                elif 'gif' in content_type:
+                    ext = '.gif'
+                else:
+                    ext = '.jpg'  # default
+                
+                filename = f"pinterest_search_{i}{ext}"
+                filepath = os.path.join(output_dir, filename)
+                
+                with open(filepath, 'wb') as f:
+                    f.write(img_response.content)
+                
+                downloaded_files.append(filepath)
+                print(f"Downloaded: {filepath}")
+                
+                # Small delay to be respectful
+                import time
+                time.sleep(0.5)
+                
+            except Exception as e:
+                print(f"Failed to download {img_url}: {e}")
+                continue
+        
+        if not downloaded_files:
+            print('No images downloaded from Pinterest search')
+            return None
+        
+        # Pick a random file
+        choice = random.choice(downloaded_files)
+        print(f"Picked local media from Pinterest search: {choice}")
+        return choice
+        
+    except Exception as e:
+        print(f"Failed to scrape Pinterest search: {e}")
+        return None
+
+def extract_random_audio_clip(audio_path: str, clip_duration: int = 10, output_path: str = None):
+    """
+    Extracts a random clip of specified duration from the audio file.
+    Returns the path to the clipped audio file.
+    """
+    try:
+        from moviepy.audio.io.AudioFileClip import AudioFileClip
+        
+        audio_clip = AudioFileClip(audio_path)
+        total_duration = audio_clip.duration
+        
+        if total_duration < clip_duration:
+            # If audio is shorter, loop it or just use as is
+            if total_duration < clip_duration / 2:
+                # Loop to make it longer
+                n_loops = int(clip_duration / total_duration) + 1
+                clips = [audio_clip] * n_loops
+                audio_clip = concatenate_audioclips(clips)
+                start_time = 0
+                end_time = clip_duration
+            else:
+                start_time = 0
+                end_time = total_duration
+        else:
+            # Pick random start time
+            max_start = total_duration - clip_duration
+            start_time = random.uniform(0, max_start)
+            end_time = start_time + clip_duration
+        
+        clipped_audio = audio_clip.subclipped(start_time, end_time)
+        
+        if output_path is None:
+            output_path = audio_path.replace('.mp3', '_clip.mp3').replace('.wav', '_clip.wav')
+        
+        clipped_audio.write_audiofile(output_path, write_logfile=False, logger=None)
+        audio_clip.close()
+        clipped_audio.close()
+        
+        print(f"Extracted audio clip: {output_path} ({clip_duration}s from {start_time:.1f}s to {end_time:.1f}s)")
+        return output_path
+    except Exception as e:
+        print(f"Error extracting audio clip: {e}")
+        return None
+
 def apply_random_effects(clip):
     """
     Applies random effects and animations to the video clip.
@@ -252,17 +522,19 @@ def download_file(url, local_filename):
         print(f"Error downloading file: {e}")
         return None
 
-def convert_to_tiktok_format(input_path, output_path, is_youtube=False):
+def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_path=None):
     """
     Converts a GIF or image to a TikTok-formatted MP4 video (9:16).
     For YouTube videos, do not loop or cutoff; keep original duration.
     For GIFs/images, loop to at least 10 seconds.
+    Optionally adds audio from audio_path.
     """
     base_clip = None
     clip = None
     concat_clip = None
     background = None
     final_clip = None
+    audio_clip = None
     try:
         file_extension = os.path.splitext(input_path)[1].lower()
         if file_extension in ['.png', '.jpg', '.jpeg']:
@@ -292,6 +564,26 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False):
 
         background = ColorClip(size=tiktok_resolution, color=(0, 0, 0), duration=clip_resized.duration)
         final_clip = CompositeVideoClip([background, clip_resized.with_position("center")])
+        
+        # Add audio if provided
+        if audio_path and os.path.exists(audio_path):
+            print(f"Adding audio from {audio_path} to video")
+            from moviepy.audio.io.AudioFileClip import AudioFileClip
+            audio_clip = AudioFileClip(audio_path)
+            print(f"Audio duration: {audio_clip.duration}, Video duration: {final_clip.duration}")
+            # Trim audio to match video duration
+            if audio_clip.duration > final_clip.duration:
+                audio_clip = audio_clip.subclipped(0, final_clip.duration)
+            elif audio_clip.duration < final_clip.duration:
+                # Loop audio if shorter
+                n_loops = int(final_clip.duration / audio_clip.duration) + 1
+                audio_clips = [audio_clip] * n_loops
+                audio_clip = concatenate_audioclips(audio_clips).subclipped(0, final_clip.duration)
+            final_clip = final_clip.with_audio(audio_clip)
+            print("Audio added to video")
+        else:
+            print("No audio to add" if not audio_path else f"Audio file does not exist: {audio_path}")
+        
         final_clip.write_videofile(output_path, codec="libx264", audio_codec="aac", fps=24)
         print(f"Successfully converted to {output_path}")
 
@@ -302,6 +594,11 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False):
         try:
             if final_clip:
                 final_clip.close()
+        except Exception:
+            pass
+        try:
+            if audio_clip:
+                audio_clip.close()
         except Exception:
             pass
         try:
@@ -363,11 +660,16 @@ def youtube_authenticate(credentials_path: str = 'client_secrets.json', token_pa
     return build('youtube', 'v3', credentials=creds)
 
 
-def generate_metadata_from_source(source_url: str, download_meta: dict | None):
+def generate_metadata_from_source(source_url: str, download_meta: dict | None, audio_path: str = None):
     title = None
     description = ''
     tags = ['meme', 'funny', 'shorts']
-    if download_meta:
+    
+    # Use song title as video title if audio is available
+    if audio_path:
+        title = get_song_title(audio_path)
+        print(f"Using song title: {title}")
+    elif download_meta:
         title = download_meta.get('title')
         # add uploader as tag
         if download_meta.get('uploader'):
@@ -378,12 +680,19 @@ def generate_metadata_from_source(source_url: str, download_meta: dict | None):
             title = 'Funny YouTube Short #Shorts'
         else:
             title = 'Funny Meme #Shorts'
+    
+    # Add random fact to description
+    random_fact = get_random_fact()
+    description = f"Did you know? {random_fact}\n\n#Shorts #Meme #Funny"
+    
     # ensure #Shorts in title
     if title and '#Shorts' not in title:
         title += ' #Shorts'
+    
     # sanitize title
     if title and len(title) > 100:
         title = title[:97] + '...'
+    
     return {'title': title, 'description': description, 'tags': tags}
 
 def youtube_upload_short(youtube, file_path: str, title: str, description: str = '', tags=None, categoryId='24', privacyStatus='public'):
@@ -411,15 +720,185 @@ def youtube_upload_short(youtube, file_path: str, title: str, description: str =
         status, response = request.next_chunk()
     return response
 
+def load_urls_json(file_path: str, default_urls: list[str] | None = None):
+    try:
+        p = Path(file_path)
+        if not p.exists():
+            if default_urls is None:
+                default_urls = []
+            with open(p, 'w', encoding='utf-8') as f:
+                json.dump(default_urls, f, ensure_ascii=False, indent=2)
+            return list(default_urls)
+        with open(p, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                return [x for x in data if isinstance(x, str) and x.strip()]
+    except Exception:
+        pass
+    return []
+
+def get_song_title(audio_path: str):
+    """
+    Extracts song title and author from audio file metadata.
+    Returns formatted title as "Author - Song Name" or fallback.
+    """
+    try:
+        import yt_dlp
+        
+        # Extract video ID from filename
+        filename = os.path.basename(audio_path)
+        video_id = filename.split('.')[0]  # Remove extension
+        
+        # Get metadata using yt-dlp
+        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+            info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
+            
+            # Get author/uploader
+            author = info.get('uploader', '') or info.get('channel', '') or info.get('artist', '')
+            title = info.get('title', '')
+            
+            if not title:
+                return f"Song: {video_id}"
+            
+            # Clean up the title (remove common YouTube artifacts)
+            title = title.replace('[Official Video]', '').replace('[Official Music Video]', '')
+            title = title.replace('(Official Video)', '').replace('(Official Music Video)', '')
+            title = title.replace('[Audio]', '').replace('(Audio)', '')
+            title = title.replace('[Official Audio]', '').replace('(Official Audio)', '')
+            title = title.replace('[Lyrics]', '').replace('(Lyrics)', '')
+            title = title.strip()
+            
+            # Try to extract artist and song from title
+            # Common patterns: "Artist - Song", "Song by Artist", "Artist | Song"
+            song_name = title
+            extracted_artist = ""
+            
+            # Pattern 1: "Artist - Song"
+            if ' - ' in title:
+                parts = title.split(' - ', 1)
+                if len(parts) == 2:
+                    extracted_artist = parts[0].strip()
+                    song_name = parts[1].strip()
+            
+            # Pattern 2: "Song by Artist"  
+            elif ' by ' in title.lower():
+                by_index = title.lower().find(' by ')
+                if by_index != -1:
+                    song_name = title[:by_index].strip()
+                    extracted_artist = title[by_index + 4:].strip()
+            
+            # Pattern 3: "Artist | Song"
+            elif ' | ' in title:
+                parts = title.split(' | ', 1)
+                if len(parts) == 2:
+                    extracted_artist = parts[0].strip()
+                    song_name = parts[1].strip()
+            
+            # Use extracted artist if available, otherwise use uploader
+            if extracted_artist:
+                author = extracted_artist
+            elif not author:
+                author = "Unknown Artist"
+            
+            # Clean up author name
+            author = author.replace('[Official]', '').replace('(Official)', '').strip()
+            
+            # Format as "Author - Song Name"
+            formatted_title = f"{author} - {song_name}"
+            
+            # Ensure it's not too long for YouTube
+            if len(formatted_title) > 95:  # Leave room for #Shorts
+                # Truncate song name if too long
+                max_song_length = 95 - len(author) - 3  # 3 for " - "
+                if max_song_length > 10:
+                    song_name = song_name[:max_song_length].strip()
+                    formatted_title = f"{author} - {song_name}"
+                else:
+                    # If author is too long, truncate it
+                    formatted_title = formatted_title[:95]
+            
+            return formatted_title
+            
+    except Exception as e:
+        print(f"Could not extract song title: {e}")
+    
+    # Fallback: use filename
+    filename = os.path.basename(audio_path)
+    name_without_ext = os.path.splitext(filename)[0]
+    return f"Song: {name_without_ext}"
+
+def get_random_fact():
+    """
+    Fetches a random fact from API Ninjas or returns a fallback fact.
+    """
+    try:
+        # Try to get API key from environment
+        api_key = os.getenv('API_NINJAS_KEY')
+        
+        if api_key:
+            import requests
+            
+            url = "https://api.api-ninjas.com/v1/facts"
+            headers = {'X-Api-Key': api_key}
+            
+            response = requests.get(url, headers=headers, timeout=10)
+            response.raise_for_status()
+            
+            data = response.json()
+            if data and isinstance(data, list) and len(data) > 0:
+                fact = data[0].get('fact', '')
+                if fact:
+                    return fact
+        
+        print("API Ninjas key not found or API call failed, using fallback fact")
+        
+    except Exception as e:
+        print(f"Error fetching random fact: {e}")
+    
+    # Fallback facts
+    fallback_facts = [
+        "Did you know? The shortest war in history lasted only 38-45 minutes.",
+        "Fun fact: A group of flamingos is called a 'flamboyance'.",
+        "Interesting: Octopuses have three hearts and blue blood.",
+        "Did you know? The Great Wall of China is visible from space, but only under perfect conditions.",
+        "Fun fact: A day on Venus is longer than its year.",
+        "Interesting: Bananas are berries, but strawberries aren't.",
+        "Did you know? The human brain uses about 20% of the body's total energy.",
+        "Fun fact: There are more possible games of chess than atoms in the observable universe.",
+        "Interesting: A shrimp's heart is in its head.",
+        "Did you know? The first computer programmer was Ada Lovelace in 1842."
+    ]
+    
+    return random.choice(fallback_facts)
+
+def ensure_gitignore_entries(entries: list[str], gitignore_path: str = '.gitignore'):
+    try:
+        existing = set()
+        p = Path(gitignore_path)
+        if p.exists():
+            with open(p, 'r', encoding='utf-8') as f:
+                for line in f:
+                    existing.add(line.strip())
+        with open(p, 'a', encoding='utf-8') as f:
+            for e in entries:
+                if e not in existing:
+                    f.write(e + '\n')
+    except Exception:
+        pass
+
 def main():
     """
     Main function to run the process.
     """
-    parser = argparse.ArgumentParser(description='Generate meme videos from various sources and upload to YouTube Shorts by default')
-    parser.add_argument('--source', '-s', 
-                       choices=['all', 'meme-api', 'youtube'],
-                       default='all',
-                       help='Source to get memes from (default: all)')
+    parser = argparse.ArgumentParser(description='Generate meme videos from Pinterest and upload to YouTube Shorts')
+    parser.add_argument('--pinterest-url', default='https://www.pinterest.com/thisisaprofilename/out-of-context-pictures/', help='Pinterest board or pin URL to scrape')
+    parser.add_argument('--pinterest-json', default='pinterest_urls.json', help='Path to JSON file with array of Pinterest URLs')
+    parser.add_argument('--pin-num', type=int, default=30, help='How many items to scrape from Pinterest before picking one')
+    parser.add_argument('--pins-dir', default='pins', help='Directory to store downloaded Pinterest media')
+    parser.add_argument('--music-playlist-url', default='https://music.youtube.com/playlist?list=OLAK5uy_kPA15vwfzRqBQIY1zMkFujv_WaigtvFDY', help='YouTube Music playlist URL to download random song from')
+    parser.add_argument('--music-json', default='music_playlists.json', help='Path to JSON file with array of music playlist URLs')
+    parser.add_argument('--audio-duration', type=int, default=10, help='Duration of random audio clip in seconds')
+    parser.add_argument('--audio-dir', default='audio', help='Directory to store downloaded audio')
     parser.add_argument('--no-upload', action='store_true', help='Skip uploading the generated video to YouTube Shorts')
     parser.add_argument('--force-shorts', action='store_true', help='Ensure uploaded video is <= 60s by trimming if needed')
     parser.add_argument('--title', default='Funny Meme Short', help='Title for YouTube upload')
@@ -428,35 +907,53 @@ def main():
     
     args = parser.parse_args()
     
-    print(f"Fetching a random meme from {args.source}...")
-    meme_url = get_random_meme_url(args.source)
+    print("Fetching meme from Pinterest...")
 
-    if not meme_url:
-        return
-
-    print(f"Found meme: {meme_url}")
-    temp_meme_path = "temp_meme"
     output_mp4_path = "tiktok_video.mp4"
     final_video_path = "final_meme.mp4"
 
-    print("Downloading meme...")
-    downloaded_result = download_file(meme_url, temp_meme_path)
-    # download_file may return either a path or (path, meta)
+    downloaded_path = None
     download_meta = None
-    if isinstance(downloaded_result, tuple):
-        downloaded_path, download_meta = downloaded_result
-    else:
-        downloaded_path = downloaded_result
 
+    pinterest_list = load_urls_json(args.pinterest_json, [args.pinterest_url] if args.pinterest_url else [])
+    chosen_pinterest = random.choice(pinterest_list) if pinterest_list else args.pinterest_url
+    print(f"Scraping Pinterest URL: {chosen_pinterest}")
+    downloaded_path = scrape_one_from_pinterest(chosen_pinterest, output_dir=args.pins_dir, num=args.pin_num)
     if not downloaded_path:
         return
 
+    # Download and prepare audio
+    audio_clip_path = None
+    music_list = load_urls_json(args.music_json, [args.music_playlist_url] if args.music_playlist_url else [])
+    chosen_music = random.choice(music_list) if music_list else args.music_playlist_url
+    if chosen_music:
+        print(f"Downloading random song from playlist: {chosen_music}")
+        audio_path = download_random_song_from_playlist(chosen_music, output_dir=args.audio_dir)
+        if audio_path:
+            print(f"Extracting {args.audio_duration}s random clip from audio")
+            audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=args.audio_duration)
+            # Clean up original audio file
+            if audio_path != audio_clip_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                    print(f"Cleaned up original audio file: {audio_path}")
+                except Exception:
+                    pass
+
     print("Converting to TikTok format...")
-    is_youtube = 'youtube.com' in meme_url or 'youtu.be' in meme_url
-    convert_to_tiktok_format(downloaded_path, output_mp4_path, is_youtube=is_youtube)
+    is_youtube = False
+    convert_to_tiktok_format(downloaded_path, output_mp4_path, is_youtube=is_youtube, audio_path=audio_clip_path)
 
     # The final video is the converted one without text
     final_video_path = output_mp4_path
+
+    # Clean up audio clip after conversion
+    if audio_clip_path and os.path.exists(audio_clip_path):
+        try:
+            os.remove(audio_clip_path)
+            print(f"Cleaned up audio clip: {audio_clip_path}")
+        except Exception:
+            pass
 
     if not args.no_upload:
         if build is None:
@@ -477,7 +974,7 @@ def main():
                     except Exception as e:
                         print(f'Failed to prepare <=60s version: {e}')
                 # prepare metadata
-                generated = generate_metadata_from_source(meme_url, download_meta)
+                generated = generate_metadata_from_source(chosen_pinterest, download_meta, audio_path)
                 upload_title = generated.get('title')
                 upload_description = generated.get('description')
                 upload_tags = generated.get('tags')
@@ -502,6 +999,16 @@ def main():
                 print(f"Cleaned up temporary file after retry: {downloaded_path}")
             except OSError as e2:
                 print(f"Could not remove temporary file: {e2}")
+
+    # Clean up working directories and update .gitignore
+    for d in [args.pins_dir, args.audio_dir]:
+        try:
+            if Path(d).exists():
+                shutil.rmtree(d, ignore_errors=True)
+                print(f"Removed directory: {d}")
+        except Exception as e:
+            print(f"Failed to remove directory {d}: {e}")
+    ensure_gitignore_entries([f"{args.pins_dir}/", f"{args.audio_dir}/"]) 
 
 if __name__ == "__main__":
     main()
