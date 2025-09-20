@@ -28,8 +28,21 @@ class VideoGenerator {
         }
 
         const publishBtn = document.getElementById('publishBtn');
+        console.log('publishBtn found:', publishBtn);
         if (publishBtn) {
-            publishBtn.addEventListener('click', () => this.showPublishModal());
+            publishBtn.addEventListener('click', (e) => {
+                console.log('publishBtn clicked');
+                e.stopPropagation();
+                this.showPublishModal();
+            });
+        }
+
+    const backBtn = document.getElementById('backBtn');
+        if (backBtn) {
+            backBtn.addEventListener('click', () => {
+                this.hideResultSection();
+                this.showMainBlock();
+            });
         }
 
         const cancelPublishBtn = document.getElementById('cancelPublishBtn');
@@ -54,15 +67,11 @@ class VideoGenerator {
         // Обработчики клика вне оверлеев для их закрытия
         document.addEventListener('click', (e) => {
             const publishModal = document.getElementById('publishModal');
-            const resultSection = document.getElementById('resultSection');
             const publishProgress = document.getElementById('publishProgress');
             const publishResults = document.getElementById('publishResults');
 
             if (publishModal && !publishModal.classList.contains('hidden') && !publishModal.contains(e.target)) {
                 this.hidePublishModal();
-            }
-            if (resultSection && !resultSection.classList.contains('hidden') && !resultSection.contains(e.target)) {
-                this.hideResultSection();
             }
             if (publishProgress && !publishProgress.classList.contains('hidden') && !publishProgress.contains(e.target)) {
                 this.hidePublishProgress();
@@ -75,7 +84,6 @@ class VideoGenerator {
 
     async generateVideo() {
         if (this.isGenerating) return;
-        
         const generateBtn = document.getElementById('generateBtn');
         
         if (!generateBtn) return;
@@ -84,6 +92,7 @@ class VideoGenerator {
         this.hideResultSection();
         this.hidePublishProgress();
         this.hidePublishResults();
+        this.showMainBlock(); // Убедимся, что mainBlock виден
         generateBtn.disabled = true;
         generateBtn.innerHTML = '<i class="fas fa-spinner fa-spin mr-2"></i>Генерация...';
         
@@ -98,6 +107,8 @@ class VideoGenerator {
                 body: JSON.stringify(formData)
             });
             
+            
+            
             if (!response.ok) {
                 const errorData = await response.json().catch(() => ({}));
                 throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);
@@ -105,11 +116,7 @@ class VideoGenerator {
             
             const result = await response.json();
             this.currentVideoData = result;
-            
-            setTimeout(() => {
-                this.currentVideoData = result;
-                this.showResult(result);
-            }, 500);
+            this.showResult(result);
             
         } catch (error) {
             console.error('Error generating video:', error);
@@ -132,6 +139,7 @@ class VideoGenerator {
 
     showResult(result) {
         if (result.video_path) {
+            this.hideMainBlock();
             const previewVideo = document.getElementById('previewVideo');
             const resultSection = document.getElementById('resultSection');
             
@@ -146,8 +154,53 @@ class VideoGenerator {
 
     hideResultSection() {
         const resultSection = document.getElementById('resultSection');
-        if (resultSection) {
-            resultSection.classList.add('hidden');
+            if (resultSection) {
+                resultSection.classList.add('hidden');
+            }
+        }
+
+    hideMainBlock() {
+        const mainBlock = document.getElementById('mainBlock');
+            if (mainBlock) {
+                try {
+                    mainBlock.classList.add('hidden');
+                } catch (e) {
+                }
+                try {
+                    mainBlock.style.display = 'none';
+                } catch (e) {
+                }
+            }
+        }
+
+    showMainBlock() {
+        const mainBlock = document.getElementById('mainBlock');
+            if (mainBlock) {
+                try {
+                    mainBlock.classList.remove('hidden');
+                } catch (e) {
+                }
+                try {
+                    mainBlock.style.display = '';
+                } catch (e) {
+                }
+            }
+        }
+
+    hidePublishModal() {
+        const publishModal = document.getElementById('publishModal');
+        if (publishModal) {
+            publishModal.classList.add('hidden');
+        }
+    }
+
+    showPublishModal() {
+        console.log('showing publish modal');
+        const publishModal = document.getElementById('publishModal');
+        console.log('publishModal found:', publishModal);
+        if (publishModal) {
+            publishModal.classList.remove('hidden');
+            console.log('hidden class removed');
         }
     }
 

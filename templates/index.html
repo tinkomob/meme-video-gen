@@ -1,9 +1,9 @@
 {% extends "base.html" %}
 
-{% block title %}Главная - Meme Video Generator{% endblock %}
+{% block title %}Meme Video Generator{% endblock %}
 
 {% block content %}
-<div class="max-w-md mx-auto bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+<div id="mainBlock" class="max-w-md mx-auto bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
     <div class="bg-gray-50 px-4 py-3 border-b border-gray-200">
         <h2 class="text-lg font-medium text-gray-900">
             Создать видео
@@ -91,51 +91,71 @@
         </div>
     </div>
 </div>
-        <!-- Progress Section (inline) -->
-        <div id="progressSection" class="hidden mt-4">
-        </div>
+    </div>
+</div>
 
-        <!-- Result Section (inline) -->
-        <div id="resultSection" class="hidden mt-4">
-            <h3 class="text-lg font-medium text-gray-900 mb-3">
-                <i class="fas fa-check-circle text-green-600 mr-2"></i>Видео готово
-            </h3>
-            <div class="bg-gray-50 rounded-lg p-4 mb-4">
-                <video id="previewVideo" controls class="max-w-sm mx-auto rounded-lg max-h-64">
-                    Ваш браузер не поддерживает видео.
-                </video>
-            </div>
-            <div class="flex space-x-3">
-                <button
-                    id="publishBtn"
-                    class="flex-1 bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors duration-200"
-                >
-                    <i class="fas fa-share mr-2"></i>Опубликовать
-                </button>
-                <button
-                    id="regenerateBtn"
-                    class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-medium py-3 px-4 rounded-lg transition-colors duration-200"
-                >
-                    <i class="fas fa-redo mr-2"></i>Создать новое
-                </button>
-            </div>
-        </div>
+<!-- Progress Section (inline) -->
+<div id="progressSection" class="hidden mt-4 max-w-md mx-auto">
+</div>
 
-        <!-- Publish Progress (inline) -->
-        <div id="publishProgress" class="hidden mt-4">
-            <h3 class="text-lg font-medium text-gray-900 mb-3">
-                <i class="fas fa-upload text-blue-600 mr-2"></i>Публикация...
-            </h3>
-            <div class="space-y-2" id="publishStatus"></div>
+<!-- Result Section (inline) -->
+<div id="resultSection" class="hidden mt-4 mx-auto bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div class="bg-gray-50 px-4 py-3 border-b border-gray-200">
+        <h3 class="text-lg font-medium text-gray-900">
+            <i class="fas fa-check-circle text-green-600 mr-2"></i>Видео готово
+        </h3>
+    </div>
+    <div class="p-4">
+        <div class="bg-gray-50 rounded-lg p-4 mb-4">
+            <video id="previewVideo" controls class="max-w-lg mx-auto rounded-lg max-h-120">
+                Ваш браузер не поддерживает видео.
+            </video>
         </div>
+        <div class="flex space-x-3">
+            <button
+                id="backBtn"
+                onclick="console.log('Back button onclick'); videoGenerator.hideResultSection(); videoGenerator.showMainBlock();"
+                class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-medium py-3 px-4 rounded-lg transition-colors duration-200"
+            >
+                <i class="fas fa-arrow-left mr-2"></i>Назад
+            </button>
+            <button
+                id="publishBtn"
+                class="flex-1 bg-green-600 hover:bg-green-700 text-white font-medium py-3 px-4 rounded-lg transition-colors duration-200"
+            >
+                <i class="fas fa-share mr-2"></i>Опубликовать
+            </button>
+            <button
+                id="regenerateBtn"
+                class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-medium py-3 px-4 rounded-lg transition-colors duration-200"
+            >
+                <i class="fas fa-redo mr-2"></i>Создать новое
+            </button>
+        </div>
+    </div>
+</div>
 
-        <!-- Publish Results (inline) -->
-        <div id="publishResults" class="hidden mt-4">
-            <h3 class="text-lg font-medium text-gray-900 mb-3">
-                <i class="fas fa-check-circle text-green-600 mr-2"></i>Результаты
-            </h3>
-            <div class="space-y-2" id="publishLinks"></div>
-        </div>
+<!-- Publish Progress (inline) -->
+<div id="publishProgress" class="hidden mt-4 max-w-md mx-auto bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div class="bg-gray-50 px-4 py-3 border-b border-gray-200">
+        <h3 class="text-lg font-medium text-gray-900">
+            <i class="fas fa-upload text-blue-600 mr-2"></i>Публикация...
+        </h3>
+    </div>
+    <div class="p-4">
+        <div class="space-y-2" id="publishStatus"></div>
+    </div>
+</div>
+
+<!-- Publish Results (inline) -->
+<div id="publishResults" class="hidden mt-4 max-w-md mx-auto bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
+    <div class="bg-gray-50 px-4 py-3 border-b border-gray-200">
+        <h3 class="text-lg font-medium text-gray-900">
+            <i class="fas fa-check-circle text-green-600 mr-2"></i>Результаты
+        </h3>
+    </div>
+    <div class="p-4">
+        <div class="space-y-2" id="publishLinks"></div>
     </div>
 </div>
 {% endblock %}
