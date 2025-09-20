@@ -119,27 +119,39 @@ def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], p
     ensure_gitignore_entries([f"{pins_dir}/", f"{audio_dir}/"]) 
     return GenerationResult(output_path, thumbnail_path, chosen_pinterest, None)
 
-def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, audio_path: str | None, privacy: str = 'public'):
+def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, audio_path: str | None, privacy: str = 'public', socials: list[str] | None = None):
     generated = generate_metadata_from_source(source_url, None, audio_path)
-    yt = youtube_authenticate()
+    
+    # Default to all socials if none specified
+    if socials is None:
+        socials = ['youtube', 'instagram']
+    
+    # Normalize social names to lowercase
+    socials = [s.lower() for s in socials]
+    
     yt_link = None
-    if yt is not None:
-        resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
-        if resp and resp.get('id'):
-            yt_link = f"https://youtu.be/{resp.get('id')}"
-    caption = generated.get('description', '').replace('#Shorts', '').strip()
-    if audio_path:
-        song_title = get_song_title(audio_path)
-        if song_title:
-            caption = f"♪ {song_title} ♪\n\n{caption}"
-    tags = [t for t in generated.get('tags', []) if t.lower() != 'shorts']
-    if tags:
-        caption += ('\n\n' + ' '.join(f'#{t}' for t in tags))
-    insta = instagram_upload(video_path, caption, thumbnail=thumbnail_path)
+    if 'youtube' in socials:
+        yt = youtube_authenticate()
+        if yt is not None:
+            resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
+            if resp and resp.get('id'):
+                yt_link = f"https://youtu.be/{resp.get('id')}"
+    
     insta_link = None
-    try:
-        if insta and getattr(insta, 'code', None):
-            insta_link = f"https://www.instagram.com/reel/{insta.code}/"
-    except Exception:
-        pass
+    if 'instagram' in socials:
+        caption = generated.get('description', '').replace('#Shorts', '').strip()
+        if audio_path:
+            song_title = get_song_title(audio_path)
+            if song_title:
+                caption = f"♪ {song_title} ♪\n\n{caption}"
+        tags = [t for t in generated.get('tags', []) if t.lower() != 'shorts']
+        if tags:
+            caption += ('\n\n' + ' '.join(f'#{t}' for t in tags))
+        insta = instagram_upload(video_path, caption, thumbnail=thumbnail_path)
+        try:
+            if insta and getattr(insta, 'code', None):
+                insta_link = f"https://www.instagram.com/reel/{insta.code}/"
+        except Exception:
+            pass
+    
     return {'youtube': yt_link, 'instagram': insta_link}
