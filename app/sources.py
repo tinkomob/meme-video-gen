@@ -77,6 +77,7 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
     print(f"scrape_one_from_pinterest called with URL: {board_url}", flush=True)
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        num = random.randint(50, 200)  # Make num more random
         if 'search/pins' in board_url:
             print("Detected search URL, using search scraper", flush=True)
             return scrape_pinterest_search(board_url, output_dir, num)
@@ -109,7 +110,9 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
         print(f"Found {len(candidates)} candidate files", flush=True)
         if not candidates:
             return None
-        chosen = random.choice(candidates)
+        # Select from a random subset for more randomness
+        selected = random.sample(candidates, k=min(10, len(candidates)))
+        chosen = random.choice(selected)
         print(f"Selected file: {chosen}", flush=True)
         return chosen
     except Exception as e:

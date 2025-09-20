@@ -33,6 +33,9 @@ def apply_random_effects(clip):
         lambda c: c.fx(vfx.loop, n=random.randint(1, 3)),
         lambda c: c.fx(vfx.reverse),
         lambda c: c.fx(vfx.time_mirror),
+        lambda c: c.fx(vfx.freeze, t=random.uniform(0, c.duration)),
+        lambda c: c.fx(vfx.margin, left=random.randint(0, 50), right=random.randint(0, 50), top=random.randint(0, 50), bottom=random.randint(0, 50), color=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))),
+        lambda c: c.fx(vfx.time_symetrize),
     ]
     num = random.randint(3, 8)
     selected_effects = random.sample(effects, min(num, len(effects)))
