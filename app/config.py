@@ -15,3 +15,6 @@ DEFAULT_OUTPUT_VIDEO = 'tiktok_video.mp4'
 DEFAULT_THUMBNAIL = 'thumbnail.jpg'
 TOKEN_PICKLE = 'token.pickle'
 CLIENT_SECRETS = 'client_secrets.json'
+TIKTOK_COOKIES_FILE = os.getenv('TIKTOK_COOKIES_FILE', 'cookies.txt')
+TIKTOK_HEADLESS = os.getenv('TIKTOK_HEADLESS', 'false').lower() == 'true'
+TIKTOK_BROWSER = os.getenv('TIKTOK_BROWSER', 'chrome')

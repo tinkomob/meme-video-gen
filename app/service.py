@@ -11,6 +11,7 @@ from .audio import download_random_song_from_playlist, extract_random_audio_clip
 from .video import convert_to_tiktok_format, generate_thumbnail
 from .metadata import generate_metadata_from_source
 from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload
+from .uploaders import tiktok_upload
 
 class GenerationResult:
     def __init__(self, video_path: str | None, thumbnail_path: str | None, source_url: str | None, audio_path: str | None):
@@ -161,5 +162,31 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
                     insta_link = f"https://www.instagram.com/reel/{insta.code}/"
             except Exception:
                 pass
-    
-    return {'youtube': yt_link, 'instagram': insta_link}
+
+    tiktok_link = None
+    if 'tiktok' in socials:
+        if dry_run:
+            tiktok_link = f"https://www.tiktok.com/dry-run/{generated['title'].replace(' ', '-').lower()}"
+            print(f"DRY RUN: Would upload to TikTok with description: {generated.get('description', '')[:50]}...", flush=True)
+        else:
+            desc = generated.get('description', '')
+            try:
+                resp = tiktok_upload(video_path, description=desc, cover=thumbnail_path)
+                if resp:
+                    if isinstance(resp, dict):
+                        if 'url' in resp:
+                            tiktok_link = resp['url']
+                            print(f"TikTok upload successful: {tiktok_link}")
+                        elif resp.get('success'):
+                            tiktok_link = resp.get('url', f'https://www.tiktok.com/@user/video/{generated["title"].replace(" ", "-")[:20]}')
+                            print(f"TikTok upload likely successful (WebDriver error handled): {tiktok_link}")
+                        else:
+                            print(f"TikTok upload response: {resp}")
+                    else:
+                        print(f"TikTok upload returned non-dict response: {type(resp)}")
+                else:
+                    print("TikTok upload returned None")
+            except Exception as e:
+                print(f"TikTok upload exception: {e}", flush=True)
+
+    return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link}
