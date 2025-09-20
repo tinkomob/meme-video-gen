@@ -130,12 +130,6 @@ class VideoGenerator {
         };
     }
 
-    updateProgress(percent, text) {
-        const progressText = document.getElementById('progressText');
-        
-        if (progressText) progressText.textContent = text;
-    }
-
     showResult(result) {
         if (result.video_path) {
             const previewVideo = document.getElementById('previewVideo');
