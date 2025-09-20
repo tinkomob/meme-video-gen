@@ -18,17 +18,26 @@ def apply_random_effects(clip):
         lambda c: c.fx(vfx.mirrorx),
         lambda c: c.fx(vfx.mirrory),
         lambda c: c.fx(vfx.invert_colors),
-        lambda c: c.fx(vfx.fadein, 2),
-        lambda c: c.fx(vfx.fadeout, 2),
-        lambda c: c.fx(vfx.crop, x1=50, x2=300),
-        lambda c: c.fx(vfx.colorx, 1.5),
-        lambda c: c.fx(vfx.colorx, 0.5),
-        lambda c: c.fx(vfx.resize, lambda t: 1 + 0.3 * (t / c.duration)),
-        lambda c: c.fx(vfx.rotate, lambda t: 10 * (t / c.duration)),
-        lambda c: c.fx(vfx.colorx, lambda t: 1 + 0.5 * (t / c.duration)),
+        lambda c: c.fx(vfx.fadein, random.uniform(0.5, 3.0)),
+        lambda c: c.fx(vfx.fadeout, random.uniform(0.5, 3.0)),
+        lambda c: c.fx(vfx.colorx, random.uniform(0.3, 2.5)),
+        lambda c: c.fx(vfx.resize, lambda t: random.uniform(0.7, 1.5) + random.uniform(-0.2, 0.2) * (t / c.duration)),
+        lambda c: c.fx(vfx.rotate, lambda t: random.uniform(-30, 30) * (t / c.duration)),
+        lambda c: c.fx(vfx.colorx, lambda t: random.uniform(0.5, 2.0) + random.uniform(-0.5, 0.5) * (t / c.duration)),
+        lambda c: c.fx(vfx.hue, random.uniform(-180, 180)),
+        lambda c: c.fx(vfx.saturate, random.uniform(0.1, 3.0)),
+        lambda c: c.fx(vfx.gamma, random.uniform(0.3, 2.5)),
+        lambda c: c.fx(vfx.contrast, random.uniform(0.3, 2.5)),
+        lambda c: c.fx(vfx.brightness, random.uniform(0.3, 2.0)),
+        lambda c: c.fx(vfx.speedx, random.uniform(0.5, 2.0)),
+        lambda c: c.fx(vfx.loop, n=random.randint(1, 3)),
+        lambda c: c.fx(vfx.reverse),
+        lambda c: c.fx(vfx.time_mirror),
     ]
-    num = random.randint(1, 4)
-    for effect in random.sample(effects, num):
+    num = random.randint(3, 8)
+    selected_effects = random.sample(effects, min(num, len(effects)))
+    random.shuffle(selected_effects)
+    for effect in selected_effects:
         try:
             clip = effect(clip)
         except Exception:
@@ -63,21 +72,18 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
     final_clip = None
     audio_clip = None
     try:
+        random_duration = random.uniform(7, 12)
         ext = os.path.splitext(input_path)[1].lower()
         if ext in ['.png', '.jpg', '.jpeg']:
-            clip = ImageClip(input_path, duration=10)
+            clip = ImageClip(input_path, duration=random_duration)
         else:
             base_clip = VideoFileClip(input_path)
             if is_youtube:
                 clip = base_clip
             else:
-                if base_clip.duration < 10:
-                    n = int(10 / base_clip.duration) + 1
-                    clips = [base_clip] * n
-                    concat_clip = concatenate_videoclips(clips)
-                    clip = concat_clip.set_duration(10)
-                else:
-                    clip = base_clip
+                clip = base_clip
+                if clip.duration > random_duration:
+                    clip = clip.set_duration(random_duration)
         if clip.duration > 60:
             clip = clip.set_duration(60)
         tiktok_res = (1080, 1920)
