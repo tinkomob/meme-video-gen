@@ -30,6 +30,7 @@ class DeployRequest(BaseModel):
     audio_path: Optional[str] = None
     privacy: str = 'public'
     socials: Optional[List[str]] = None  # ['youtube', 'instagram']
+    dry_run: bool = False  # New dry run option
     # Generation parameters (if video_path is None)
     pinterest_urls: Optional[List[str]] = None
     music_playlists: Optional[List[str]] = None
@@ -82,14 +83,15 @@ def deploy(req: DeployRequest):
         
         # Deploy to socials
         if video_path and thumbnail_path:
-            print(f"Deploying to socials with privacy: {req.privacy}, platforms: {req.socials or ['all']}", flush=True)
+            print(f"Deploying to socials with privacy: {req.privacy}, platforms: {req.socials or ['all']}, dry_run: {req.dry_run}", flush=True)
             deployment_links = deploy_to_socials(
                 video_path, 
                 thumbnail_path, 
                 source_url, 
                 audio_path, 
                 privacy=req.privacy,
-                socials=req.socials
+                socials=req.socials,
+                dry_run=req.dry_run
             )
             print(f"Deployment successful: {deployment_links}", flush=True)
         else:

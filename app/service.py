@@ -119,7 +119,7 @@ def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], p
     ensure_gitignore_entries([f"{pins_dir}/", f"{audio_dir}/"]) 
     return GenerationResult(output_path, thumbnail_path, chosen_pinterest, None)
 
-def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, audio_path: str | None, privacy: str = 'public', socials: list[str] | None = None):
+def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, audio_path: str | None, privacy: str = 'public', socials: list[str] | None = None, dry_run: bool = False):
     generated = generate_metadata_from_source(source_url, None, audio_path)
     
     # Default to all socials if none specified
@@ -131,27 +131,35 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
     
     yt_link = None
     if 'youtube' in socials:
-        yt = youtube_authenticate()
-        if yt is not None:
-            resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
-            if resp and resp.get('id'):
-                yt_link = f"https://youtu.be/{resp.get('id')}"
+        if dry_run:
+            yt_link = f"https://youtu.be/dry-run-{generated['title'].replace(' ', '-').lower()}"
+            print(f"DRY RUN: Would upload to YouTube with title: {generated['title']}", flush=True)
+        else:
+            yt = youtube_authenticate()
+            if yt is not None:
+                resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
+                if resp and resp.get('id'):
+                    yt_link = f"https://youtu.be/{resp.get('id')}"
     
     insta_link = None
     if 'instagram' in socials:
-        caption = generated.get('description', '').replace('#Shorts', '').strip()
-        if audio_path:
-            song_title = get_song_title(audio_path)
-            if song_title:
-                caption = f"♪ {song_title} ♪\n\n{caption}"
-        tags = [t for t in generated.get('tags', []) if t.lower() != 'shorts']
-        if tags:
-            caption += ('\n\n' + ' '.join(f'#{t}' for t in tags))
-        insta = instagram_upload(video_path, caption, thumbnail=thumbnail_path)
-        try:
-            if insta and getattr(insta, 'code', None):
-                insta_link = f"https://www.instagram.com/reel/{insta.code}/"
-        except Exception:
-            pass
+        if dry_run:
+            insta_link = f"https://www.instagram.com/reel/dry-run-{generated['title'].replace(' ', '-').lower()}/"
+            print(f"DRY RUN: Would upload to Instagram with caption: {generated.get('description', '')[:50]}...", flush=True)
+        else:
+            caption = generated.get('description', '').replace('#Shorts', '').strip()
+            if audio_path:
+                song_title = get_song_title(audio_path)
+                if song_title:
+                    caption = f"♪ {song_title} ♪\n\n{caption}"
+            tags = [t for t in generated.get('tags', []) if t.lower() != 'shorts']
+            if tags:
+                caption += ('\n\n' + ' '.join(f'#{t}' for t in tags))
+            insta = instagram_upload(video_path, caption, thumbnail=thumbnail_path)
+            try:
+                if insta and getattr(insta, 'code', None):
+                    insta_link = f"https://www.instagram.com/reel/{insta.code}/"
+            except Exception:
+                pass
     
     return {'youtube': yt_link, 'instagram': insta_link}
