@@ -30,7 +30,6 @@ def apply_random_effects(clip):
         lambda c: c.fx(vfx.contrast, random.uniform(0.3, 2.5)),
         lambda c: c.fx(vfx.brightness, random.uniform(0.3, 2.0)),
         lambda c: c.fx(vfx.speedx, random.uniform(0.5, 2.0)),
-        lambda c: c.fx(vfx.loop, n=random.randint(1, 3)),
         lambda c: c.fx(vfx.reverse),
         lambda c: c.fx(vfx.time_mirror),
         lambda c: c.fx(vfx.freeze, t=random.uniform(0, c.duration)),
@@ -108,8 +107,7 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
                 if audio_clip.duration > clip_resized.duration:
                     audio_clip = audio_clip.subclip(0, clip_resized.duration)
                 elif audio_clip.duration < clip_resized.duration:
-                    n_loops = int(clip_resized.duration / audio_clip.duration) + 1
-                    audio_clip = concatenate_audioclips([audio_clip] * n_loops).subclip(0, clip_resized.duration)
+                    audio_clip = audio_clip.subclip(0, min(audio_clip.duration, clip_resized.duration))
                 # Set audio on the clip before creating composite
                 clip_with_audio = clip_resized.set_audio(audio_clip)
                 final_clip = CompositeVideoClip([background, clip_with_audio.set_position('center')])

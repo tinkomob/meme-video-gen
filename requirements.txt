@@ -8,8 +8,11 @@ google-auth-httplib2
 pinterest-dl
 instagrapi
 fastapi
-uvicorn
+uvicorn[standard]
 pydantic
 tiktok-uploader
 requests_oauthlib
 tweepy
+jinja2
+python-multipart
+aiofiles

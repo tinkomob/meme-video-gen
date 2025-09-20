@@ -85,14 +85,8 @@ def extract_random_audio_clip(audio_path: str, clip_duration: int = 10, output_p
             clip.close()
             return None
         if total < clip_duration:
-            if total < clip_duration / 2:
-                n = int(clip_duration / total) + 1
-                clip = concatenate_audioclips([clip] * n)
-                start, end = 0, clip_duration
-                print(f"Audio too short, looping {n} times to reach {clip_duration}s", flush=True)
-            else:
-                start, end = 0, total
-                print(f"Audio duration {total:.1f}s is sufficient", flush=True)
+            start, end = 0, total
+            print(f"Audio duration {total:.1f}s is shorter than requested {clip_duration}s", flush=True)
         else:
             max_start = total - clip_duration
             start = random.uniform(0, max_start)
