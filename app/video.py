@@ -75,11 +75,11 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
                     n = int(10 / base_clip.duration) + 1
                     clips = [base_clip] * n
                     concat_clip = concatenate_videoclips(clips)
-                    clip = concat_clip.with_duration(10)
+                    clip = concat_clip.set_duration(10)
                 else:
                     clip = base_clip
         if clip.duration > 60:
-            clip = clip.with_duration(60)
+            clip = clip.set_duration(60)
         tiktok_res = (1080, 1920)
         clip_resized = clip.resize(width=tiktok_res[0])
         clip_resized = apply_random_effects(clip_resized)
@@ -175,7 +175,7 @@ def add_text_to_video(input_path, output_path, text, position=("center", "bottom
     try:
         with VideoFileClip(input_path) as video_clip:
             with TextClip(text=text, font_size=70, color='white', stroke_color='black', stroke_width=2) as txt_clip:
-                txt = txt_clip.set_position(position).with_duration(video_clip.duration)
+                txt = txt_clip.set_position(position).set_duration(video_clip.duration)
                 final = CompositeVideoClip([video_clip, txt])
                 final.write_videofile(output_path, codec='libx264', audio_codec='aac', fps=24)
         return output_path

@@ -11,7 +11,7 @@ from .audio import download_random_song_from_playlist, extract_random_audio_clip
 from .video import convert_to_tiktok_format, generate_thumbnail
 from .metadata import generate_metadata_from_source
 from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload
-from .uploaders import tiktok_upload
+from .uploaders import tiktok_upload, x_upload
 
 class GenerationResult:
     def __init__(self, video_path: str | None, thumbnail_path: str | None, source_url: str | None, audio_path: str | None):
@@ -125,7 +125,7 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
     
     # Default to all socials if none specified
     if socials is None:
-        socials = ['youtube', 'instagram']
+        socials = ['youtube', 'instagram', 'tiktok', 'x']
     
     # Normalize social names to lowercase
     socials = [s.lower() for s in socials]
@@ -170,6 +170,10 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
             print(f"DRY RUN: Would upload to TikTok with description: {generated.get('description', '')[:50]}...", flush=True)
         else:
             desc = generated.get('description', '')
+            if audio_path:
+                song_title = get_song_title(audio_path)
+                if song_title:
+                    desc = f"♪ {song_title} ♪\n\n{desc}"
             try:
                 resp = tiktok_upload(video_path, description=desc, cover=thumbnail_path)
                 if resp:
@@ -189,4 +193,33 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
             except Exception as e:
                 print(f"TikTok upload exception: {e}", flush=True)
 
-    return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link}
+    x_link = None
+    if 'x' in socials or 'twitter' in socials:
+        if dry_run:
+            x_link = f"https://x.com/user/status/dry-run-{generated['title'].replace(' ', '-').lower()}"
+            print(f"DRY RUN: Would upload to X with text: {generated.get('description', '')[:50]}...", flush=True)
+        else:
+            text = generated.get('description', '')
+            if audio_path:
+                song_title = get_song_title(audio_path)
+                if song_title:
+                    song_prefix = f"♪ {song_title} ♪\n\n"
+                    # Check if adding song info would exceed Twitter's 280 character limit
+                    if len(song_prefix + text) <= 280:
+                        text = song_prefix + text
+                    else:
+                        # If too long, try to fit just the song title without the full description
+                        if len(song_prefix) <= 280:
+                            text = song_prefix
+            try:
+                resp = x_upload(video_path, text)
+                if resp and resp.data:
+                    tweet_id = resp.data['id']
+                    x_link = f"https://x.com/user/status/{tweet_id}"
+                    print(f"X upload successful: {x_link}")
+                else:
+                    print("X upload returned None")
+            except Exception as e:
+                print(f"X upload exception: {e}", flush=True)
+
+    return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link, 'x': x_link}

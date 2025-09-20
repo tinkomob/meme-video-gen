@@ -136,3 +136,51 @@ def tiktok_upload(video_path: str, description: str = '', cookies: str | None = 
             return {'url': f'https://www.tiktok.com/@user/video/uploaded-{description.replace(" ", "-")[:20]}', 'success': True, 'error': error_msg}
         
         return None
+
+def x_upload(video_path: str, text: str = ''):
+    try:
+        import tweepy
+        from .config import X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET
+        
+        if not all([X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET]):
+            print('X credentials not found')
+            return None
+        
+        print(f"X credentials loaded - Consumer Key: {X_CONSUMER_KEY[:10]}..., Access Token: {X_ACCESS_TOKEN[:10]}...")
+        
+        # Create API v1.1 for media upload
+        auth = tweepy.OAuth1UserHandler(
+            X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET
+        )
+        api_v1 = tweepy.API(auth)
+        
+        # Test authentication
+        try:
+            user = api_v1.verify_credentials()
+            print(f"X authentication successful for user: @{user.screen_name}")
+        except Exception as auth_error:
+            print(f"X authentication failed: {auth_error}")
+            return None
+        
+        # Upload media using v1.1 API
+        print(f"Uploading media: {video_path}")
+        media = api_v1.media_upload(video_path, media_category='tweet_video')
+        print(f"Media uploaded successfully, media_id: {media.media_id}")
+        
+        # Create Client for v2 API tweet creation
+        client = tweepy.Client(
+            consumer_key=X_CONSUMER_KEY,
+            consumer_secret=X_CONSUMER_SECRET,
+            access_token=X_ACCESS_TOKEN,
+            access_token_secret=X_ACCESS_TOKEN_SECRET
+        )
+        
+        # Post tweet with media using v2 API
+        print(f"Posting tweet with text: {text[:50]}...")
+        response = client.create_tweet(text=text, media_ids=[media.media_id])
+        print(f"Tweet posted successfully, tweet_id: {response.data['id']}")
+        
+        return response
+    except Exception as e:
+        print(f'X upload failed: {e}')
+        return None

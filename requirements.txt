@@ -11,3 +11,5 @@ fastapi
 uvicorn
 pydantic
 tiktok-uploader
+requests_oauthlib
+tweepy

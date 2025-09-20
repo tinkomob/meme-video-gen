@@ -73,7 +73,7 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
     except Exception:
         return None
 
-def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 30):
+def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 100):
     print(f"scrape_one_from_pinterest called with URL: {board_url}", flush=True)
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
@@ -85,6 +85,8 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
         client = PinterestDL.with_api(timeout=3, verbose=False)
         scraped = client.scrape(url=board_url, num=num)
         print(f"PinterestDL scraped {len(scraped) if scraped else 0} items", flush=True)
+        if scraped:
+            random.shuffle(scraped)
         if not scraped:
             print("No items scraped from Pinterest", flush=True)
             return None
