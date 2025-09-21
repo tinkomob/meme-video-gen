@@ -73,48 +73,58 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
     except Exception:
         return None
 
-def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 100):
+def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 10000):
     print(f"scrape_one_from_pinterest called with URL: {board_url}", flush=True)
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        num = random.randint(50, 200)  # Make num more random
+        if 'pinterest.com' in board_url and 'www.pinterest.com' not in board_url:
+            board_url = board_url.replace('://ru.pinterest.com', '://www.pinterest.com').replace('://uk.pinterest.com', '://www.pinterest.com').replace('://br.pinterest.com', '://www.pinterest.com')
+            print(f"Normalized Pinterest URL: {board_url}", flush=True)
         if 'search/pins' in board_url:
             print("Detected search URL, using search scraper", flush=True)
             return scrape_pinterest_search(board_url, output_dir, num)
         print("Using PinterestDL for board scraping", flush=True)
         from pinterest_dl import PinterestDL
-        client = PinterestDL.with_api(timeout=3, verbose=False)
+        client = PinterestDL.with_api(timeout=15, verbose=False)
         scraped = client.scrape(url=board_url, num=num)
-        print(f"PinterestDL scraped {len(scraped) if scraped else 0} items", flush=True)
+        print(f"PinterestDL scraped {len(scraped) if scraped else 0} items (requested: {num})", flush=True)
+        if (not scraped or len(scraped) < min(200, num)) and num > 200:
+            try:
+                print("Few items from API mode; trying browser mode to scroll deeper…", flush=True)
+                browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
+                scraped_browser = browser_client.scrape(url=board_url, num=num)
+                print(f"Browser mode scraped {len(scraped_browser) if scraped_browser else 0} items", flush=True)
+                if scraped_browser:
+                    scraped = scraped_browser
+            except Exception as be:
+                print(f"Browser mode scrape failed: {be}", flush=True)
         if scraped:
             random.shuffle(scraped)
         if not scraped:
             print("No items scraped from Pinterest", flush=True)
             return None
-        downloaded_items = PinterestDL.download_media(media=scraped, output_dir=output_dir, download_streams=True)
-        print(f"PinterestDL downloaded {len(downloaded_items) if downloaded_items else 0} items", flush=True)
-        candidates = []
-        for item in downloaded_items or []:
+        chosen_meta = random.choice(scraped)
+        print("Downloading one randomly chosen media item", flush=True)
+        downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
+        print(f"PinterestDL downloaded {len(downloaded_items) if downloaded_items else 0} item(s)", flush=True)
+        if downloaded_items:
+            item = downloaded_items[0]
             if isinstance(item, str) and os.path.isfile(item):
-                candidates.append(item)
-            elif isinstance(item, dict):
+                print(f"Selected file: {item}", flush=True)
+                return item
+            if isinstance(item, dict):
                 p = item.get('path') or item.get('filepath') or item.get('file')
                 if p and os.path.isfile(p):
-                    candidates.append(p)
-        if not candidates:
-            print("No valid downloaded files found, checking output_dir", flush=True)
-            for root, _, files in os.walk(output_dir):
-                for f in files:
-                    if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov')):
-                        candidates.append(os.path.join(root, f))
-        print(f"Found {len(candidates)} candidate files", flush=True)
-        if not candidates:
-            return None
-        # Select from a random subset for more randomness
-        selected = random.sample(candidates, k=min(10, len(candidates)))
-        chosen = random.choice(selected)
-        print(f"Selected file: {chosen}", flush=True)
-        return chosen
+                    print(f"Selected file: {p}", flush=True)
+                    return p
+        print("No valid downloaded file returned, scanning output_dir as fallback", flush=True)
+        for root, _, files in os.walk(output_dir):
+            for f in files:
+                if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov')):
+                    chosen = os.path.join(root, f)
+                    print(f"Selected file: {chosen}", flush=True)
+                    return chosen
+        return None
     except Exception as e:
         print(f"Error in scrape_one_from_pinterest: {e}", flush=True)
         return None

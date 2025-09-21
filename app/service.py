@@ -4,6 +4,7 @@ os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 import random
 import shutil
 from pathlib import Path
+from typing import Callable, Optional
 from .config import DEFAULT_PINS_DIR, DEFAULT_AUDIO_DIR, DEFAULT_OUTPUT_VIDEO, DEFAULT_THUMBNAIL
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
@@ -20,7 +21,14 @@ class GenerationResult:
         self.source_url = source_url
         self.audio_path = audio_path
 
-def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], pin_num: int = 30, audio_duration: int = 10):
+def generate_meme_video(
+    pinterest_urls: list[str],
+    music_playlists: list[str],
+    pin_num: int = 10000,
+    audio_duration: int = 10,
+    progress: Optional[Callable[[str], None]] = None,
+):
+    notify = (lambda msg: progress(msg) if callable(progress) else None)
     pins_dir = DEFAULT_PINS_DIR
     audio_dir = DEFAULT_AUDIO_DIR
     Path(pins_dir).mkdir(parents=True, exist_ok=True)
@@ -31,12 +39,14 @@ def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], p
     downloaded_path = None
     
     if chosen_pinterest:
+        notify("🔍 Ищу контент на Pinterest…")
         print(f"Trying to scrape from Pinterest: {chosen_pinterest}", flush=True)
         downloaded_path = scrape_one_from_pinterest(chosen_pinterest, output_dir=pins_dir, num=pin_num)
         print(f"Pinterest scraping result: {downloaded_path}", flush=True)
     
     # If Pinterest fails, try meme API
     if not downloaded_path:
+        notify("🧠 Pinterest не дал результатов, пробую meme API…")
         print("Pinterest failed, trying meme API...", flush=True)
         from .sources import get_from_meme_api
         meme_url = get_from_meme_api()
@@ -57,6 +67,7 @@ def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], p
                     f.write(r.content)
                 chosen_pinterest = meme_url  # Use meme URL as source
                 print(f"Downloaded meme to: {downloaded_path}", flush=True)
+                notify("🖼️ Нашёл мем и скачал изображение/видео")
                 from .utils import add_url_to_history
                 add_url_to_history(meme_url)
             except Exception as e:
@@ -69,16 +80,21 @@ def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], p
             print(f"File size: {os.path.getsize(downloaded_path)} bytes", flush=True)
     
     if not downloaded_path:
+        notify("❌ Не удалось получить исходный мем")
         return GenerationResult(None, None, chosen_pinterest, None)
     
     # Rest of the function remains the same...
     audio_clip_path = None
+    original_audio_path = None
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
     if chosen_music:
+        notify("🎵 Скачиваю трек из плейлиста…")
         audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
         print(f"Downloaded audio path: {audio_path}", flush=True)
         if audio_path:
+            original_audio_path = audio_path
+            notify("✂️ Вырезаю аудио-клип нужной длительности…")
             audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
             print(f"Extracted audio clip path: {audio_clip_path}", flush=True)
             if audio_path != audio_clip_path and os.path.exists(audio_path):
@@ -87,19 +103,23 @@ def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], p
                 except Exception:
                     pass
     output_path = DEFAULT_OUTPUT_VIDEO
+    notify("🎬 Конвертирую видео в формат TikTok…")
     print(f"Starting video conversion with downloaded_path: {downloaded_path}, output_path: {output_path}", flush=True)
     result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path)
     print(f"Video conversion result: {result_path}", flush=True)
     if not result_path or not os.path.exists(result_path):
         print("Video conversion failed", flush=True)
+        notify("❌ Ошибка при конвертации видео")
         return GenerationResult(None, None, chosen_pinterest, None)
     
     thumbnail_path = DEFAULT_THUMBNAIL
+    notify("🖼️ Генерирую миниатюру…")
     print(f"Generating thumbnail for: {output_path}", flush=True)
     thumb_result = generate_thumbnail(output_path, thumbnail_path)
     print(f"Thumbnail generation result: {thumb_result}", flush=True)
     if not thumb_result or not os.path.exists(thumb_result):
         print("Thumbnail generation failed", flush=True)
+        notify("❌ Не удалось создать миниатюру")
         return GenerationResult(None, None, chosen_pinterest, None)
     if audio_clip_path and os.path.exists(audio_clip_path):
         try:
@@ -118,9 +138,20 @@ def generate_meme_video(pinterest_urls: list[str], music_playlists: list[str], p
         except Exception:
             pass
     ensure_gitignore_entries([f"{pins_dir}/", f"{audio_dir}/"]) 
-    return GenerationResult(output_path, thumbnail_path, chosen_pinterest, None)
+    notify("✅ Готово! Видео и миниатюра созданы")
+    return GenerationResult(output_path, thumbnail_path, chosen_pinterest, original_audio_path)
 
-def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, audio_path: str | None, privacy: str = 'public', socials: list[str] | None = None, dry_run: bool = False):
+def deploy_to_socials(
+    video_path: str,
+    thumbnail_path: str,
+    source_url: str,
+    audio_path: str | None,
+    privacy: str = 'public',
+    socials: list[str] | None = None,
+    dry_run: bool = False,
+    progress: Optional[Callable[[str], None]] = None,
+):
+    notify = (lambda msg: progress(msg) if callable(progress) else None)
     generated = generate_metadata_from_source(source_url, None, audio_path)
     
     # Default to all socials if none specified
@@ -132,6 +163,7 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
     
     yt_link = None
     if 'youtube' in socials:
+        notify("⬆️ Публикую на YouTube…")
         if dry_run:
             yt_link = f"https://youtu.be/dry-run-{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to YouTube with title: {generated['title']}", flush=True)
@@ -141,9 +173,11 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
                 resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
                 if resp and resp.get('id'):
                     yt_link = f"https://youtu.be/{resp.get('id')}"
+        notify("✅ YouTube — завершено")
     
     insta_link = None
     if 'instagram' in socials:
+        notify("⬆️ Публикую в Instagram…")
         if dry_run:
             insta_link = f"https://www.instagram.com/reel/dry-run-{generated['title'].replace(' ', '-').lower()}/"
             print(f"DRY RUN: Would upload to Instagram with caption: {generated.get('description', '')[:50]}...", flush=True)
@@ -162,9 +196,11 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
                     insta_link = f"https://www.instagram.com/reel/{insta.code}/"
             except Exception:
                 pass
+        notify("✅ Instagram — завершено")
 
     tiktok_link = None
     if 'tiktok' in socials:
+        notify("⬆️ Публикую в TikTok…")
         if dry_run:
             tiktok_link = f"https://www.tiktok.com/dry-run/{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to TikTok with description: {generated.get('description', '')[:50]}...", flush=True)
@@ -192,9 +228,11 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
                     print("TikTok upload returned None")
             except Exception as e:
                 print(f"TikTok upload exception: {e}", flush=True)
+        notify("✅ TikTok — завершено")
 
     x_link = None
     if 'x' in socials or 'twitter' in socials:
+        notify("⬆️ Публикую в X (Twitter)…")
         if dry_run:
             x_link = f"https://x.com/user/status/dry-run-{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to X with text: {generated.get('description', '')[:50]}...", flush=True)
@@ -221,5 +259,6 @@ def deploy_to_socials(video_path: str, thumbnail_path: str, source_url: str, aud
                     print("X upload returned None")
             except Exception as e:
                 print(f"X upload exception: {e}", flush=True)
+        notify("✅ X — завершено")
 
     return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link, 'x': x_link}

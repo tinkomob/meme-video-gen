@@ -285,5 +285,4 @@ async def delete_video(video_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    raise SystemExit("This module is deprecated; use bot.py")

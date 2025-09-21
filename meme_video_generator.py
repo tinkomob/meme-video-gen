@@ -18,7 +18,7 @@ def main():
     music = load_urls_json(args.music_json)
     result = generate_meme_video(pins, music, pin_num=args.pin_num, audio_duration=args.audio_duration)
     if args.deploy and result.video_path:
-        links = deploy_to_socials(result.video_path, result.thumbnail_path, result.source_url, None, privacy=args.privacy)
+        links = deploy_to_socials(result.video_path, result.thumbnail_path, result.source_url, result.audio_path, privacy=args.privacy)
         print(links)
     else:
         print({'video_path': result.video_path, 'thumbnail_path': result.thumbnail_path, 'source_url': result.source_url})

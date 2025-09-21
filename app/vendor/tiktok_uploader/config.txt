@@ -1,0 +1,5 @@
+COOKIES_DIR="/app/app/vendor/tiktok_uploader/CookiesDir"
+VIDEOS_DIR="/app/app/vendor/tiktok_uploader/VideosDirPath"
+POST_PROCESSING_VIDEO_PATH="/app/app/vendor/tiktok_uploader/VideosDirPath"
+LANG="en"
+TIKTOK_BASE_URL="https://www.tiktok.com/upload?lang="

@@ -130,6 +130,10 @@ def get_song_title(audio_path: str):
             song = parts[1].strip()
         else:
             song = title
+        if author.endswith(' - Topic'):
+            author = author[:-8].strip()
+        if song.startswith('Topic - '):
+            song = song[8:].strip()
         formatted = f"{author} - {song}"
         if len(formatted) > 95:
             max_song = 95 - len(author) - 3
