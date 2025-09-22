@@ -2,6 +2,7 @@ import asyncio
 import os
 import json
 import time
+import logging
 from typing import Optional
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -22,6 +23,24 @@ except Exception:
     InlineKeyboardMarkup = None
 
 load_dotenv()
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+
+
+def _resolve_notify_chat_id() -> Optional[int]:
+    try:
+        cid = get_last_chat_id()
+        if cid:
+            return cid
+    except Exception:
+        pass
+    env_cid = os.getenv("TELEGRAM_NOTIFY_CHAT_ID") or os.getenv("ADMIN_CHAT_ID")
+    if env_cid:
+        try:
+            return int(env_cid)
+        except Exception:
+            return None
+    return None
 
 DEFAULT_PINTEREST_JSON = "pinterest_urls.json"
 DEFAULT_PLAYLISTS_JSON = "music_playlists.json"
@@ -223,7 +242,10 @@ async def cmd_generate(update, context):
         except Exception:
             pass
     except Exception:
-        await update.message.reply_text(caption)
+        try:
+            await update.message.reply_text(caption, reply_markup=kb)
+        except Exception:
+            await update.message.reply_text(caption)
 
 
 async def cmd_deploy(update, context):
@@ -644,7 +666,10 @@ async def on_callback_regenerate(update, context):
         except Exception:
             pass
     except Exception:
-        await q.message.reply_text(caption)
+        try:
+            await q.message.reply_text(caption, reply_markup=kb)
+        except Exception:
+            await q.message.reply_text(caption)
 
 
 async def cmd_history(update, context):
@@ -769,91 +794,98 @@ def _random_time_tomsk_for_date(date_obj) -> datetime:
     return start + timedelta(seconds=offset)
 
 
-async def _scheduled_worker(app):
+def _compute_next_target(now: datetime) -> datetime:
     tz = ZoneInfo("Asia/Tomsk")
-    while True:
+    saved = get_next_run_iso()
+    if saved:
         try:
-            now = datetime.now(tz)
-            saved = get_next_run_iso()
-            target_dt = None
-            if saved:
-                try:
-                    saved_dt = datetime.fromisoformat(saved)
-                    if saved_dt.tzinfo is None:
-                        saved_dt = saved_dt.replace(tzinfo=tz)
-                    if saved_dt > now:
-                        target_dt = saved_dt
-                except Exception:
-                    target_dt = None
-            if target_dt is None:
-                end_today = now.replace(hour=22, minute=0, second=0, microsecond=0)
-                if now < end_today:
-                    cand = _random_time_tomsk_for_date(now.date())
-                    if cand <= now:
-                        cand = now + timedelta(seconds=5)
-                    target_dt = cand
-                else:
-                    target_dt = _random_time_tomsk_for_date((now + timedelta(days=1)).date())
-            try:
-                set_next_run_iso(target_dt.isoformat())
-            except Exception:
-                pass
-            delay = (target_dt - now).total_seconds()
-            if delay < 1:
-                delay = 1
-            try:
-                cid = get_last_chat_id()
-                if cid:
-                    try:
-                        await app.bot.send_message(chat_id=cid, text=f"Следующая авто-генерация запланирована на {target_dt.strftime('%d.%m %H:%M')} (Asia/Tomsk)")
-                    except Exception:
-                        pass
-            except Exception:
-                pass
-            await asyncio.sleep(delay)
-
-            pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
-            music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
-            def run_generation():
-                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10)
-            res = await asyncio.to_thread(run_generation)
-            cid = get_last_chat_id()
-            if cid:
-                if res and res.video_path and os.path.exists(res.video_path):
-                    caption = "Автогенерация завершена. Отправить в платформы?"
-                    kb = None
-                    if InlineKeyboardButton and InlineKeyboardMarkup:
-                        items = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
-                        kb = InlineKeyboardMarkup([
-                            [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{items['id']}")],
-                            [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{items['id']}")],
-                            [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{items['id']}")],
-                        ])
-                    try:
-                        await app.bot.send_video(chat_id=cid, video=open(res.video_path, 'rb'), caption=caption, reply_markup=kb)
-                    except Exception:
-                        try:
-                            await app.bot.send_message(chat_id=cid, text=f"Видео готово: {res.video_path}. Отправить в платформы командой /deploy")
-                        except Exception:
-                            pass
-                else:
-                    try:
-                        await app.bot.send_message(chat_id=cid, text="Автогенерация не удалась")
-                    except Exception:
-                        pass
-
-            try:
-                now2 = datetime.now(tz)
-                next_day = (now2 + timedelta(days=1)).date()
-                next_dt = _random_time_tomsk_for_date(next_day)
-                set_next_run_iso(next_dt.isoformat())
-            except Exception:
-                pass
+            saved_dt = datetime.fromisoformat(saved)
+            if saved_dt.tzinfo is None:
+                saved_dt = saved_dt.replace(tzinfo=tz)
+            if saved_dt > now:
+                logging.info(f"Используется сохранённое время: {saved_dt}")
+                return saved_dt
         except Exception:
+            pass
+    end_today = now.replace(hour=22, minute=0, second=0, microsecond=0)
+    if now < end_today:
+        cand = _random_time_tomsk_for_date(now.date())
+        if cand <= now:
+            cand = now + timedelta(seconds=5)
+        logging.info(f"Вычислено время на сегодня: {cand}")
+        return cand
+    next_date = (now + timedelta(days=1)).date()
+    cand = _random_time_tomsk_for_date(next_date)
+    logging.info(f"Вычислено время на завтра: {cand}")
+    return cand
+
+
+async def _scheduled_job(context):
+    logging.info("Запуск запланированной генерации видео")
+    app = context.application
+    tz = ZoneInfo("Asia/Tomsk")
+    pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
+    music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+    def run_generation():
+        return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10)
+    res = await asyncio.to_thread(run_generation)
+    cid = _resolve_notify_chat_id()
+    if not cid:
+        logging.warning("Не найден chat_id для уведомления: сохранённый и переменные окружения отсутствуют")
+    if cid:
+        if res and res.video_path and os.path.exists(res.video_path):
+            caption = "Автогенерация завершена. Отправить в платформы?"
+            kb = None
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                items = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{items['id']}")],
+                    [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{items['id']}")],
+                    [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{items['id']}")],
+                ])
             try:
-                await asyncio.sleep(60)
+                await app.bot.send_video(chat_id=cid, video=open(res.video_path, 'rb'), caption=caption, reply_markup=kb)
+            except Exception:
+                try:
+                    await app.bot.send_message(chat_id=cid, text=f"Видео готово: {res.video_path}. Отправить в платформы командой /deploy", reply_markup=kb)
+                except Exception:
+                    pass
+        else:
+            try:
+                await app.bot.send_message(chat_id=cid, text="Автогенерация не удалась")
             except Exception:
                 pass
+    now2 = datetime.now(tz)
+    next_dt = _random_time_tomsk_for_date((now2 + timedelta(days=1)).date())
+    try:
+        set_next_run_iso(next_dt.isoformat())
+    except Exception:
+        pass
+    try:
+        delay = max(1, int((next_dt - now2).total_seconds()))
+        logging.info(f"Перепланирую следующую автогенерацию через {delay} секунд (целевое время: {next_dt})")
+        app.job_queue.run_once(_scheduled_job, when=delay)
+    except Exception as e:
+        logging.error(f"Ошибка перепланирования следующей задачи: {e}")
+    logging.info(f"Запланированная генерация завершена. Следующая запланирована на {next_dt}")
+
+
+def _schedule_next_job(app):
+    logging.info("Планирование следующей запланированной задачи")
+    tz = ZoneInfo("Asia/Tomsk")
+    now = datetime.now(tz)
+    target_dt = _compute_next_target(now)
+    try:
+        set_next_run_iso(target_dt.isoformat())
+    except Exception:
+        pass
+    try:
+        delay = max(1, int((target_dt - now).total_seconds()))
+        logging.info(f"Планирую задачу через {delay} секунд (целевое время: {target_dt})")
+        app.job_queue.run_once(_scheduled_job, when=delay)
+        logging.info(f"Следующая задача запланирована на {target_dt}")
+    except Exception as e:
+        logging.error(f"Ошибка при планировании задачи: {e}")
 
 
 def main():
@@ -869,16 +901,22 @@ def main():
         return
 
     async def on_startup(appinst):
+        logging.info("Бот запускается, инициализация планировщика")
         try:
-            cid = get_last_chat_id()
+            cid = _resolve_notify_chat_id()
             if cid:
                 try:
                     await appinst.bot.send_message(chat_id=cid, text="Бот перезапущен. Планировщик активен.")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logging.warning(f"Не удалось отправить стартовое сообщение: {e}")
+            else:
+                logging.warning("Стартовое уведомление не отправлено: не найден chat_id (ни state, ни env)")
         except Exception:
             pass
-        appinst.create_task(_scheduled_worker(appinst))
+        try:
+            _schedule_next_job(appinst)
+        except Exception as e:
+            logging.error(f"Ошибка при инициализации планировщика: {e}")
 
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
     try:
@@ -961,7 +999,11 @@ def main():
             it = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
             kb = None
             if InlineKeyboardButton and InlineKeyboardMarkup:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Опубликовать", callback_data=f"publish:{it['id']}")]])
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{it['id']}")],
+                    [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{it['id']}")],
+                    [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{it['id']}")],
+                ])
             try:
                 await update.message.reply_video(video=open(res.video_path, 'rb'), caption="Готово", reply_markup=kb)
             except Exception:
@@ -973,6 +1015,7 @@ def main():
     app.add_handler(CommandHandler("runscheduled", cmd_runscheduled))
 
     print("Бот запущен. Нажмите Ctrl+C для остановки.")
+    logging.info("Бот запущен и готов к работе")
     app.run_polling()
 
 
