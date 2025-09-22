@@ -758,16 +758,46 @@ def _random_time_today_tomsk() -> datetime:
     return start + timedelta(seconds=offset)
 
 
+def _random_time_tomsk_for_date(date_obj) -> datetime:
+    tz = ZoneInfo("Asia/Tomsk")
+    start = datetime(year=date_obj.year, month=date_obj.month, day=date_obj.day, hour=10, minute=0, second=0, microsecond=0, tzinfo=tz)
+    end = datetime(year=date_obj.year, month=date_obj.month, day=date_obj.day, hour=22, minute=0, second=0, microsecond=0, tzinfo=tz)
+    total_seconds = int((end - start).total_seconds())
+    if total_seconds <= 0:
+        total_seconds = 12 * 3600
+    offset = int(os.urandom(2).hex(), 16) % total_seconds
+    return start + timedelta(seconds=offset)
+
+
 async def _scheduled_worker(app):
     tz = ZoneInfo("Asia/Tomsk")
     while True:
         try:
-            target_dt = _random_time_today_tomsk()
+            now = datetime.now(tz)
+            saved = get_next_run_iso()
+            target_dt = None
+            if saved:
+                try:
+                    saved_dt = datetime.fromisoformat(saved)
+                    if saved_dt.tzinfo is None:
+                        saved_dt = saved_dt.replace(tzinfo=tz)
+                    if saved_dt > now:
+                        target_dt = saved_dt
+                except Exception:
+                    target_dt = None
+            if target_dt is None:
+                end_today = now.replace(hour=22, minute=0, second=0, microsecond=0)
+                if now < end_today:
+                    cand = _random_time_tomsk_for_date(now.date())
+                    if cand <= now:
+                        cand = now + timedelta(seconds=5)
+                    target_dt = cand
+                else:
+                    target_dt = _random_time_tomsk_for_date((now + timedelta(days=1)).date())
             try:
                 set_next_run_iso(target_dt.isoformat())
             except Exception:
                 pass
-            now = datetime.now(tz)
             delay = (target_dt - now).total_seconds()
             if delay < 1:
                 delay = 1
@@ -794,7 +824,11 @@ async def _scheduled_worker(app):
                     kb = None
                     if InlineKeyboardButton and InlineKeyboardMarkup:
                         items = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
-                        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Опубликовать", callback_data=f"publish:{items['id']}")],[InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{items['id']}")]])
+                        kb = InlineKeyboardMarkup([
+                            [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{items['id']}")],
+                            [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{items['id']}")],
+                            [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{items['id']}")],
+                        ])
                     try:
                         await app.bot.send_video(chat_id=cid, video=open(res.video_path, 'rb'), caption=caption, reply_markup=kb)
                     except Exception:
@@ -807,6 +841,14 @@ async def _scheduled_worker(app):
                         await app.bot.send_message(chat_id=cid, text="Автогенерация не удалась")
                     except Exception:
                         pass
+
+            try:
+                now2 = datetime.now(tz)
+                next_day = (now2 + timedelta(days=1)).date()
+                next_dt = _random_time_tomsk_for_date(next_day)
+                set_next_run_iso(next_dt.isoformat())
+            except Exception:
+                pass
         except Exception:
             try:
                 await asyncio.sleep(60)
