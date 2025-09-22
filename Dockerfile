@@ -82,7 +82,7 @@ RUN npm i -g playwright-chromium@1.10.0 && \
 COPY . .
 
 # Copy environment file into image (optional: adjust if building in CI)
-COPY .env .env
+# COPY .env .env
 
 # Load environment variables during runtime via python-dotenv or explicit ENV if desired
 # Example: uncomment to bake specific variables (avoid for secrets in public builds)
