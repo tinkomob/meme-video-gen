@@ -129,13 +129,18 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 	if not assert_success(url, r):
 		return False
 
-	print("[TikTok] Skipping homepage request - proceeding to signature generation")
-	# Skip homepage request that often hangs - we already have session cookies set
+	print("[TikTok] Touching homepage to refresh cookies")
+	try:
+		home_headers = {"user-agent": user_agent}
+		session.head("https://www.tiktok.com", headers=home_headers, timeout=_TIMEOUT)
+	except Exception as _e:
+		print(f"[TikTok] Homepage HEAD failed: {_e}")
 
 	print("[TikTok] Preparing headers and data payload")
 	headers = {
-		"content-type": "application/json",
-		"user-agent": user_agent
+		"content-type": "application/json; charset=UTF-8",
+		"user-agent": user_agent,
+		"accept-language": "en-US,en;q=0.9"
 	}
 	brand = ""
 
@@ -150,7 +155,8 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 		"post_common_info": {
 			"creation_id": creation_id,
 			"enter_post_page_from": 1,
-			"post_type": 3
+			"post_type": 3,
+			"project_id": project_id
 		},
 		"feature_common_info_list": [
 			{
@@ -180,7 +186,7 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 				"single_post_feature_info": {
 					"text": title,
 					"text_extra": text_extra,
-					"markup_text": title,
+					"markup_text": markup_text,
 					"music_info": {},
 					"poster_delay": 0,
 				}
@@ -193,6 +199,7 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 	
 	print("[TikTok] Data payload prepared, entering upload loop")
 	uploaded = False
+	publish_resp = None
 	while True:
 		print("[TikTok] Checking for msToken in session cookies")
 		mstoken = session.cookies.get("msToken")
@@ -203,7 +210,7 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 		
 		print("[TikTok] Preparing signature generation")
 		js_path = os.path.join(os.getcwd(), "app", "vendor", "tiktok_uploader", "tiktok-signature", "browser.js")
-		sig_url = f"https://www.tiktok.com/api/v1/web/project/post/?app_name=tiktok_web&channel=tiktok_web&device_platform=web&aid=1988&msToken={mstoken}"
+		sig_url = f"https://www.tiktok.com/tiktok/web/project/post/v1/?app_name=tiktok_web&channel=tiktok_web&device_platform=web&aid=1988&msToken={mstoken}"
 		print(f"[TikTok] Calling signature generator: {js_path}")
 		signatures = subprocess_jsvmp(js_path, user_agent, sig_url)
 		print(f"[TikTok] Signature generator returned: {len(signatures) if signatures else 0} chars")
@@ -227,6 +234,9 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 			"msToken": mstoken,
 			"_signature": tt_output["signature"],
 		}
+		# ensure verifyFp param matches what was used during signing
+		if "verify_fp" in tt_output and tt_output["verify_fp"]:
+			project_post_dict["verifyFp"] = tt_output["verify_fp"]
 		try:
 			xb = (tt_output or {}).get("x-bogus")
 			if xb:
@@ -242,19 +252,41 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 
 		url = f"https://www.tiktok.com/tiktok/web/project/post/v1/"
 		print("[TikTok] Posting project (signatures ready)")
-		r = session.request("POST", url, params=project_post_dict, data=json.dumps(data), headers=headers, timeout=_TIMEOUT)
+		# attach x-tt-params header when available
+		hdrs = dict(headers)
+		try:
+			xtt = (tt_output or {}).get("x-tt-params")
+			if xtt:
+				hdrs["X-Tt-Params"] = xtt
+				hdrs["x-tt-params"] = xtt
+		except Exception:
+			pass
+		hdrs.setdefault("referer", "https://www.tiktok.com/")
+		hdrs.setdefault("origin", "https://www.tiktok.com")
+		hdrs.setdefault("accept", "application/json, text/plain, */*")
+		csrf = session.cookies.get("tt_csrf_token") or session.cookies.get("csrf_session_id")
+		if csrf:
+			hdrs.setdefault("X-CSRFToken", csrf)
+			hdrs.setdefault("X-Tt-Csrf-Token", csrf)
+		r = session.request("POST", url, params=project_post_dict, data=json.dumps(data), headers=hdrs, timeout=_TIMEOUT)
 		
 		print(f"[TikTok] Response status: {r.status_code}")
-		print(f"[TikTok] Response text: {r.text[:200]}...")
+		print(f"[TikTok] Response text: {r.text}")
 		
 		if not assertSuccess(url, r):
 			print("[-] Published failed, try later again")
 			printError(url, r)
 			return False
 
-		if r.json()["status_code"] == 0:
+		resp_json = {}
+		try:
+			resp_json = r.json()
+		except Exception:
+			resp_json = {"status_code": -1}
+		if resp_json.get("status_code") == 0:
 			print(f"Published successfully {'| Scheduled for ' + str(schedule_time) if schedule_time else ''}")
 			uploaded = True
+			publish_resp = resp_json
 			break
 		else:
 			print("[-] Publish failed to Tiktok, trying again...")
@@ -263,6 +295,8 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 	if not uploaded:
 		print("[-] Could not upload video")
 		return False
+
+	return publish_resp
 
 
 def upload_to_tiktok(video_file, session):

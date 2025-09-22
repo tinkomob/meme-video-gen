@@ -12,7 +12,7 @@ def subprocess_jsvmp(js, user_agent, url):
             res = subprocess.run(['node', js, url, user_agent], capture_output=True, text=True, timeout=45)
             print(f"[TikTok] Node process completed with return code: {res.returncode}")
             if res.stderr:
-                print(f"[TikTok] Node stderr: {res.stderr[:500]}")
+                print(f"[TikTok] Node stderr: {res.stderr}")
             return res.returncode, res.stdout, res.stderr
         except subprocess.TimeoutExpired:
             print("[TikTok] Node process timed out after 45 seconds")
@@ -38,16 +38,20 @@ def subprocess_jsvmp(js, user_agent, url):
 
     if need_retry:
         try:
-            npm_ok = shutil.which('npm') is not None
+            npm_bin = shutil.which('npm') or shutil.which('npm.cmd') or shutil.which('npm.exe')
+            npx_bin = shutil.which('npx') or shutil.which('npx.cmd') or shutil.which('npx.exe')
+            npm_ok = npm_bin is not None
             if not npm_ok:
-                print('npm not found; cannot auto-install tiktok-signature dependencies')
+                print('[TikTok] npm not found; cannot auto-install tiktok-signature dependencies')
             else:
                 print("[TikTok] Installing npm dependencies...")
-                subprocess.run(['npm', 'install', '--no-audit', '--no-fund'], cwd=signer_dir, check=False)
-                if shutil.which('npx'):
+                subprocess.run([npm_bin, 'install', '--no-audit', '--no-fund'], cwd=signer_dir, check=False)
+                if npx_bin:
                     print("[TikTok] Installing playwright browsers...")
-                    subprocess.run(['npx', 'playwright-chromium', 'install'], cwd=signer_dir, check=False)
-                    subprocess.run(['npx', 'playwright', 'install', 'chromium'], cwd=signer_dir, check=False)
+                    subprocess.run([npx_bin, 'playwright-chromium', 'install'], cwd=signer_dir, check=False)
+                    subprocess.run([npx_bin, 'playwright', 'install', 'chromium'], cwd=signer_dir, check=False)
+                else:
+                    print('[TikTok] npx not found; skipping playwright browser install step')
         except Exception as _e:
             print(f"[TikTok] Auto-install failed: {_e}")
         print("[TikTok] Retrying node process after auto-install...")
