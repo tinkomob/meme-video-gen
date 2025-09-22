@@ -54,13 +54,15 @@ HELP_TEXT = (
     "/generate — сгенерировать видео (опционально: кол-во пинов и длительность аудио)\n"
     "/deploy — опубликовать последнее видео (опционально: соцсети, приватность, dry)\n"
     "/dryrun — показать/изменить режим публикации (on/off)\n"
+    "/checkfiles — проверить cookies.txt, client_secrets.json и token.pickle\n"
     "/history — последние публикации\n"
     "/uploadcookies — загрузить cookies.txt (TikTok) как документ\n"
     "/uploadclient — загрузить client_secrets.json как документ\n"
     "/uploadtoken — загрузить token.pickle как документ\n"
     "/clearhistory — очистить video_history.json\n"
     "/scheduleinfo — показать расписание\n"
-    "/runscheduled — немедленно выполнить запланированное (ручной старт)"
+    "/runscheduled — немедленно выполнить запланированное (ручной старт)\n"
+    "/setnext — изменить время следующей автогенерации (например: 2025-09-22 21:30 | 21:30 | +30m | -15m)"
 )
 
 
@@ -218,7 +220,7 @@ async def cmd_generate(update, context):
 
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
 
-    caption = f"Готово. Видео: {result.video_path}\nИсточник: {result.source_url or '-'}"
+    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
 
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
@@ -649,12 +651,13 @@ async def on_callback_regenerate(update, context):
         await q.message.reply_text("Не удалось создать новое видео.")
         return
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url)
-    caption = f"Готово. Видео: {result.video_path}\nИсточник: {result.source_url or '-'}"
+    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
         kb = InlineKeyboardMarkup(
             [
                 [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
+                [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
                 [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
             ]
         )
@@ -735,6 +738,42 @@ async def cmd_clearhistory(update, context):
     await update.message.reply_text("История очищена" if ok else "Не удалось очистить историю")
 
 
+async def cmd_checkfiles(update, context):
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
+    paths = {
+        "TikTok cookies.txt": TIKTOK_COOKIES_FILE,
+        "YouTube client_secrets.json": CLIENT_SECRETS,
+        "YouTube token.pickle": TOKEN_PICKLE,
+    }
+    lines = ["Проверка обязательных файлов:"]
+    for label, p in paths.items():
+        try:
+            exists = os.path.exists(p)
+            size = os.path.getsize(p) if exists else 0
+            status = "✅ найден" if exists and size > 0 else ("⚠️ пустой файл" if exists else "❌ отсутствует")
+            lines.append(f"- {label}: {status} (путь: {p})")
+        except Exception as e:
+            lines.append(f"- {label}: ошибка проверки ({e})")
+    lines.append("")
+    if not os.path.exists(TIKTOK_COOKIES_FILE):
+        lines.append("Загрузите cookies.txt командой /uploadcookies (пришлите файл как документ)")
+    missing_youtube = []
+    if not os.path.exists(CLIENT_SECRETS):
+        missing_youtube.append("client_secrets.json")
+    if not os.path.exists(TOKEN_PICKLE):
+        missing_youtube.append("token.pickle")
+    if missing_youtube:
+        lines.append(
+            "Для YouTube загрузите: "
+            + ", ".join(missing_youtube)
+            + ". Команды: /uploadclient и /uploadtoken"
+        )
+    await update.message.reply_text("\n".join(lines))
+
+
 async def on_document_received(update, context):
     doc = getattr(update.message, "document", None)
     if not doc:
@@ -807,17 +846,60 @@ def _compute_next_target(now: datetime) -> datetime:
                 return saved_dt
         except Exception:
             pass
+    def _random_time_between(start_dt: datetime, end_dt: datetime) -> datetime:
+        total_seconds = int((end_dt - start_dt).total_seconds())
+        if total_seconds <= 0:
+            return end_dt
+        offset = int(os.urandom(3).hex(), 16) % total_seconds
+        return start_dt + timedelta(seconds=offset)
+
+    start_today = now.replace(hour=10, minute=0, second=0, microsecond=0)
     end_today = now.replace(hour=22, minute=0, second=0, microsecond=0)
-    if now < end_today:
-        cand = _random_time_tomsk_for_date(now.date())
-        if cand <= now:
-            cand = now + timedelta(seconds=5)
-        logging.info(f"Вычислено время на сегодня: {cand}")
+
+    if now < start_today:
+        cand = _random_time_between(start_today, end_today)
+        logging.info(f"Вычислено время на сегодня (до окна): {cand}")
         return cand
-    next_date = (now + timedelta(days=1)).date()
-    cand = _random_time_tomsk_for_date(next_date)
-    logging.info(f"Вычислено время на завтра: {cand}")
+    if now < end_today:
+        start_range = now + timedelta(seconds=1)
+        cand = _random_time_between(start_range, end_today)
+        logging.info(f"Вычислено время на сегодня (внутри окна): {cand}")
+        return cand
+
+    next_day = now + timedelta(days=1)
+    start_next = next_day.replace(hour=10, minute=0, second=0, microsecond=0)
+    end_next = next_day.replace(hour=22, minute=0, second=0, microsecond=0)
+    cand = _random_time_between(start_next, end_next)
+    logging.info(f"Вычислено время на завтра (после окна): {cand}")
     return cand
+
+
+def _reschedule_to(app, target_dt: datetime) -> None:
+    tz = ZoneInfo("Asia/Tomsk")
+    if target_dt.tzinfo is None:
+        target_dt = target_dt.replace(tzinfo=tz)
+    try:
+        old_job = app.bot_data.get("scheduled_job")
+        if old_job is not None:
+            try:
+                old_job.schedule_removal()
+            except Exception:
+                pass
+    except Exception:
+        pass
+    now = datetime.now(tz)
+    delay = max(1, int((target_dt - now).total_seconds()))
+    try:
+        job = app.job_queue.run_once(_scheduled_job, when=delay)
+        app.bot_data["scheduled_job"] = job
+        app.bot_data["scheduled_target_iso"] = target_dt.isoformat()
+        try:
+            set_next_run_iso(target_dt.isoformat())
+        except Exception:
+            pass
+        logging.info(f"Перепланировано на {target_dt} (через {delay} сек)")
+    except Exception as e:
+        logging.error(f"Не удалось перепланировать задачу: {e}")
 
 
 async def _scheduled_job(context):
@@ -847,7 +929,7 @@ async def _scheduled_job(context):
                 await app.bot.send_video(chat_id=cid, video=open(res.video_path, 'rb'), caption=caption, reply_markup=kb)
             except Exception:
                 try:
-                    await app.bot.send_message(chat_id=cid, text=f"Видео готово: {res.video_path}. Отправить в платформы командой /deploy", reply_markup=kb)
+                    await app.bot.send_message(chat_id=cid, text="Видео готово. Отправить в платформы командой /deploy", reply_markup=kb)
                 except Exception:
                     pass
         else:
@@ -857,16 +939,7 @@ async def _scheduled_job(context):
                 pass
     now2 = datetime.now(tz)
     next_dt = _random_time_tomsk_for_date((now2 + timedelta(days=1)).date())
-    try:
-        set_next_run_iso(next_dt.isoformat())
-    except Exception:
-        pass
-    try:
-        delay = max(1, int((next_dt - now2).total_seconds()))
-        logging.info(f"Перепланирую следующую автогенерацию через {delay} секунд (целевое время: {next_dt})")
-        app.job_queue.run_once(_scheduled_job, when=delay)
-    except Exception as e:
-        logging.error(f"Ошибка перепланирования следующей задачи: {e}")
+    _reschedule_to(app, next_dt)
     logging.info(f"Запланированная генерация завершена. Следующая запланирована на {next_dt}")
 
 
@@ -875,17 +948,8 @@ def _schedule_next_job(app):
     tz = ZoneInfo("Asia/Tomsk")
     now = datetime.now(tz)
     target_dt = _compute_next_target(now)
-    try:
-        set_next_run_iso(target_dt.isoformat())
-    except Exception:
-        pass
-    try:
-        delay = max(1, int((target_dt - now).total_seconds()))
-        logging.info(f"Планирую задачу через {delay} секунд (целевое время: {target_dt})")
-        app.job_queue.run_once(_scheduled_job, when=delay)
-        logging.info(f"Следующая задача запланирована на {target_dt}")
-    except Exception as e:
-        logging.error(f"Ошибка при планировании задачи: {e}")
+    _reschedule_to(app, target_dt)
+    logging.info(f"Следующая задача запланирована на {target_dt}")
 
 
 def main():
@@ -917,6 +981,40 @@ def main():
             _schedule_next_job(appinst)
         except Exception as e:
             logging.error(f"Ошибка при инициализации планировщика: {e}")
+        try:
+            async def watchdog():
+                tz = ZoneInfo("Asia/Tomsk")
+                while True:
+                    await asyncio.sleep(10)
+                    try:
+                        saved = get_next_run_iso()
+                        bot_saved = appinst.bot_data.get("scheduled_target_iso")
+                        if saved and saved != bot_saved:
+                            try:
+                                dt = datetime.fromisoformat(saved)
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=tz)
+                                _reschedule_to(appinst, dt)
+                                logging.info("Watchdog: обнаружено изменение bot_state.json, перепланировано")
+                                continue
+                            except Exception:
+                                pass
+                        if saved:
+                            try:
+                                dt = datetime.fromisoformat(saved)
+                                if dt.tzinfo is None:
+                                    dt = dt.replace(tzinfo=tz)
+                                if dt <= datetime.now(tz):
+                                    new_dt = _compute_next_target(datetime.now(tz))
+                                    _reschedule_to(appinst, new_dt)
+                                    logging.info("Watchdog: найдено прошедшее время запуска, перепланировано на ближайшее допустимое")
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+            appinst.create_task(watchdog())
+        except Exception as e:
+            logging.error(f"Ошибка запуска watchdog: {e}")
 
     app = ApplicationBuilder().token(token).post_init(on_startup).build()
     try:
@@ -933,6 +1031,7 @@ def main():
     app.add_handler(CommandHandler("uploadclient", cmd_uploadclient))
     app.add_handler(CommandHandler("uploadtoken", cmd_uploadtoken))
     app.add_handler(CommandHandler("clearhistory", cmd_clearhistory))
+    app.add_handler(CommandHandler("checkfiles", cmd_checkfiles))
     app.add_handler(CallbackQueryHandler(on_callback_publish, pattern=r"^publish:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_choose_platforms, pattern=r"^choose:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_toggle_platform, pattern=r"^toggle:[A-Za-z]+:\d+"))
@@ -961,6 +1060,10 @@ def main():
     app.add_handler(MessageHandler(filters.Document.ALL, on_document_received))
 
     async def cmd_scheduleinfo(update, context):
+        try:
+            set_last_chat_id(update.effective_chat.id)
+        except Exception:
+            pass
         tz = ZoneInfo("Asia/Tomsk")
         now = datetime.now(tz)
         nxt = get_next_run_iso()
@@ -989,6 +1092,10 @@ def main():
         await update.message.reply_text(msg)
 
     async def cmd_runscheduled(update, context):
+        try:
+            set_last_chat_id(update.effective_chat.id)
+        except Exception:
+            pass
         await update.message.reply_text("Запускаю внеплановую генерацию…")
         pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
         music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
@@ -1013,6 +1120,56 @@ def main():
 
     app.add_handler(CommandHandler("scheduleinfo", cmd_scheduleinfo))
     app.add_handler(CommandHandler("runscheduled", cmd_runscheduled))
+
+    async def cmd_setnext(update, context):
+        tz = ZoneInfo("Asia/Tomsk")
+        args = context.args or []
+        if not args:
+            await update.message.reply_text("Использование: /setnext 'YYYY-MM-DD HH:MM' | 'HH:MM' | '+30m' | '+2h' | '+1d'")
+            return
+        raw = " ".join(args)
+        raw = raw.replace("T", " ").strip()
+        target = None
+        now = datetime.now(tz)
+        try:
+            if (raw.startswith("+") or raw.startswith("-")) and len(raw) >= 3:
+                sign = -1 if raw[0] == '-' else 1
+                num = ''.join(ch for ch in raw[1:] if ch.isdigit())
+                unit = raw[-1].lower()
+                val = int(num) if num else 0
+                delta = timedelta(0)
+                if unit == 'm':
+                    delta = timedelta(minutes=val * sign)
+                elif unit == 'h':
+                    delta = timedelta(hours=val * sign)
+                elif unit == 'd':
+                    delta = timedelta(days=val * sign)
+                if delta != timedelta(0):
+                    target = now + delta
+            if target is None:
+                try:
+                    target = datetime.fromisoformat(raw)
+                    if target.tzinfo is None:
+                        target = target.replace(tzinfo=tz)
+                except Exception:
+                    pass
+            if target is None and ":" in raw and len(raw) <= 5:
+                hh, mm = raw.split(":", 1)
+                target = now.replace(hour=int(hh), minute=int(mm), second=0, microsecond=0)
+                if target <= now:
+                    target = target + timedelta(days=1)
+            if target is None:
+                await update.message.reply_text("Не удалось распарсить дату/время. Примеры: 2025-09-22 21:30, 21:30, +30m, +2h")
+                return
+            if target <= now:
+                target = now + timedelta(seconds=1)
+            set_next_run_iso(target.isoformat())
+            _reschedule_to(context.application, target)
+            await update.message.reply_text(f"Следующая автогенерация: {target.strftime('%d.%m %H:%M:%S')} Asia/Tomsk")
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка: {e}")
+
+    app.add_handler(CommandHandler("setnext", cmd_setnext))
 
     print("Бот запущен. Нажмите Ctrl+C для остановки.")
     logging.info("Бот запущен и готов к работе")

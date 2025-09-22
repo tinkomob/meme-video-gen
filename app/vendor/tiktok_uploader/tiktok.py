@@ -1,5 +1,5 @@
 import time, requests, datetime, hashlib, hmac, random, zlib, json, datetime
-import requests, zlib, json, time, subprocess, string, secrets, os, sys
+import requests, zlib, json, time, subprocess, string, secrets, os, sys, uuid
 from fake_useragent import FakeUserAgentError, UserAgent
 from requests_auth_aws_sigv4 import AWSSigV4
 from .cookies import load_cookies_from_file
@@ -25,9 +25,11 @@ def login(login_name: str):
 		return session_cookie["value"]
 
 	browser = Browser.get()
-	response = browser.driver.get(os.getenv("TIKTOK_LOGIN_URL"))
+	login_url = os.getenv("TIKTOK_LOGIN_URL") or "https://www.tiktok.com/login"
+	response = browser.driver.get(login_url)
 
 	session_cookies = []
+	cookie_name = None
 	while not session_cookies:
 		for cookie in browser.driver.get_cookies():
 			if cookie["name"] in ["sessionid", "tt-target-idc"]:
@@ -96,9 +98,30 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 	r = session.post(project_url, timeout=_TIMEOUT)
 
 	if not assert_success(project_url, r):
-		return False
+		try:
+			body = r.text
+		except Exception:
+			body = ""
+		print(f"[TikTok] Project create failed: status={r.status_code}, body={body}")
+		return {"success": False, "phase": "project_create", "status": r.status_code, "body": body[:2000]}
 
-	project_id = r.json()["project"]["project_id"]
+	proj_json = {}
+	try:
+		proj_json = r.json()
+	except Exception as je:
+		print(f"[TikTok] Failed to parse project create JSON: {je}; body: {r.text}")
+		return {"success": False, "phase": "project_create_parse", "status": r.status_code, "body": r.text[:2000]}
+
+	project_id = (
+		(proj_json.get("project") or {}).get("project_id")
+		or (proj_json.get("data", {}).get("project") or {}).get("project_id")
+		or proj_json.get("project_id")
+	)
+
+	if not project_id:
+		print(f"[TikTok] Project id not found in response keys={list(proj_json.keys())}")
+		print(f"[TikTok] Full response (truncated): {json.dumps(proj_json)}")
+		return {"success": False, "phase": "project_create_missing_project", "status": r.status_code, "json": proj_json}
 	up = upload_to_tiktok(video, session)
 	if not up:
 		print("[-] Upload init failed during ApplyUploadInner/part upload")
@@ -248,7 +271,7 @@ def upload_video(session_user, video, title, schedule_time=0, allow_comment=1, a
 		print(f"[TikTok] Data payload keys: {list(data.keys())}")
 		print(f"[TikTok] msToken: {mstoken[:10]}...")
 		print(f"[TikTok] Signature: {tt_output['signature'][:20]}...")
-		print(f"[TikTok] Full data payload: {json.dumps(data, indent=2)[:500]}...")
+		print(f"[TikTok] Full data payload: {json.dumps(data, indent=2)}...")
 
 		url = f"https://www.tiktok.com/tiktok/web/project/post/v1/"
 		print("[TikTok] Posting project (signatures ready)")
@@ -313,7 +336,8 @@ def upload_to_tiktok(video_file, session):
 		aws_secret_access_key=r.json()["video_token_v5"]["secret_acess_key"],
 		aws_session_token=r.json()["video_token_v5"]["session_token"],
 	)
-	with open(os.path.join(os.getcwd(), Config.get().videos_dir, video_file), "rb") as f:
+	videos_dir = Config.get().videos_dir or "VideosDirPath"
+	with open(os.path.join(os.getcwd(), videos_dir, video_file), "rb") as f:
 		video_content = f.read()
 	file_size = len(video_content)
 	url = f"https://www.tiktok.com/top/v1?Action=ApplyUploadInner&Version=2020-11-19&SpaceName=tiktok&FileType=video&IsInner=1&FileSize={file_size}&s=g158iqx8434"

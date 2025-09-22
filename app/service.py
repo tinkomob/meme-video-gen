@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Optional
 from .config import DEFAULT_PINS_DIR, DEFAULT_AUDIO_DIR, DEFAULT_OUTPUT_VIDEO, DEFAULT_THUMBNAIL
+from .config import CLIENT_SECRETS, TOKEN_PICKLE, TIKTOK_COOKIES_FILE
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
 from .audio import download_random_song_from_playlist, extract_random_audio_clip, get_song_title
@@ -168,11 +169,24 @@ def deploy_to_socials(
             yt_link = f"https://youtu.be/dry-run-{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to YouTube with title: {generated['title']}", flush=True)
         else:
-            yt = youtube_authenticate()
-            if yt is not None:
-                resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
-                if resp and resp.get('id'):
-                    yt_link = f"https://youtu.be/{resp.get('id')}"
+            if not (os.path.exists(CLIENT_SECRETS) and os.path.exists(TOKEN_PICKLE)):
+                missing = []
+                if not os.path.exists(CLIENT_SECRETS):
+                    missing.append("client_secrets.json")
+                if not os.path.exists(TOKEN_PICKLE):
+                    missing.append("token.pickle")
+                notify(
+                    "⚠️ YouTube: отсутствуют обязательные файлы: "
+                    + ", ".join(missing)
+                    + ".\nЗагрузите их командами: /uploadclient (client_secrets.json) и /uploadtoken (token.pickle)."
+                )
+                notify("⏭️ YouTube — пропущено из‑за отсутствия файлов")
+            else:
+                yt = youtube_authenticate()
+                if yt is not None:
+                    resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
+                    if resp and resp.get('id'):
+                        yt_link = f"https://youtu.be/{resp.get('id')}"
         notify("✅ YouTube — завершено")
     
     insta_link = None
@@ -205,29 +219,35 @@ def deploy_to_socials(
             tiktok_link = f"https://www.tiktok.com/dry-run/{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to TikTok with description: {generated.get('description', '')[:50]}...", flush=True)
         else:
-            desc = generated.get('description', '')
-            if audio_path:
-                song_title = get_song_title(audio_path)
-                if song_title:
-                    desc = f"♪ {song_title} ♪\n\n{desc}"
-            try:
-                resp = tiktok_upload(video_path, description=desc, cover=thumbnail_path)
-                if resp:
-                    if isinstance(resp, dict):
-                        if 'url' in resp:
-                            tiktok_link = resp['url']
-                            print(f"TikTok upload successful: {tiktok_link}")
-                        elif resp.get('success'):
-                            tiktok_link = resp.get('url', f'https://www.tiktok.com/@user/video/{generated["title"].replace(" ", "-")[:20]}')
-                            print(f"TikTok upload likely successful (WebDriver error handled): {tiktok_link}")
+            if not os.path.exists(TIKTOK_COOKIES_FILE):
+                notify(
+                    "⚠️ TikTok: не найден cookies.txt. Загрузите cookies.txt как документ командой /uploadcookies"
+                )
+                notify("⏭️ TikTok — пропущено из‑за отсутствия cookies.txt")
+            else:
+                desc = generated.get('description', '')
+                if audio_path:
+                    song_title = get_song_title(audio_path)
+                    if song_title:
+                        desc = f"♪ {song_title} ♪\n\n{desc}"
+                try:
+                    resp = tiktok_upload(video_path, description=desc, cover=thumbnail_path)
+                    if resp:
+                        if isinstance(resp, dict):
+                            if 'url' in resp:
+                                tiktok_link = resp['url']
+                                print(f"TikTok upload successful: {tiktok_link}")
+                            elif resp.get('success'):
+                                tiktok_link = resp.get('url', f'https://www.tiktok.com/@user/video/{generated["title"].replace(" ", "-")[:20]}')
+                                print(f"TikTok upload likely successful (WebDriver error handled): {tiktok_link}")
+                            else:
+                                print(f"TikTok upload response: {resp}")
                         else:
-                            print(f"TikTok upload response: {resp}")
+                            print(f"TikTok upload returned non-dict response: {type(resp)}")
                     else:
-                        print(f"TikTok upload returned non-dict response: {type(resp)}")
-                else:
-                    print("TikTok upload returned None")
-            except Exception as e:
-                print(f"TikTok upload exception: {e}", flush=True)
+                        print("TikTok upload returned None")
+                except Exception as e:
+                    print(f"TikTok upload exception: {e}", flush=True)
         notify("✅ TikTok — завершено")
 
     x_link = None
@@ -251,12 +271,20 @@ def deploy_to_socials(
                             text = song_prefix
             try:
                 resp = x_upload(video_path, text)
-                if resp and resp.data:
-                    tweet_id = resp.data['id']
+                tweet_id = None
+                if resp:
+                    data_obj = getattr(resp, 'data', None)
+                    if isinstance(data_obj, dict) and 'id' in data_obj:
+                        tweet_id = data_obj['id']
+                    elif isinstance(resp, dict):
+                        data_dict = resp.get('data')
+                        if isinstance(data_dict, dict) and 'id' in data_dict:
+                            tweet_id = data_dict['id']
+                if tweet_id:
                     x_link = f"https://x.com/user/status/{tweet_id}"
                     print(f"X upload successful: {x_link}")
                 else:
-                    print("X upload returned None")
+                    print("X upload returned None or missing id")
             except Exception as e:
                 print(f"X upload exception: {e}", flush=True)
         notify("✅ X — завершено")
