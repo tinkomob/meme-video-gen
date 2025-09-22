@@ -81,6 +81,13 @@ RUN npm i -g playwright-chromium@1.10.0 && \
 # Copy the rest of the application code
 COPY . .
 
+# Copy environment file into image (optional: adjust if building in CI)
+COPY .env .env
+
+# Load environment variables during runtime via python-dotenv or explicit ENV if desired
+# Example: uncomment to bake specific variables (avoid for secrets in public builds)
+# ENV TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+
 # Install Node.js dependencies for TikTok signer at build-time
 RUN if [ -d "app/vendor/tiktok_uploader/tiktok-signature" ]; then \
             cd app/vendor/tiktok_uploader/tiktok-signature && \

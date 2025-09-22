@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 from .config import HISTORY_FILE
+from typing import Optional
 
 def load_history(path: str = HISTORY_FILE):
     try:
@@ -62,3 +63,34 @@ def load_urls_json(file_path: str, default_urls: list[str] | None = None):
     except Exception:
         pass
     return []
+
+
+def replace_file_from_bytes(target_path: str, content: bytes) -> bool:
+    try:
+        p = Path(target_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with open(p, 'wb') as f:
+            f.write(content)
+        return True
+    except Exception:
+        return False
+
+
+def clear_video_history(path: str = "video_history.json") -> bool:
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump([], f, ensure_ascii=False, indent=2)
+        return True
+    except Exception:
+        return False
+
+
+def read_small_file(path: str, max_bytes: int = 1024 * 1024) -> Optional[bytes]:
+    try:
+        p = Path(path)
+        if p.exists() and p.is_file() and p.stat().st_size <= max_bytes:
+            with open(p, 'rb') as f:
+                return f.read()
+    except Exception:
+        pass
+    return None

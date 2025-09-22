@@ -1,0 +1,5 @@
+services:
+  meme-video-gen:
+    image: meme-video-gen:latest
+    build: .
+    restart: unless-stopped

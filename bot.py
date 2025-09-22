@@ -3,12 +3,17 @@ import os
 import json
 import time
 from typing import Optional
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+from io import BytesIO
 
 from dotenv import load_dotenv
 from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
 from app.service import generate_meme_video, deploy_to_socials
-from app.utils import load_urls_json
+from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
+from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE
+from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -30,7 +35,13 @@ HELP_TEXT = (
     "/generate — сгенерировать видео (опционально: кол-во пинов и длительность аудио)\n"
     "/deploy — опубликовать последнее видео (опционально: соцсети, приватность, dry)\n"
     "/dryrun — показать/изменить режим публикации (on/off)\n"
-    "/history — последние публикации"
+    "/history — последние публикации\n"
+    "/uploadcookies — загрузить cookies.txt (TikTok) как документ\n"
+    "/uploadclient — загрузить client_secrets.json как документ\n"
+    "/uploadtoken — загрузить token.pickle как документ\n"
+    "/clearhistory — очистить video_history.json\n"
+    "/scheduleinfo — показать расписание\n"
+    "/runscheduled — немедленно выполнить запланированное (ручной старт)"
 )
 
 
@@ -134,6 +145,10 @@ def parse_int(value: Optional[str], default: int) -> int:
 
 
 async def cmd_start(update, context):
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
     await update.message.reply_text("Привет! Я бот для генерации мем-видео. Наберите /help для списка команд.")
 
 
@@ -142,6 +157,10 @@ async def cmd_help(update, context):
 
 
 async def cmd_generate(update, context):
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
     args = context.args or []
     pin_num = parse_int(args[0], 50) if len(args) >= 1 else 10000
     audio_duration = parse_int(args[1], 10) if len(args) >= 2 else 10
@@ -208,6 +227,10 @@ async def cmd_generate(update, context):
 
 
 async def cmd_deploy(update, context):
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
     args = context.args or []
     socials = None
     privacy = "public"
@@ -637,9 +660,163 @@ async def cmd_history(update, context):
     await update.message.reply_text("\n".join(lines))
 
 
+async def cmd_uploadcookies(update, context):
+    doc = getattr(update.message, "document", None)
+    if not doc:
+        context.chat_data["await_upload"] = "cookies"
+        await update.message.reply_text("Пришлите файл cookies.txt как документ следующим сообщением (ожидаю cookies)")
+        return
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        data = await file.download_as_bytearray()
+        ok = replace_file_from_bytes(TIKTOK_COOKIES_FILE, bytes(data))
+        await update.message.reply_text("cookies.txt обновлён" if ok else "Не удалось сохранить cookies.txt")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+async def cmd_uploadclient(update, context):
+    doc = getattr(update.message, "document", None)
+    if not doc:
+        context.chat_data["await_upload"] = "client"
+        await update.message.reply_text("Пришлите client_secrets.json как документ следующим сообщением (ожидаю client)")
+        return
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        data = await file.download_as_bytearray()
+        ok = replace_file_from_bytes(CLIENT_SECRETS, bytes(data))
+        await update.message.reply_text("client_secrets.json обновлён" if ok else "Не удалось сохранить client_secrets.json")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+async def cmd_uploadtoken(update, context):
+    doc = getattr(update.message, "document", None)
+    if not doc:
+        context.chat_data["await_upload"] = "token"
+        await update.message.reply_text("Пришлите token.pickle как документ следующим сообщением (ожидаю token)")
+        return
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        data = await file.download_as_bytearray()
+        ok = replace_file_from_bytes(TOKEN_PICKLE, bytes(data))
+        await update.message.reply_text("token.pickle обновлён" if ok else "Не удалось сохранить token.pickle")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+async def cmd_clearhistory(update, context):
+    ok = clear_video_history("video_history.json")
+    await update.message.reply_text("История очищена" if ok else "Не удалось очистить историю")
+
+
+async def on_document_received(update, context):
+    doc = getattr(update.message, "document", None)
+    if not doc:
+        return
+    purpose = context.chat_data.pop("await_upload", None)
+    fname = (getattr(doc, "file_name", "") or "").lower()
+    target = None
+    if purpose == "cookies" or fname == "cookies.txt" or fname.endswith("/cookies.txt"):
+        target = TIKTOK_COOKIES_FILE
+    elif purpose == "client" or fname == "client_secrets.json" or fname.endswith("/client_secrets.json"):
+        target = CLIENT_SECRETS
+    elif purpose == "token" or fname == "token.pickle" or fname.endswith("/token.pickle"):
+        target = TOKEN_PICKLE
+    else:
+        if fname.endswith("cookies.txt"):
+            target = TIKTOK_COOKIES_FILE
+        elif fname.endswith("client_secrets.json"):
+            target = CLIENT_SECRETS
+        elif fname.endswith("token.pickle"):
+            target = TOKEN_PICKLE
+    if not target:
+        await update.message.reply_text("Неизвестный файл. Ожидаю cookies.txt, client_secrets.json или token.pickle")
+        return
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        bio = BytesIO()
+        await file.download_to_memory(out=bio)
+        ok = replace_file_from_bytes(target, bio.getvalue())
+        await update.message.reply_text((f"Файл сохранён: {target}") if ok else "Не удалось сохранить файл")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
+
+def _random_time_today_tomsk() -> datetime:
+    tz = ZoneInfo("Asia/Tomsk")
+    now = datetime.now(tz)
+    start = now.replace(hour=10, minute=0, second=0, microsecond=0)
+    end = now.replace(hour=22, minute=0, second=0, microsecond=0)
+    if now >= end:
+        start = (now + timedelta(days=1)).replace(hour=10, minute=0, second=0, microsecond=0)
+        end = (now + timedelta(days=1)).replace(hour=22, minute=0, second=0, microsecond=0)
+    total_seconds = int((end - start).total_seconds())
+    if total_seconds <= 0:
+        total_seconds = 12 * 3600
+    offset = int(os.urandom(2).hex(), 16) % total_seconds
+    return start + timedelta(seconds=offset)
+
+
+async def _scheduled_worker(app):
+    tz = ZoneInfo("Asia/Tomsk")
+    while True:
+        try:
+            target_dt = _random_time_today_tomsk()
+            try:
+                set_next_run_iso(target_dt.isoformat())
+            except Exception:
+                pass
+            now = datetime.now(tz)
+            delay = (target_dt - now).total_seconds()
+            if delay < 1:
+                delay = 1
+            try:
+                cid = get_last_chat_id()
+                if cid:
+                    try:
+                        await app.bot.send_message(chat_id=cid, text=f"Следующая авто-генерация запланирована на {target_dt.strftime('%d.%m %H:%M')} (Asia/Tomsk)")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+            await asyncio.sleep(delay)
+
+            pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
+            music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+            def run_generation():
+                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10)
+            res = await asyncio.to_thread(run_generation)
+            cid = get_last_chat_id()
+            if cid:
+                if res and res.video_path and os.path.exists(res.video_path):
+                    caption = "Автогенерация завершена. Отправить в платформы?"
+                    kb = None
+                    if InlineKeyboardButton and InlineKeyboardMarkup:
+                        items = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
+                        kb = InlineKeyboardMarkup([[InlineKeyboardButton("Опубликовать", callback_data=f"publish:{items['id']}")],[InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{items['id']}")]])
+                    try:
+                        await app.bot.send_video(chat_id=cid, video=open(res.video_path, 'rb'), caption=caption, reply_markup=kb)
+                    except Exception:
+                        try:
+                            await app.bot.send_message(chat_id=cid, text=f"Видео готово: {res.video_path}. Отправить в платформы командой /deploy")
+                        except Exception:
+                            pass
+                else:
+                    try:
+                        await app.bot.send_message(chat_id=cid, text="Автогенерация не удалась")
+                    except Exception:
+                        pass
+        except Exception:
+            try:
+                await asyncio.sleep(60)
+            except Exception:
+                pass
+
+
 def main():
     try:
-        from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler
+        from telegram.ext import ApplicationBuilder, CommandHandler, CallbackQueryHandler, MessageHandler, filters
     except Exception as e:
         print(f"python-telegram-bot не установлен: {e}")
         return
@@ -649,7 +826,19 @@ def main():
         print("Не задан TELEGRAM_BOT_TOKEN в .env")
         return
 
-    app = ApplicationBuilder().token(token).build()
+    async def on_startup(appinst):
+        try:
+            cid = get_last_chat_id()
+            if cid:
+                try:
+                    await appinst.bot.send_message(chat_id=cid, text="Бот перезапущен. Планировщик активен.")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        appinst.create_task(_scheduled_worker(appinst))
+
+    app = ApplicationBuilder().token(token).post_init(on_startup).build()
     try:
         app.bot_data["dry_run"] = BOT_DRY_RUN_DEFAULT
     except Exception:
@@ -660,6 +849,10 @@ def main():
     app.add_handler(CommandHandler("generate", cmd_generate))
     app.add_handler(CommandHandler("deploy", cmd_deploy))
     app.add_handler(CommandHandler("history", cmd_history))
+    app.add_handler(CommandHandler("uploadcookies", cmd_uploadcookies))
+    app.add_handler(CommandHandler("uploadclient", cmd_uploadclient))
+    app.add_handler(CommandHandler("uploadtoken", cmd_uploadtoken))
+    app.add_handler(CommandHandler("clearhistory", cmd_clearhistory))
     app.add_handler(CallbackQueryHandler(on_callback_publish, pattern=r"^publish:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_choose_platforms, pattern=r"^choose:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_toggle_platform, pattern=r"^toggle:[A-Za-z]+:\d+"))
@@ -685,6 +878,57 @@ def main():
             await update.message.reply_text("Используйте: /dryrun on|off")
 
     app.add_handler(CommandHandler("dryrun", cmd_dryrun))
+    app.add_handler(MessageHandler(filters.Document.ALL, on_document_received))
+
+    async def cmd_scheduleinfo(update, context):
+        tz = ZoneInfo("Asia/Tomsk")
+        now = datetime.now(tz)
+        nxt = get_next_run_iso()
+        if nxt:
+            try:
+                nxt_dt = datetime.fromisoformat(nxt)
+            except Exception:
+                nxt_dt = None
+        else:
+            nxt_dt = None
+        if nxt_dt is None:
+            msg = f"Сейчас: {now.strftime('%d.%m %H:%M')} Asia/Tomsk. Расписание: случайное время 10:00–22:00 ежедневно. Следующее время пока не определено — ожидайте планировщик."
+        else:
+            if nxt_dt.tzinfo is None:
+                nxt_dt = nxt_dt.replace(tzinfo=tz)
+            delta = max(0, int((nxt_dt - now).total_seconds()))
+            hh = delta // 3600
+            mm = (delta % 3600) // 60
+            ss = delta % 60
+            msg = (
+                f"Сейчас: {now.strftime('%d.%m %H:%M:%S')} Asia/Tomsk\n"
+                f"Следующая автогенерация: {nxt_dt.strftime('%d.%m %H:%M:%S')} Asia/Tomsk\n"
+                f"Осталось: {hh:02d}:{mm:02d}:{ss:02d}.\n"
+                f"Правило: ежедневно в случайное время 10:00–22:00."
+            )
+        await update.message.reply_text(msg)
+
+    async def cmd_runscheduled(update, context):
+        await update.message.reply_text("Запускаю внеплановую генерацию…")
+        pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
+        music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+        def run_generation():
+            return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10)
+        res = await asyncio.to_thread(run_generation)
+        if res and res.video_path and os.path.exists(res.video_path):
+            it = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
+            kb = None
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton("Опубликовать", callback_data=f"publish:{it['id']}")]])
+            try:
+                await update.message.reply_video(video=open(res.video_path, 'rb'), caption="Готово", reply_markup=kb)
+            except Exception:
+                await update.message.reply_text(f"Видео: {res.video_path}")
+        else:
+            await update.message.reply_text("Не удалось создать видео")
+
+    app.add_handler(CommandHandler("scheduleinfo", cmd_scheduleinfo))
+    app.add_handler(CommandHandler("runscheduled", cmd_runscheduled))
 
     print("Бот запущен. Нажмите Ctrl+C для остановки.")
     app.run_polling()
