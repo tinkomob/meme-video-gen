@@ -3,3 +3,8 @@ services:
     image: meme-video-gen:latest
     build: .
     restart: unless-stopped
+    environment:
+      - YT_COOKIES_FILE=/app/youtube_cookies.txt
+      - YT_IMPERSONATE=chrome
+    volumes:
+      - ./youtube_cookies.txt:/app/youtube_cookies.txt

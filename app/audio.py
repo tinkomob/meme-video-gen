@@ -1,20 +1,50 @@
 import os
 import random
 from pathlib import Path
+from typing import Any
+
+def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]:
+    opts: dict[str, Any] = {
+        'quiet': True,
+        'no_warnings': True,
+    }
+    if base_opts:
+        opts.update(base_opts)
+    cookies_file = os.getenv('YT_COOKIES_FILE') or os.getenv('YTDLP_COOKIES_FILE')
+    if not cookies_file and os.path.exists('youtube_cookies.txt'):
+        cookies_file = 'youtube_cookies.txt'
+    if cookies_file and os.path.exists(cookies_file):
+        opts['cookiefile'] = cookies_file
+    else:
+        browser = os.getenv('YT_COOKIES_FROM_BROWSER') or os.getenv('YTDLP_COOKIES_FROM_BROWSER')
+        profile = os.getenv('YT_COOKIES_PROFILE') or os.getenv('YTDLP_COOKIES_PROFILE')
+        if browser:
+            try:
+                if profile:
+                    opts['cookiesfrombrowser'] = (browser, None, profile, None)
+                else:
+                    opts['cookiesfrombrowser'] = (browser,)
+            except Exception:
+                pass
+    ua = os.getenv('YT_USER_AGENT')
+    if ua:
+        opts['user_agent'] = ua
+    impersonate = os.getenv('YT_IMPERSONATE')
+    if impersonate:
+        opts['impersonate'] = impersonate
+    return opts
 
 def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'audio', audio_format: str = 'mp3'):
     print(f"Downloading from playlist: {playlist_url}", flush=True)
     import yt_dlp
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
-        list_opts = {
-            'quiet': True,
-            'no_warnings': True,
+        list_opts = _build_ytdlp_opts({
             'skip_download': True,
             'extract_flat': 'in_playlist',
             'ignoreerrors': True,
-        }
-        with yt_dlp.YoutubeDL(list_opts) as ydl:
+        })
+        with yt_dlp.YoutubeDL(list_opts) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(playlist_url, download=False)
         entries = (info or {}).get('entries') or []
         print(f"Found {len(entries)} entries in playlist", flush=True)
@@ -31,7 +61,7 @@ def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'aud
         video_id = random.choice(ids)
         video_url = video_id if video_id.startswith('http') else f'https://www.youtube.com/watch?v={video_id}'
         print(f"Selected video: {video_url}", flush=True)
-        ydl_opts = {
+        ydl_opts = _build_ytdlp_opts({
             'format': 'bestaudio/best',
             'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
             'postprocessors': [{
@@ -39,10 +69,8 @@ def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'aud
                 'preferredcodec': audio_format,
                 'preferredquality': '192',
             }],
-            'quiet': True,
-            'no_warnings': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        })
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
             ydl.download([video_url])
         expected_path = os.path.join(output_dir, f"{video_id}.{audio_format}")
         print(f"Expected audio file: {expected_path}", flush=True)
@@ -109,7 +137,7 @@ def get_song_title(audio_path: str):
         import yt_dlp
         filename = os.path.basename(audio_path)
         video_id = filename.split('.')[0]
-        with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+        with yt_dlp.YoutubeDL(_build_ytdlp_opts()) as ydl:  # type: ignore[arg-type]
             info = ydl.extract_info(f'https://www.youtube.com/watch?v={video_id}', download=False)
         author = info.get('uploader') or info.get('channel') or info.get('artist') or 'Unknown Artist'
         title = info.get('title') or video_id

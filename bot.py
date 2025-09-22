@@ -13,7 +13,7 @@ from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
 from app.service import generate_meme_video, deploy_to_socials
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
-from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE
+from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso
 
 try:
@@ -57,6 +57,7 @@ HELP_TEXT = (
     "/checkfiles — проверить cookies.txt, client_secrets.json и token.pickle\n"
     "/history — последние публикации\n"
     "/uploadcookies — загрузить cookies.txt (TikTok) как документ\n"
+    "/uploadytcookies — загрузить youtube_cookies.txt (YouTube) как документ\n"
     "/uploadclient — загрузить client_secrets.json как документ\n"
     "/uploadtoken — загрузить token.pickle как документ\n"
     "/clearhistory — очистить video_history.json\n"
@@ -702,6 +703,20 @@ async def cmd_uploadcookies(update, context):
     except Exception as e:
         await update.message.reply_text(f"Ошибка: {e}")
 
+async def cmd_uploadytcookies(update, context):
+    doc = getattr(update.message, "document", None)
+    if not doc:
+        context.chat_data["await_upload"] = "ytcookies"
+        await update.message.reply_text("Пришлите youtube_cookies.txt как документ следующим сообщением (ожидаю YouTube cookies)")
+        return
+    try:
+        file = await context.bot.get_file(doc.file_id)
+        data = await file.download_as_bytearray()
+        ok = replace_file_from_bytes(YT_COOKIES_FILE, bytes(data))
+        await update.message.reply_text("youtube_cookies.txt обновлён" if ok else "Не удалось сохранить youtube_cookies.txt")
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка: {e}")
+
 
 async def cmd_uploadclient(update, context):
     doc = getattr(update.message, "document", None)
@@ -745,6 +760,7 @@ async def cmd_checkfiles(update, context):
         pass
     paths = {
         "TikTok cookies.txt": TIKTOK_COOKIES_FILE,
+        "YouTube youtube_cookies.txt": YT_COOKIES_FILE,
         "YouTube client_secrets.json": CLIENT_SECRETS,
         "YouTube token.pickle": TOKEN_PICKLE,
     }
@@ -760,6 +776,8 @@ async def cmd_checkfiles(update, context):
     lines.append("")
     if not os.path.exists(TIKTOK_COOKIES_FILE):
         lines.append("Загрузите cookies.txt командой /uploadcookies (пришлите файл как документ)")
+    if not os.path.exists(YT_COOKIES_FILE):
+        lines.append("Для YouTube загрузите youtube_cookies.txt командой /uploadytcookies")
     missing_youtube = []
     if not os.path.exists(CLIENT_SECRETS):
         missing_youtube.append("client_secrets.json")
@@ -783,6 +801,8 @@ async def on_document_received(update, context):
     target = None
     if purpose == "cookies" or fname == "cookies.txt" or fname.endswith("/cookies.txt"):
         target = TIKTOK_COOKIES_FILE
+    elif purpose == "ytcookies" or fname == "youtube_cookies.txt" or fname.endswith("/youtube_cookies.txt"):
+        target = YT_COOKIES_FILE
     elif purpose == "client" or fname == "client_secrets.json" or fname.endswith("/client_secrets.json"):
         target = CLIENT_SECRETS
     elif purpose == "token" or fname == "token.pickle" or fname.endswith("/token.pickle"):
@@ -790,6 +810,8 @@ async def on_document_received(update, context):
     else:
         if fname.endswith("cookies.txt"):
             target = TIKTOK_COOKIES_FILE
+        elif fname.endswith("youtube_cookies.txt"):
+            target = YT_COOKIES_FILE
         elif fname.endswith("client_secrets.json"):
             target = CLIENT_SECRETS
         elif fname.endswith("token.pickle"):
