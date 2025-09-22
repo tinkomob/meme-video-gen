@@ -193,7 +193,6 @@ async def cmd_generate(update, context):
     if not pinterest_urls and not music_playlists:
         await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json и music_playlists.json")
         return
-
     context.chat_data["gen_msg_ids"] = []
     context.chat_data.pop("progress_msg_id", None)
     context.chat_data.pop("progress_lines", None)
@@ -651,7 +650,7 @@ async def on_callback_regenerate(update, context):
     if not result or not result.video_path:
         await q.message.reply_text("Не удалось создать новое видео.")
         return
-    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url)
+    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
     caption = f"Готово.\nИсточник: {result.source_url or '-'}"
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:

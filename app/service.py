@@ -154,6 +154,17 @@ def deploy_to_socials(
 ):
     notify = (lambda msg: progress(msg) if callable(progress) else None)
     generated = generate_metadata_from_source(source_url, None, audio_path)
+
+    def _song_from_title_fallback(val: str | None) -> str | None:
+        try:
+            if not val:
+                return None
+            t = val.replace('#Shorts', '').strip()
+            if ' - ' in t:
+                return t
+            return None
+        except Exception:
+            return None
     
     # Default to all socials if none specified
     if socials is None:
@@ -197,10 +208,13 @@ def deploy_to_socials(
             print(f"DRY RUN: Would upload to Instagram with caption: {generated.get('description', '')[:50]}...", flush=True)
         else:
             caption = generated.get('description', '').replace('#Shorts', '').strip()
+            song_title = None
             if audio_path:
                 song_title = get_song_title(audio_path)
-                if song_title:
-                    caption = f"♪ {song_title} ♪\n\n{caption}"
+            if not song_title:
+                song_title = _song_from_title_fallback(generated.get('title'))
+            if song_title:
+                caption = f"♪ {song_title} ♪\n\n{caption}"
             tags = [t for t in generated.get('tags', []) if t.lower() != 'shorts']
             if tags:
                 caption += ('\n\n' + ' '.join(f'#{t}' for t in tags))
@@ -226,10 +240,13 @@ def deploy_to_socials(
                 notify("⏭️ TikTok — пропущено из‑за отсутствия cookies.txt")
             else:
                 desc = generated.get('description', '')
+                song_title = None
                 if audio_path:
                     song_title = get_song_title(audio_path)
-                    if song_title:
-                        desc = f"♪ {song_title} ♪\n\n{desc}"
+                if not song_title:
+                    song_title = _song_from_title_fallback(generated.get('title'))
+                if song_title:
+                    desc = f"♪ {song_title} ♪\n\n{desc}"
                 try:
                     resp = tiktok_upload(video_path, description=desc, cover=thumbnail_path)
                     if resp:
@@ -258,17 +275,18 @@ def deploy_to_socials(
             print(f"DRY RUN: Would upload to X with text: {generated.get('description', '')[:50]}...", flush=True)
         else:
             text = generated.get('description', '')
+            song_title = None
             if audio_path:
                 song_title = get_song_title(audio_path)
-                if song_title:
-                    song_prefix = f"♪ {song_title} ♪\n\n"
-                    # Check if adding song info would exceed Twitter's 280 character limit
-                    if len(song_prefix + text) <= 280:
-                        text = song_prefix + text
-                    else:
-                        # If too long, try to fit just the song title without the full description
-                        if len(song_prefix) <= 280:
-                            text = song_prefix
+            if not song_title:
+                song_title = _song_from_title_fallback(generated.get('title'))
+            if song_title:
+                song_prefix = f"♪ {song_title} ♪\n\n"
+                if len(song_prefix + text) <= 280:
+                    text = song_prefix + text
+                else:
+                    if len(song_prefix) <= 280:
+                        text = song_prefix
             try:
                 resp = x_upload(video_path, text)
                 tweet_id = None
