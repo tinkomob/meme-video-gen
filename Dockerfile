@@ -99,5 +99,8 @@ ENV TIKTOK_HEADLESS=true \
     PYTHONUNBUFFERED=1 \
     NODE_ENV=production
 
+# Expose port 8000 for the web server
+EXPOSE 8000
+
 # Run the Telegram bot
 CMD ["python", "bot.py"]
