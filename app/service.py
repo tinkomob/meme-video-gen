@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Callable, Optional
 from .config import DEFAULT_PINS_DIR, DEFAULT_AUDIO_DIR, DEFAULT_OUTPUT_VIDEO, DEFAULT_THUMBNAIL
 from .config import CLIENT_SECRETS, TOKEN_PICKLE, TIKTOK_COOKIES_FILE
+from .config import YT_COOKIES_FILE
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
 from .audio import download_random_song_from_playlist, extract_random_audio_clip, get_song_title
@@ -220,8 +221,16 @@ def deploy_to_socials(
                 caption += ('\n\n' + ' '.join(f'#{t}' for t in tags))
             insta = instagram_upload(video_path, caption, thumbnail=thumbnail_path)
             try:
-                if insta and getattr(insta, 'code', None):
-                    insta_link = f"https://www.instagram.com/reel/{insta.code}/"
+                if insta:
+                    code = None
+                    if hasattr(insta, 'code'):
+                        code = getattr(insta, 'code')
+                    elif isinstance(insta, dict):
+                        code = insta.get('code')
+                        if not code and 'url' in insta and isinstance(insta['url'], str):
+                            insta_link = insta['url']
+                    if code and not insta_link:
+                        insta_link = f"https://www.instagram.com/reel/{code}/"
             except Exception:
                 pass
         notify("✅ Instagram — завершено")

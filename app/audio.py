@@ -11,10 +11,13 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
     if base_opts:
         opts.update(base_opts)
     cookies_file = os.getenv('YT_COOKIES_FILE') or os.getenv('YTDLP_COOKIES_FILE')
-    if not cookies_file and os.path.exists('youtube_cookies.txt'):
+    if not cookies_file and os.path.isfile('youtube_cookies.txt'):
         cookies_file = 'youtube_cookies.txt'
-    if cookies_file and os.path.exists(cookies_file):
-        opts['cookiefile'] = cookies_file
+    if cookies_file:
+        if os.path.isfile(cookies_file):
+            opts['cookiefile'] = cookies_file
+        elif os.path.exists(cookies_file) and not os.path.isfile(cookies_file):
+            print(f"youtube cookies path exists but is not a file: {cookies_file}", flush=True)
     else:
         browser = os.getenv('YT_COOKIES_FROM_BROWSER') or os.getenv('YTDLP_COOKIES_FROM_BROWSER')
         profile = os.getenv('YT_COOKIES_PROFILE') or os.getenv('YTDLP_COOKIES_PROFILE')
@@ -31,7 +34,32 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
         opts['user_agent'] = ua
     impersonate = os.getenv('YT_IMPERSONATE')
     if impersonate:
-        opts['impersonate'] = impersonate
+        alias = impersonate.strip()
+        try:
+            from yt_dlp.networking.impersonate import ImpersonateTarget
+            target = ImpersonateTarget.from_str(alias)
+            try:
+                from yt_dlp.networking._curlcffi import CurlCFFIRH
+                supported = list(getattr(CurlCFFIRH, 'supported_targets', ()) or [])
+            except Exception:
+                supported = []
+            if supported:
+                def pick(t):
+                    for s in supported:
+                        if t in s:
+                            return s
+                    return None
+                resolved = pick(target)
+                if not resolved and target.client:
+                    for s in supported:
+                        if (s.client or '').lower() == target.client.lower():
+                            resolved = s
+                            break
+                if resolved:
+                    target = resolved
+            opts['impersonate'] = target
+        except Exception:
+            pass
     return opts
 
 def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'audio', audio_format: str = 'mp3'):
