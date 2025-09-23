@@ -26,6 +26,23 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+for _name in (
+    "httpx",
+    "httpcore",
+    "urllib3",
+    "h11",
+    "telegram",
+    "telegram.ext",
+    "telegram.request",
+    "telegram._network",
+    "telegram.bot",
+):
+    try:
+        logging.getLogger(_name).setLevel(logging.WARNING)
+        logging.getLogger(_name).propagate = False
+    except Exception:
+        pass
+
 
 def _resolve_notify_chat_id() -> Optional[int]:
     try:
