@@ -1049,6 +1049,7 @@ def main():
     app.add_handler(CommandHandler("deploy", cmd_deploy))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("uploadcookies", cmd_uploadcookies))
+    app.add_handler(CommandHandler("uploadytcookies", cmd_uploadytcookies))
     app.add_handler(CommandHandler("uploadclient", cmd_uploadclient))
     app.add_handler(CommandHandler("uploadtoken", cmd_uploadtoken))
     app.add_handler(CommandHandler("clearhistory", cmd_clearhistory))
@@ -1152,6 +1153,17 @@ def main():
         raw = raw.replace("T", " ").strip()
         target = None
         now = datetime.now(tz)
+        base_dt = None
+        try:
+            saved = get_next_run_iso()
+            if saved:
+                base_dt = datetime.fromisoformat(saved)
+                if base_dt.tzinfo is None:
+                    base_dt = base_dt.replace(tzinfo=tz)
+        except Exception:
+            base_dt = None
+        if base_dt is None:
+            base_dt = now
         try:
             if (raw.startswith("+") or raw.startswith("-")) and len(raw) >= 3:
                 sign = -1 if raw[0] == '-' else 1
@@ -1166,7 +1178,7 @@ def main():
                 elif unit == 'd':
                     delta = timedelta(days=val * sign)
                 if delta != timedelta(0):
-                    target = now + delta
+                    target = base_dt + delta
             if target is None:
                 try:
                     target = datetime.fromisoformat(raw)
