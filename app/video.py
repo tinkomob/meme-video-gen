@@ -120,15 +120,43 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
         if clip.duration > 60:
             clip = clip.subclip(0, 60)
         tiktok_res = (1080, 1920)
-        # universal resize (moviepy clips usually support .resize())
+        # universal resize and center (moviepy clips usually support .resize())
         try:
             resize_func = getattr(clip, 'resize', None)
             if callable(resize_func):
-                clip_resized = resize_func(width=tiktok_res[0])
+                # Calculate scale to fit within TikTok dimensions while maintaining aspect ratio
+                original_size = getattr(clip, 'size', None)
+                if original_size:
+                    original_w, original_h = original_size
+                    scale_w = tiktok_res[0] / original_w
+                    scale_h = tiktok_res[1] / original_h
+                    scale = min(scale_w, scale_h)  # Use smaller scale to fit within bounds
+                    clip_resized = resize_func(scale)
+                else:
+                    clip_resized = resize_func(width=tiktok_res[0])
+                
+                # Center the clip in the TikTok frame
+                set_position_func = getattr(clip_resized, 'set_position', None)
+                if callable(set_position_func):
+                    try:
+                        clip_resized = set_position_func('center')
+                    except Exception:
+                        # Fallback: manually calculate center position
+                        resized_size = getattr(clip_resized, 'size', original_size)
+                        if resized_size:
+                            pos_x = (tiktok_res[0] - resized_size[0]) // 2
+                            pos_y = (tiktok_res[1] - resized_size[1]) // 2
+                            clip_resized = set_position_func((pos_x, pos_y))
             else:
                 clip_resized = clip
+                set_position_func = getattr(clip_resized, 'set_position', None)
+                if callable(set_position_func):
+                    try:
+                        clip_resized = set_position_func('center')
+                    except Exception:
+                        pass
         except Exception:
-            clip_resized = clip
+            clip_resized = clip.set_position('center')
         clip_resized = apply_random_effects(clip_resized, seed=seed, variant_group=variant_group)
         clip_duration = getattr(clip_resized, 'duration', getattr(clip, 'duration', 10)) or 10
         background = ColorClip(size=tiktok_res, color=(0, 0, 0), duration=clip_duration)
