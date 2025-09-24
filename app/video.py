@@ -14,25 +14,20 @@ from moviepy.audio.AudioClip import concatenate_audioclips
 
 def apply_random_effects(clip):
     effects = [
-        lambda c: c.fx(vfx.blackwhite),
         lambda c: c.fx(vfx.mirrorx),
         lambda c: c.fx(vfx.mirrory),
-        lambda c: c.fx(vfx.invert_colors),
-        lambda c: c.fx(vfx.fadein, random.uniform(0.5, 3.0)),
-        lambda c: c.fx(vfx.fadeout, random.uniform(0.5, 3.0)),
-        lambda c: c.fx(vfx.colorx, random.uniform(0.3, 2.5)),
-        lambda c: c.fx(vfx.hue, random.uniform(-180, 180)),
-        lambda c: c.fx(vfx.saturate, random.uniform(0.1, 3.0)),
-        lambda c: c.fx(vfx.gamma, random.uniform(0.3, 2.5)),
-        lambda c: c.fx(vfx.contrast, random.uniform(0.3, 2.5)),
-        lambda c: c.fx(vfx.brightness, random.uniform(0.3, 2.0)),
-        lambda c: c.fx(vfx.reverse),
-        lambda c: c.fx(vfx.time_mirror),
-        lambda c: c.fx(vfx.freeze, t=random.uniform(0, c.duration)),
-        lambda c: c.fx(vfx.margin, left=random.randint(0, 50), right=random.randint(0, 50), top=random.randint(0, 50), bottom=random.randint(0, 50), color=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))),
+        lambda c: c.fx(vfx.fadein, random.uniform(0.2, 1.0)),
+        lambda c: c.fx(vfx.fadeout, random.uniform(0.2, 1.0)),
+        lambda c: c.fx(vfx.colorx, random.uniform(0.7, 1.5)),
+        lambda c: c.fx(vfx.hue, random.uniform(-30, 30)),
+        lambda c: c.fx(vfx.saturate, random.uniform(0.5, 1.5)),
+        lambda c: c.fx(vfx.gamma, random.uniform(0.7, 1.3)),
+        lambda c: c.fx(vfx.contrast, random.uniform(0.7, 1.3)),
+        lambda c: c.fx(vfx.brightness, random.uniform(0.7, 1.2)),
+        lambda c: c.fx(vfx.margin, left=random.randint(0, 20), right=random.randint(0, 20), top=random.randint(0, 20), bottom=random.randint(0, 20), color=(random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))),
         lambda c: c.fx(vfx.time_symetrize),
     ]
-    num = random.randint(3, 8)
+    num = random.randint(1, 3)
     selected_effects = random.sample(effects, min(num, len(effects)))
     random.shuffle(selected_effects)
     for effect in selected_effects:
@@ -177,7 +172,7 @@ def generate_thumbnail(video_path: str, output_path: str, time: float = 1.0):
 def add_text_to_video(input_path, output_path, text, position=("center", "bottom")):
     try:
         with VideoFileClip(input_path) as video_clip:
-            with TextClip(text=text, font_size=70, color='white', stroke_color='black', stroke_width=2) as txt_clip:
+            with TextClip(txt=text, fontsize=70, color='white', stroke_color='black', stroke_width=2) as txt_clip:
                 txt = txt_clip.set_position(position).set_duration(video_clip.duration)
                 final = CompositeVideoClip([video_clip, txt])
                 final.write_videofile(output_path, codec='libx264', audio_codec='aac', fps=24)
