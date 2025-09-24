@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Optional
 from .config import DEFAULT_PINS_DIR, DEFAULT_AUDIO_DIR, DEFAULT_OUTPUT_VIDEO, DEFAULT_THUMBNAIL
 from .config import CLIENT_SECRETS, TOKEN_PICKLE, TIKTOK_COOKIES_FILE
-from .config import YT_COOKIES_FILE
+from .config import YT_COOKIES_FILE, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES, TEMP_DIR_MAX_AGE_MINUTES
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
 from .audio import download_random_song_from_playlist, extract_random_audio_clip, get_song_title
@@ -25,105 +25,81 @@ class GenerationResult:
         self.source_url = source_url
         self.audio_path = audio_path
 
+def cleanup_old_temp_dirs():
+    base = Path('.')
+    now = datetime.datetime.utcnow()
+    max_age = datetime.timedelta(minutes=TEMP_DIR_MAX_AGE_MINUTES)
+    patterns = [f"{DEFAULT_PINS_DIR}_", f"{DEFAULT_AUDIO_DIR}_"]
+    removed = 0
+    for item in base.iterdir():
+        try:
+            if not item.is_dir():
+                continue
+            if not any(item.name.startswith(p) for p in patterns):
+                continue
+            mtime = datetime.datetime.utcfromtimestamp(item.stat().st_mtime)
+            if now - mtime > max_age:
+                shutil.rmtree(item, ignore_errors=True)
+                removed += 1
+        except Exception:
+            pass
+    return removed
+
 def generate_meme_video(
     pinterest_urls: list[str],
     music_playlists: list[str],
     pin_num: int = 10000,
     audio_duration: int = 10,
     progress: Optional[Callable[[str], None]] = None,
-    reddit_sources: list[str] | None = None,
+    seed: int | None = None,
+    variant_group: int | None = None,
 ):
     notify = (lambda msg: progress(msg) if callable(progress) else None)
-    pins_dir = DEFAULT_PINS_DIR
-    audio_dir = DEFAULT_AUDIO_DIR
+    # use unique ephemeral dirs per generation to allow parallel runs
+    unique_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
+    pins_dir = f"{DEFAULT_PINS_DIR}_{unique_id}"
+    audio_dir = f"{DEFAULT_AUDIO_DIR}_{unique_id}"
     Path(pins_dir).mkdir(parents=True, exist_ok=True)
     Path(audio_dir).mkdir(parents=True, exist_ok=True)
     
-    # Унифицированный список источников с случайным порядком
-    sources_candidates: list[tuple[str, Callable[[], tuple[str | None, str | None]]]] = []
-
-    def _pinterest_provider():
-        if not pinterest_urls:
-            return None, None
-        chosen = random.choice(pinterest_urls)
+    # Try Pinterest first
+    chosen_pinterest = random.choice(pinterest_urls) if pinterest_urls else None
+    downloaded_path = None
+    
+    if chosen_pinterest:
         notify("🔍 Ищу контент на Pinterest…")
-        print(f"Trying Pinterest URL: {chosen}", flush=True)
-        path = scrape_one_from_pinterest(chosen, output_dir=pins_dir, num=pin_num)
-        print(f"Pinterest result: {path}", flush=True)
-        return path, chosen if path else None
-
-    def _reddit_provider():
-        if not reddit_sources:
-            return None, None
-        notify("🧪 Пробую Reddit…")
-        try:
-            from .sources import fetch_one_from_reddit
-            path = fetch_one_from_reddit(reddit_sources, output_dir=pins_dir)
-            if path:
-                # Попытка извлечь сабреддит из имени файла
-                base = os.path.basename(path)
-                parts = base.split('_')
-                sr = parts[1] if len(parts) >= 2 else 'reddit'
-                notify("🖼️ Получено изображение с Reddit")
-                return path, f"reddit:{sr}"
-        except Exception as e:
-            print(f"Reddit provider error: {e}", flush=True)
-        return None, None
-
-    def _meme_api_provider():
-        notify("🧠 Пробую публичный meme API…")
+        print(f"Trying to scrape from Pinterest: {chosen_pinterest}", flush=True)
+        downloaded_path = scrape_one_from_pinterest(chosen_pinterest, output_dir=pins_dir, num=pin_num)
+        print(f"Pinterest scraping result: {downloaded_path}", flush=True)
+    
+    # If Pinterest fails, try meme API
+    if not downloaded_path:
+        notify("🧠 Pinterest не дал результатов, пробую meme API…")
+        print("Pinterest failed, trying meme API...", flush=True)
         from .sources import get_from_meme_api
         meme_url = get_from_meme_api()
-        print(f"Meme API candidate: {meme_url}", flush=True)
-        if not meme_url:
-            return None, None
-        try:
-            import requests
-            headers = {'User-Agent': 'Mozilla/5.0'}
-            r = requests.get(meme_url, headers=headers, timeout=10)
-            r.raise_for_status()
-            ext = '.jpg'
-            ctype = r.headers.get('content-type', '')
-            if 'png' in ctype:
-                ext = '.png'
-            elif 'gif' in ctype:
-                ext = '.gif'
-            elif 'webp' in ctype:
-                ext = '.webp'
-            path = os.path.join(pins_dir, f'meme{ext}')
-            with open(path, 'wb') as f:
-                f.write(r.content)
-            from .utils import add_url_to_history
-            add_url_to_history(meme_url)
-            notify("🖼️ Мем скачан из meme API")
-            return path, meme_url
-        except Exception as e:
-            print(f"Meme API download error: {e}", flush=True)
-            return None, None
-
-    if pinterest_urls:
-        sources_candidates.append(("pinterest", _pinterest_provider))
-    if reddit_sources:
-        sources_candidates.append(("reddit", _reddit_provider))
-    # meme API всегда как потенциальный источник
-    sources_candidates.append(("meme_api", _meme_api_provider))
-
-    random.shuffle(sources_candidates)
-    downloaded_path = None
-    chosen_pinterest = None
-    tried = []
-    for name, provider in sources_candidates:
-        print(f"Trying source provider: {name}", flush=True)
-        path, src = provider()
-        tried.append(name)
-        if path:
-            downloaded_path = path
-            chosen_pinterest = src
-            print(f"Source {name} succeeded with file {path}", flush=True)
-            break
-        else:
-            print(f"Source {name} returned no result, continuing", flush=True)
-    print(f"Tried sources order: {tried}", flush=True)
+        print(f"Meme API result: {meme_url}", flush=True)
+        if meme_url:
+            try:
+                import requests
+                headers = {'User-Agent': 'Mozilla/5.0'}
+                r = requests.get(meme_url, headers=headers, timeout=10)
+                r.raise_for_status()
+                ext = '.jpg'
+                if 'png' in r.headers.get('content-type', ''):
+                    ext = '.png'
+                elif 'gif' in r.headers.get('content-type', ''):
+                    ext = '.gif'
+                downloaded_path = os.path.join(pins_dir, f'meme{ext}')
+                with open(downloaded_path, 'wb') as f:
+                    f.write(r.content)
+                chosen_pinterest = meme_url  # Use meme URL as source
+                print(f"Downloaded meme to: {downloaded_path}", flush=True)
+                notify("🖼️ Нашёл мем и скачал изображение/видео")
+                from .utils import add_url_to_history
+                add_url_to_history(meme_url)
+            except Exception as e:
+                print(f"Error downloading meme: {e}", flush=True)
     
     print(f"Final downloaded_path: {downloaded_path}", flush=True)
     if downloaded_path:
@@ -159,7 +135,7 @@ def generate_meme_video(
     output_path = f"tiktok_video_{unique_suffix}.mp4"
     notify("🎬 Конвертирую видео в формат TikTok…")
     print(f"Starting video conversion with downloaded_path: {downloaded_path}, output_path: {output_path}", flush=True)
-    result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path)
+    result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path, seed=seed, variant_group=variant_group)
     print(f"Video conversion result: {result_path}", flush=True)
     if not result_path or not os.path.exists(result_path):
         print("Video conversion failed", flush=True)
@@ -191,7 +167,12 @@ def generate_meme_video(
                 shutil.rmtree(d, ignore_errors=True)
         except Exception:
             pass
-    ensure_gitignore_entries([f"{pins_dir}/", f"{audio_dir}/", "tiktok_video_*.mp4", "thumbnail_*.jpg"]) 
+    ensure_gitignore_entries([
+        f"{DEFAULT_PINS_DIR}_*/",
+        f"{DEFAULT_AUDIO_DIR}_*/",
+        "tiktok_video_*.mp4",
+        "thumbnail_*.jpg"
+    ]) 
     notify("✅ Готово! Видео и миниатюра созданы")
     return GenerationResult(output_path, thumbnail_path, chosen_pinterest, original_audio_path)
 

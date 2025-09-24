@@ -26,3 +26,6 @@ TIKTOK_HEADLESS = os.getenv('TIKTOK_HEADLESS', 'false').lower() == 'true'
 TIKTOK_BROWSER = os.getenv('TIKTOK_BROWSER', 'chrome')
 YT_COOKIES_FILE = os.getenv('YT_COOKIES_FILE', 'youtube_cookies.txt')
 DAILY_GENERATIONS = int(os.getenv('DAILY_GENERATIONS', '3') or 3)
+MAX_PARALLEL_GENERATIONS = int(os.getenv('MAX_PARALLEL_GENERATIONS', '2') or 2)
+DUP_REGEN_RETRIES = int(os.getenv('DUP_REGEN_RETRIES', '2') or 2)
+TEMP_DIR_MAX_AGE_MINUTES = int(os.getenv('TEMP_DIR_MAX_AGE_MINUTES', '180') or 180)

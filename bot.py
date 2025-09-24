@@ -10,13 +10,12 @@ from io import BytesIO
 
 from dotenv import load_dotenv
 from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
-from app.service import generate_meme_video, deploy_to_socials
-from app.audio import get_song_title
+from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
 from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso, set_daily_schedule_iso, get_daily_schedule_iso, set_selected_chat_id, get_selected_chat_id
-from app.config import DAILY_GENERATIONS
+from app.config import DAILY_GENERATIONS, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -63,7 +62,6 @@ def _resolve_notify_chat_id() -> Optional[int]:
 
 DEFAULT_PINTEREST_JSON = "pinterest_urls.json"
 DEFAULT_PLAYLISTS_JSON = "music_playlists.json"
-DEFAULT_REDDIT_JSON = "reddit_sources.json"
 ALL_SOCIALS = ["youtube", "instagram", "tiktok", "x"]
 
 
@@ -86,6 +84,7 @@ HELP_TEXT = (
     "/runscheduled — немедленно выполнить ближайшую запланированную генерацию\n"
     "/setnext — изменить время запланированной генерации: /setnext <index> <время|сдвиг> (пример: /setnext 2 22:10, /setnext 1 +30m)\n"
     "/chatid — показать и сохранить текущий chat id"
+    "\n/cleanup — очистить старые временные каталоги pins_*/ audio_*"
 )
 
 
@@ -211,7 +210,6 @@ async def cmd_generate(update, context):
 
     pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
     music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
-    reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
 
     if not pinterest_urls and not music_playlists:
         await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json и music_playlists.json")
@@ -232,7 +230,6 @@ async def cmd_generate(update, context):
             pin_num=pin_num,
             audio_duration=audio_duration,
             progress=progress,
-            reddit_sources=reddit_sources,
         )
         return result
 
@@ -244,15 +241,7 @@ async def cmd_generate(update, context):
 
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
 
-    song_line = ""
-    try:
-        if result.audio_path:
-            st = get_song_title(result.audio_path)
-            if st:
-                song_line = f"Трек: {st}\n"
-    except Exception:
-        pass
-    caption = f"Готово.\n{song_line}Источник: {result.source_url or '-'}"
+    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
 
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
@@ -664,7 +653,6 @@ async def on_callback_regenerate(update, context):
     audio_duration = parse_int(args[1], 10) if len(args) >= 2 else 10
     pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
     music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
-    reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
 
     loop = asyncio.get_running_loop()
 
@@ -677,7 +665,6 @@ async def on_callback_regenerate(update, context):
             pin_num=pin_num,
             audio_duration=audio_duration,
             progress=progress,
-            reddit_sources=reddit_sources,
         )
 
     result = await asyncio.to_thread(run_generation)
@@ -685,15 +672,7 @@ async def on_callback_regenerate(update, context):
         await q.message.reply_text("Не удалось создать новое видео.")
         return
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
-    song_line = ""
-    try:
-        if result.audio_path:
-            st = get_song_title(result.audio_path)
-            if st:
-                song_line = f"Трек: {st}\n"
-    except Exception:
-        pass
-    caption = f"Готово.\n{song_line}Источник: {result.source_url or '-'}"
+    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
         kb = InlineKeyboardMarkup(
@@ -1006,25 +985,62 @@ async def _scheduled_job(context):
         set_daily_schedule_iso(schedule_list)
     pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
     music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
-    reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
     cid = _resolve_notify_chat_id()
     if not cid:
         logging.warning("Не найден chat_id для уведомления")
-    # generate 3 candidates
+    cleanup_old_temp_dirs()
+    sem = context.application.bot_data.get('gen_sem')
+    if sem is None:
+        sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
+        context.application.bot_data['gen_sem'] = sem
+    async def gen_one(idx: int, attempt: int):
+        async with sem:
+            def run_generation():
+                seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 9973)
+                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5)
+            return await asyncio.to_thread(run_generation)
+    gens = await asyncio.gather(*[gen_one(i,0) for i in range(3)], return_exceptions=True)
+    # anti-duplicate by source_url
+    def result_source(res):
+        return getattr(res,'source_url', None) if res else None
+    seen = set()
+    for attempt in range(1, DUP_REGEN_RETRIES+1):
+        dup_indexes = []
+        seen.clear()
+        for i,res in enumerate(gens):
+            if isinstance(res, Exception) or not res:
+                dup_indexes.append(i)
+                continue
+            src = result_source(res)
+            if not src or src in seen:
+                dup_indexes.append(i)
+            else:
+                seen.add(src)
+        if not dup_indexes:
+            break
+        regen = await asyncio.gather(*[gen_one(i, attempt) for i in dup_indexes], return_exceptions=True)
+        for di, new_res in zip(dup_indexes, regen):
+            gens[di] = new_res
     results = []
-    for i in range(3):
-        def run_generation():
-            return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, reddit_sources=reddit_sources)
-        res = await asyncio.to_thread(run_generation)
-        if res and res.video_path and os.path.exists(res.video_path):
-            item = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
-            results.append(item)
-        else:
-            results.append(None)
+    for res in gens:
         try:
-            await asyncio.sleep(0.5 + (i * 0.3))
+            if isinstance(res, Exception):
+                results.append(None)
+                continue
+            if not res:
+                results.append(None)
+                continue
+            vp = getattr(res, 'video_path', None)
+            tp = getattr(res, 'thumbnail_path', None)
+            sp = getattr(res, 'source_url', None)
+            ap = getattr(res, 'audio_path', None)
+            if vp and os.path.exists(vp):
+                item = add_video_history_item(vp, tp, sp, ap)
+                results.append(item)
+            else:
+                results.append(None)
         except Exception:
-            pass
+            results.append(None)
     if cid and results:
         lines = ["Автогенерация завершена. Отправлено 3 варианта ниже:"]
         try:
@@ -1039,20 +1055,11 @@ async def _scheduled_job(context):
             if InlineKeyboardButton and InlineKeyboardMarkup:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
             try:
-                track_suffix = ""
-                try:
-                    ap = item.get('audio_path') if isinstance(item, dict) else None
-                    if ap:
-                        st = get_song_title(ap)
-                        if st:
-                            track_suffix = f"\nТрек: {st}"
-                except Exception:
-                    pass
-                vp = item.get('video_path') if isinstance(item, dict) else None
-                if vp and os.path.exists(vp):
-                    await app.bot.send_video(chat_id=cid, video=open(vp, 'rb'), caption=f"Кандидат #{vid}{track_suffix}", reply_markup=kb)
+                if item.get('video_path') and os.path.exists(item.get('video_path')):
+                    src = item.get('source_url') or '-'
+                    await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=f"Кандидат #{vid}\nИсточник: {src}", reply_markup=kb)
                 else:
-                    await app.bot.send_message(chat_id=cid, text=f"Кандидат #{vid}{track_suffix}", reply_markup=kb)
+                    await app.bot.send_message(chat_id=cid, text=f"Кандидат #{vid}\nИсточник: {item.get('source_url') or '-'}", reply_markup=kb)
             except Exception:
                 pass
     # schedule next remaining today or generate tomorrow set
@@ -1161,6 +1168,16 @@ def main():
         except Exception as e:
             logging.error(f"Ошибка при инициализации планировщика: {e}")
         try:
+            cleanup_old_temp_dirs()
+        except Exception:
+            pass
+        try:
+            if appinst.bot_data.get('gen_sem') is None:
+                from app.config import MAX_PARALLEL_GENERATIONS
+                appinst.bot_data['gen_sem'] = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
+        except Exception:
+            pass
+        try:
             async def watchdog():
                 tz = ZoneInfo("Asia/Tomsk")
                 while True:
@@ -1213,6 +1230,18 @@ def main():
     app.add_handler(CommandHandler("uploadtoken", cmd_uploadtoken))
     app.add_handler(CommandHandler("clearhistory", cmd_clearhistory))
     app.add_handler(CommandHandler("checkfiles", cmd_checkfiles))
+    async def cmd_cleanup(update, context):
+        try:
+            set_last_chat_id(update.effective_chat.id)
+        except Exception:
+            pass
+        try:
+            from app.service import cleanup_old_temp_dirs
+            removed = cleanup_old_temp_dirs()
+            await update.message.reply_text(f"Очистка завершена. Удалено каталогов: {removed}")
+        except Exception as e:
+            await update.message.reply_text(f"Ошибка очистки: {e}")
+    app.add_handler(CommandHandler("cleanup", cmd_cleanup))
     app.add_handler(CallbackQueryHandler(on_callback_publish, pattern=r"^publish:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_choose_platforms, pattern=r"^choose:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_toggle_platform, pattern=r"^toggle:[A-Za-z]+:\d+"))
@@ -1296,19 +1325,51 @@ def main():
         await update.message.reply_text("Запускаю ближайшую запланированную генерацию сейчас (3 варианта)…")
         pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
         music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
-        reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+        cleanup_old_temp_dirs()
+        sem = context.application.bot_data.get('gen_sem')
+        if sem is None:
+            sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
+            context.application.bot_data['gen_sem'] = sem
+        async def gen_one_manual(idx:int, attempt:int):
+            async with sem:
+                def run_generation():
+                    seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 7919)
+                    return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5)
+                return await asyncio.to_thread(run_generation)
+        gens = await asyncio.gather(*[gen_one_manual(i,0) for i in range(3)], return_exceptions=True)
+        def result_source(res):
+            return getattr(res,'source_url', None) if res else None
+        for attempt in range(1, DUP_REGEN_RETRIES+1):
+            seen = set()
+            dup_idx = []
+            for i,res in enumerate(gens):
+                if isinstance(res, Exception) or not res:
+                    dup_idx.append(i)
+                    continue
+                src = result_source(res)
+                if not src or src in seen:
+                    dup_idx.append(i)
+                else:
+                    seen.add(src)
+            if not dup_idx:
+                break
+            regen = await asyncio.gather(*[gen_one_manual(i, attempt) for i in dup_idx], return_exceptions=True)
+            for di,nr in zip(dup_idx, regen):
+                gens[di] = nr
         results = []
-        for i in range(3):
-            def run_generation():
-                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, reddit_sources=reddit_sources)
-            res = await asyncio.to_thread(run_generation)
-            if res and res.video_path and os.path.exists(res.video_path):
-                it = add_video_history_item(res.video_path, res.thumbnail_path, res.source_url, res.audio_path)
-                results.append(it)
+        for res in gens:
             try:
-                await asyncio.sleep(0.5 + (i * 0.3))
+                if isinstance(res, Exception) or not res:
+                    continue
+                vp = getattr(res, 'video_path', None)
+                tp = getattr(res, 'thumbnail_path', None)
+                sp = getattr(res, 'source_url', None)
+                ap = getattr(res, 'audio_path', None)
+                if vp and os.path.exists(vp):
+                    it = add_video_history_item(vp, tp, sp, ap)
+                    results.append(it)
             except Exception:
-                pass
+                continue
         if not results:
             await update.message.reply_text("Не удалось создать ни одно видео")
             return
@@ -1324,33 +1385,37 @@ def main():
         except Exception:
             pass
         for it in results:
+            if not it:
+                continue
             vid = it['id']
             kb2 = None
             if InlineKeyboardButton and InlineKeyboardMarkup:
                 kb2 = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
             try:
-                track_suffix = ""
-                try:
-                    ap = it.get('audio_path') if isinstance(it, dict) else None
-                    if ap:
-                        st = get_song_title(ap)
-                        if st:
-                            track_suffix = f"\nТрек: {st}"
-                except Exception:
-                    pass
-                vp = it.get('video_path') if isinstance(it, dict) else None
-                if vp and os.path.exists(vp):
-                    await update.message.reply_video(video=open(vp,'rb'), caption=f"Кандидат #{vid}{track_suffix}", reply_markup=kb2)
-                else:
-                    await update.message.reply_text(f"Кандидат #{vid}{track_suffix}", reply_markup=kb2)
+                await update.message.reply_video(video=open(it['video_path'],'rb'), caption=f"Кандидат #{vid}\nИсточник: {it.get('source_url') or '-'}", reply_markup=kb2)
             except Exception:
                 try:
-                    await update.message.reply_text(f"Кандидат #{vid}", reply_markup=kb2)
+                    await update.message.reply_text(f"Кандидат #{vid}\nИсточник: {it.get('source_url') or '-'}", reply_markup=kb2)
                 except Exception:
                     pass
 
     app.add_handler(CommandHandler("scheduleinfo", cmd_scheduleinfo))
     app.add_handler(CommandHandler("runscheduled", cmd_runscheduled))
+
+    async def cmd_rebuildschedule(update, context):
+        tz = ZoneInfo("Asia/Tomsk")
+        now = datetime.now(tz)
+        times = _build_daily_schedule_for_date(now.date(), DAILY_GENERATIONS)
+        # preserve future non-today schedules (none usually) but we overwrite today
+        other = [s for s in get_daily_schedule_iso() if datetime.fromisoformat(s).date() != now.date()]
+        set_daily_schedule_iso(other + [t.isoformat() for t in times])
+        # reschedule next
+        future = [t for t in times if t > now]
+        if future:
+            _reschedule_to(context.application, future[0])
+        await update.message.reply_text("Расписание на сегодня пересоздано. /scheduleinfo для просмотра.")
+
+    app.add_handler(CommandHandler("rebuildschedule", cmd_rebuildschedule))
 
     async def cmd_setnext(update, context):
         tz = ZoneInfo("Asia/Tomsk")
