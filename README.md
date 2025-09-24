@@ -57,6 +57,7 @@ X_ACCESS_TOKEN_SECRET=your_access_token_secret
 ## Подготовка данных
 - pinterest_urls.json — список Pinterest URL (board/search) для загрузки картинок/видео
 - music_playlists.json — список ссылок на YouTube плейлисты для фоновой музыки
+- reddit_sources.json — список сабреддитов или ссылок на сабреддиты (например: "wtfstockphotos", "r/memes", "https://www.reddit.com/r/ProgrammerHumor/")
 
 ## Зависимости и требования
 - Нужен ffmpeg в PATH для moviepy и yt-dlp постобработки

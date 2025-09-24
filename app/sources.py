@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 from urllib.parse import urlparse
 import requests
-from .utils import load_history
+from .utils import load_history, add_url_to_history
 
 def get_from_meme_api():
     print("Calling meme API...")
@@ -230,7 +230,8 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                         # try by URL extension
                         parsed = urlparse(u)
                         path = parsed.path.lower()
-                        if not re.search(r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)$', path):
+                        import re as _re
+                        if not _re.search(r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)$', path):
                             print(f"Pinterest search: skipping non-media URL (content-type: {ct})", flush=True)
                             continue
                     ext = '.jpg'
@@ -421,4 +422,99 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
         return None
     except Exception as e:
         print(f"Error in scrape_one_from_pinterest: {e}", flush=True)
+        return None
+
+def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
+    try:
+        if not sources:
+            return None
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        raw = random.choice(sources)
+        raw = raw.strip()
+        if not raw:
+            return None
+        if raw.startswith('http://') or raw.startswith('https://'):
+            parsed = urlparse(raw)
+            parts = [p for p in parsed.path.split('/') if p]
+            sr = None
+            for i, p in enumerate(parts):
+                if p.lower() == 'r' and i + 1 < len(parts):
+                    sr = parts[i + 1]
+                    break
+            if not sr:
+                return None
+            subreddit = sr
+        else:
+            subreddit = raw.lstrip('r/').strip()
+        sort = random.choice(['hot', 'top', 'new'])
+        base = f'https://www.reddit.com/r/{subreddit}/{sort}.json'
+        params = {'limit': str(random.randint(30, 80))}
+        if sort == 'top':
+            params['t'] = random.choice(['day', 'week', 'month'])
+        headers = {'User-Agent': 'Mozilla/5.0 MemeVideoGen/1.0'}
+        try:
+            r = requests.get(base, headers=headers, params=params, timeout=12)
+            if r.status_code == 429:
+                return None
+            r.raise_for_status()
+            data = r.json()
+        except Exception:
+            return None
+        children = (((data or {}).get('data') or {}).get('children')) or []
+        random.shuffle(children)
+        exts = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4')
+        for ch in children:
+            d = (ch or {}).get('data') or {}
+            if d.get('over_18') or d.get('stickied'):
+                continue
+            url = d.get('url_overridden_by_dest') or d.get('url') or ''
+            if not url:
+                continue
+            lower = url.lower()
+            if not any(lower.endswith(e) for e in exts):
+                if d.get('post_hint') == 'image' and ('preview' in d):
+                    images = (((d.get('preview') or {}).get('images')) or [])
+                    if images:
+                        src = ((images[0] or {}).get('source') or {}).get('url') or ''
+                        src = src.replace('&amp;', '&')
+                        if src:
+                            url = src
+                            lower = url.lower()
+                else:
+                    continue
+            try:
+                rr = requests.get(url, headers=headers, timeout=15, stream=True)
+                rr.raise_for_status()
+                ct = (rr.headers.get('content-type') or '').lower()
+                if not any(k in ct for k in ['image/', 'video/']):
+                    if not re.search(r'\.(jpg|jpeg|png|gif|webp|mp4)$', lower):
+                        continue
+                ext = '.jpg'
+                if '.png' in lower:
+                    ext = '.png'
+                elif '.gif' in lower:
+                    ext = '.gif'
+                elif '.webp' in lower:
+                    ext = '.webp'
+                elif '.mp4' in lower:
+                    ext = '.mp4'
+                p = os.path.join(output_dir, f'reddit_{subreddit}_{abs(hash(url)) % 10**8}{ext}')
+                size = 0
+                with open(p, 'wb') as f:
+                    for chunk in rr.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            size += len(chunk)
+                if size < 1000:
+                    try:
+                        os.remove(p)
+                    except Exception:
+                        pass
+                    continue
+                add_url_to_history(url)
+                return p
+            except Exception:
+                continue
+        return None
+    except Exception:
         return None

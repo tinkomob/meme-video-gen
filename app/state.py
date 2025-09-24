@@ -52,3 +52,28 @@ def get_next_run_iso() -> Optional[str]:
     if isinstance(v, str) and v:
         return v
     return None
+
+def set_daily_schedule_iso(list_of_iso: list[str]) -> None:
+    st = load_state()
+    st["daily_schedule_iso"] = list_of_iso
+    save_state(st)
+
+def get_daily_schedule_iso() -> list[str]:
+    st = load_state()
+    arr = st.get("daily_schedule_iso")
+    if isinstance(arr, list):
+        return [x for x in arr if isinstance(x, str) and x]
+    return []
+
+def set_selected_chat_id(chat_id: int) -> None:
+    st = load_state()
+    st["selected_chat_id"] = int(chat_id)
+    save_state(st)
+
+def get_selected_chat_id() -> Optional[int]:
+    st = load_state()
+    cid = st.get("selected_chat_id")
+    try:
+        return int(cid) if cid is not None else None
+    except Exception:
+        return None
