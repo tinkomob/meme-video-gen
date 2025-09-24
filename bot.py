@@ -11,6 +11,7 @@ from io import BytesIO
 from dotenv import load_dotenv
 from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
 from app.service import generate_meme_video, deploy_to_socials
+from app.audio import get_song_title
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
 from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
@@ -243,7 +244,15 @@ async def cmd_generate(update, context):
 
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
 
-    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
+    song_line = ""
+    try:
+        if result.audio_path:
+            st = get_song_title(result.audio_path)
+            if st:
+                song_line = f"Трек: {st}\n"
+    except Exception:
+        pass
+    caption = f"Готово.\n{song_line}Источник: {result.source_url or '-'}"
 
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
@@ -676,7 +685,15 @@ async def on_callback_regenerate(update, context):
         await q.message.reply_text("Не удалось создать новое видео.")
         return
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
-    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
+    song_line = ""
+    try:
+        if result.audio_path:
+            st = get_song_title(result.audio_path)
+            if st:
+                song_line = f"Трек: {st}\n"
+    except Exception:
+        pass
+    caption = f"Готово.\n{song_line}Источник: {result.source_url or '-'}"
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
         kb = InlineKeyboardMarkup(
@@ -1022,10 +1039,20 @@ async def _scheduled_job(context):
             if InlineKeyboardButton and InlineKeyboardMarkup:
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
             try:
-                if item.get('video_path') and os.path.exists(item.get('video_path')):
-                    await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=f"Кандидат #{vid}", reply_markup=kb)
+                track_suffix = ""
+                try:
+                    ap = item.get('audio_path') if isinstance(item, dict) else None
+                    if ap:
+                        st = get_song_title(ap)
+                        if st:
+                            track_suffix = f"\nТрек: {st}"
+                except Exception:
+                    pass
+                vp = item.get('video_path') if isinstance(item, dict) else None
+                if vp and os.path.exists(vp):
+                    await app.bot.send_video(chat_id=cid, video=open(vp, 'rb'), caption=f"Кандидат #{vid}{track_suffix}", reply_markup=kb)
                 else:
-                    await app.bot.send_message(chat_id=cid, text=f"Кандидат #{vid}", reply_markup=kb)
+                    await app.bot.send_message(chat_id=cid, text=f"Кандидат #{vid}{track_suffix}", reply_markup=kb)
             except Exception:
                 pass
     # schedule next remaining today or generate tomorrow set
@@ -1302,7 +1329,20 @@ def main():
             if InlineKeyboardButton and InlineKeyboardMarkup:
                 kb2 = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
             try:
-                await update.message.reply_video(video=open(it['video_path'],'rb'), caption=f"Кандидат #{vid}", reply_markup=kb2)
+                track_suffix = ""
+                try:
+                    ap = it.get('audio_path') if isinstance(it, dict) else None
+                    if ap:
+                        st = get_song_title(ap)
+                        if st:
+                            track_suffix = f"\nТрек: {st}"
+                except Exception:
+                    pass
+                vp = it.get('video_path') if isinstance(it, dict) else None
+                if vp and os.path.exists(vp):
+                    await update.message.reply_video(video=open(vp,'rb'), caption=f"Кандидат #{vid}{track_suffix}", reply_markup=kb2)
+                else:
+                    await update.message.reply_text(f"Кандидат #{vid}{track_suffix}", reply_markup=kb2)
             except Exception:
                 try:
                     await update.message.reply_text(f"Кандидат #{vid}", reply_markup=kb2)
