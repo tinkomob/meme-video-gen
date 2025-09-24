@@ -3,8 +3,17 @@ import random
 
 # Monkey patch for PIL compatibility - must be before moviepy import
 import PIL.Image
-if not hasattr(PIL.Image, 'ANTIALIAS'):
-    PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+try:
+    # For older Pillow versions
+    if not hasattr(PIL.Image, 'ANTIALIAS'):
+        PIL.Image.ANTIALIAS = PIL.Image.LANCZOS
+except AttributeError:
+    # For newer Pillow versions where LANCZOS might not be directly available
+    try:
+        PIL.Image.ANTIALIAS = PIL.Image.Resampling.LANCZOS
+    except (AttributeError, ImportError):
+        # Fallback - just skip the monkey patch
+        pass
 
 # Disable PIL deprecation warnings
 os.environ['PILLOW_IGNORE_DEPRECATION'] = '1'
@@ -83,12 +92,31 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
         random_duration = random.uniform(7, 12)
         ext = os.path.splitext(input_path)[1].lower()
         if ext in ['.png', '.jpg', '.jpeg']:
+            # Static images - convert to video clip with duration
             clip = ImageClip(input_path, duration=random_duration)
+            print(f"Processing static image: {input_path}", flush=True)
+        elif ext == '.gif':
+            # GIF files - process as video but ensure they loop properly
+            base_clip = VideoFileClip(input_path)
+            clip = base_clip
+            if not is_youtube and clip.duration > random_duration:
+                # For GIFs, we might want to loop them to fill duration
+                if clip.duration < random_duration:
+                    # Loop the GIF to reach desired duration
+                    loops_needed = int(random_duration / clip.duration) + 1
+                    from moviepy.editor import concatenate_videoclips
+                    concat_clip = concatenate_videoclips([base_clip] * loops_needed)
+                    clip = concat_clip.subclip(0, random_duration)
+                else:
+                    clip = clip.subclip(0, random_duration)
+            print(f"Processing GIF: {input_path} (original duration: {base_clip.duration}s)", flush=True)
         else:
+            # Video files (mp4, webm, mov, etc.)
             base_clip = VideoFileClip(input_path)
             clip = base_clip
             if not is_youtube and clip.duration > random_duration:
                 clip = clip.subclip(0, random_duration)
+            print(f"Processing video: {input_path} (duration: {base_clip.duration}s)", flush=True)
         if clip.duration > 60:
             clip = clip.subclip(0, 60)
         tiktok_res = (1080, 1920)
@@ -134,6 +162,7 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
         print(f"Error during video conversion: {e}", flush=True)
         return None
     finally:
+        # Clean up all video objects to free memory
         objs = [final_clip, audio_clip, background, clip_resized, clip, concat_clip, base_clip]
         for obj in objs:
             try:
@@ -165,6 +194,47 @@ def generate_thumbnail(video_path: str, output_path: str, time: float = 1.0):
     except Exception as e:
         print(f'Error generating thumbnail: {e}', flush=True)
         return None
+
+def get_video_metadata(video_path: str):
+    try:
+        if not os.path.exists(video_path):
+            return None
+        
+        file_size = os.path.getsize(video_path)
+        file_size_mb = file_size / (1024 * 1024)
+        
+        with VideoFileClip(video_path) as clip:
+            duration = getattr(clip, 'duration', 0) or 0
+            fps = getattr(clip, 'fps', 0) or 0
+            size = getattr(clip, 'size', None)
+            width, height = (size[0], size[1]) if size else (0, 0)
+            
+            has_audio = hasattr(clip, 'audio') and clip.audio is not None
+            
+            return {
+                'filename': os.path.basename(video_path),
+                'size_bytes': file_size,
+                'size_mb': round(file_size_mb, 1),
+                'duration': round(duration, 1),
+                'fps': round(fps, 1) if fps else 0,
+                'width': width,
+                'height': height,
+                'resolution': f"{width}x{height}" if width and height else "unknown",
+                'has_audio': has_audio
+            }
+    except Exception as e:
+        print(f'Error getting video metadata: {e}', flush=True)
+        return {
+            'filename': os.path.basename(video_path),
+            'size_bytes': os.path.getsize(video_path) if os.path.exists(video_path) else 0,
+            'size_mb': round(os.path.getsize(video_path) / (1024 * 1024), 1) if os.path.exists(video_path) else 0,
+            'duration': 0,
+            'fps': 0,
+            'width': 0,
+            'height': 0,
+            'resolution': "unknown",
+            'has_audio': False
+        }
 
 def add_text_to_video(input_path, output_path, text, position=("center", "bottom")):
     try:

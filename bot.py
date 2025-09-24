@@ -16,6 +16,7 @@ from app.history import add_video_history_item, load_video_history, save_video_h
 from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso, set_daily_schedule_iso, get_daily_schedule_iso, set_selected_chat_id, get_selected_chat_id
 from app.config import DAILY_GENERATIONS, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES
+from app.video import get_video_metadata
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -85,6 +86,7 @@ HELP_TEXT = (
     "/setnext — изменить время запланированной генерации: /setnext <index> <время|сдвиг> (пример: /setnext 2 22:10, /setnext 1 +30m)\n"
     "/chatid — показать и сохранить текущий chat id"
     "\n/cleanup — очистить старые временные каталоги pins_*/ audio_*"
+    "/rebuildschedule — пересоздать расписание генераций на сегодня"
 )
 
 
@@ -178,6 +180,43 @@ def _get_bot_dry_run(context) -> bool:
     return BOT_DRY_RUN_DEFAULT
 
 
+def _format_video_info_from_history(item: dict) -> str:
+    """Форматирует информацию о видео из истории для отправки пользователю"""
+    lines = []
+    
+    # Основная информация
+    lines.append("📹 Сгенерированное видео")
+    
+    # Информация об источнике
+    source_url = item.get('source_url')
+    if source_url:
+        lines.append(f"📎 Источник: {source_url}")
+    else:
+        lines.append("📎 Источник: неизвестен")
+    
+    return "\n".join(lines)
+
+
+def _format_video_info(result) -> str:
+    """Форматирует информацию о сгенерированном видео для отправки пользователю"""
+    lines = []
+    
+    # Основная информация
+    lines.append("✅ Видео готово!")
+    
+    # Информация об источнике
+    if result.source_url:
+        lines.append(f"📎 Источник: {result.source_url}")
+    else:
+        lines.append("📎 Источник: неизвестен")
+    
+    # Информация об аудиотреке
+    if result.audio_title:
+        lines.append(f"🎵 Музыка: {result.audio_title}")
+    
+    return "\n".join(lines)
+
+
 def parse_int(value: Optional[str], default: int) -> int:
     try:
         if value is None:
@@ -241,7 +280,7 @@ async def cmd_generate(update, context):
 
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
 
-    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
+    caption = _format_video_info(result)
 
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
@@ -672,7 +711,7 @@ async def on_callback_regenerate(update, context):
         await q.message.reply_text("Не удалось создать новое видео.")
         return
     new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
-    caption = f"Готово.\nИсточник: {result.source_url or '-'}"
+    caption = _format_video_info(result)
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
         kb = InlineKeyboardMarkup(
@@ -1056,10 +1095,11 @@ async def _scheduled_job(context):
                 kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
             try:
                 if item.get('video_path') and os.path.exists(item.get('video_path')):
-                    src = item.get('source_url') or '-'
-                    await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=f"Кандидат #{vid}\nИсточник: {src}", reply_markup=kb)
+                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
+                    await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=info_text, reply_markup=kb)
                 else:
-                    await app.bot.send_message(chat_id=cid, text=f"Кандидат #{vid}\nИсточник: {item.get('source_url') or '-'}", reply_markup=kb)
+                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
+                    await app.bot.send_message(chat_id=cid, text=info_text, reply_markup=kb)
             except Exception:
                 pass
     # schedule next remaining today or generate tomorrow set
@@ -1392,10 +1432,12 @@ def main():
             if InlineKeyboardButton and InlineKeyboardMarkup:
                 kb2 = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
             try:
-                await update.message.reply_video(video=open(it['video_path'],'rb'), caption=f"Кандидат #{vid}\nИсточник: {it.get('source_url') or '-'}", reply_markup=kb2)
+                info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
+                await update.message.reply_video(video=open(it['video_path'],'rb'), caption=info_text, reply_markup=kb2)
             except Exception:
                 try:
-                    await update.message.reply_text(f"Кандидат #{vid}\nИсточник: {it.get('source_url') or '-'}", reply_markup=kb2)
+                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
+                    await update.message.reply_text(info_text, reply_markup=kb2)
                 except Exception:
                     pass
 

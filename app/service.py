@@ -19,11 +19,12 @@ from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upl
 from .uploaders import tiktok_upload, x_upload
 
 class GenerationResult:
-    def __init__(self, video_path: str | None, thumbnail_path: str | None, source_url: str | None, audio_path: str | None):
+    def __init__(self, video_path: str | None, thumbnail_path: str | None, source_url: str | None, audio_path: str | None, audio_title: str | None = None):
         self.video_path = video_path
         self.thumbnail_path = thumbnail_path
         self.source_url = source_url
         self.audio_path = audio_path
+        self.audio_title = audio_title
 
 def cleanup_old_temp_dirs():
     base = Path('.')
@@ -109,11 +110,12 @@ def generate_meme_video(
     
     if not downloaded_path:
         notify("❌ Не удалось получить исходный мем")
-        return GenerationResult(None, None, chosen_pinterest, None)
+        return GenerationResult(None, None, chosen_pinterest, None, None)
     
     # Rest of the function remains the same...
     audio_clip_path = None
     original_audio_path = None
+    audio_title = None
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
     if chosen_music:
@@ -122,6 +124,8 @@ def generate_meme_video(
         print(f"Downloaded audio path: {audio_path}", flush=True)
         if audio_path:
             original_audio_path = audio_path
+            # Get audio title before processing
+            audio_title = get_song_title(audio_path)
             notify("✂️ Вырезаю аудио-клип нужной длительности…")
             audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
             print(f"Extracted audio clip path: {audio_clip_path}", flush=True)
@@ -140,7 +144,7 @@ def generate_meme_video(
     if not result_path or not os.path.exists(result_path):
         print("Video conversion failed", flush=True)
         notify("❌ Ошибка при конвертации видео")
-        return GenerationResult(None, None, chosen_pinterest, None)
+        return GenerationResult(None, None, chosen_pinterest, None, audio_title)
     
     thumbnail_path = f"thumbnail_{unique_suffix}.jpg"
     notify("🖼️ Генерирую миниатюру…")
@@ -150,7 +154,7 @@ def generate_meme_video(
     if not thumb_result or not os.path.exists(thumb_result):
         print("Thumbnail generation failed", flush=True)
         notify("❌ Не удалось создать миниатюру")
-        return GenerationResult(None, None, chosen_pinterest, None)
+        return GenerationResult(None, None, chosen_pinterest, None, audio_title)
     if audio_clip_path and os.path.exists(audio_clip_path):
         try:
             os.remove(audio_clip_path)
@@ -174,7 +178,7 @@ def generate_meme_video(
         "thumbnail_*.jpg"
     ]) 
     notify("✅ Готово! Видео и миниатюра созданы")
-    return GenerationResult(output_path, thumbnail_path, chosen_pinterest, original_audio_path)
+    return GenerationResult(output_path, thumbnail_path, chosen_pinterest, original_audio_path, audio_title)
 
 def deploy_to_socials(
     video_path: str,
