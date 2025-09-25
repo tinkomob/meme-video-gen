@@ -500,9 +500,28 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
                 print(f"Reddit: Skipping stickied post: {post_title}...", flush=True)
                 continue
             url = d.get('url_overridden_by_dest') or d.get('url') or ''
+            print(f"Reddit: Raw URL from JSON: '{url}'", flush=True)
             if not url:
                 print(f"Reddit: No URL for post: {post_title}...", flush=True)
                 continue
+            
+            # Clean up the URL - remove any trailing encoded characters
+            import urllib.parse
+            url = url.strip()
+            # Decode URL in case it's encoded
+            try:
+                decoded_url = urllib.parse.unquote(url)
+                if decoded_url != url:
+                    print(f"Reddit: Decoded URL: '{decoded_url}'", flush=True)
+                    url = decoded_url
+            except Exception as e:
+                print(f"Reddit: URL decode failed: {e}", flush=True)
+            
+            # Remove common trailing artifacts
+            if url.endswith('%29') or url.endswith(')'):
+                url = url.rstrip('%29').rstrip(')')
+                print(f"Reddit: Cleaned trailing artifacts from URL: '{url}'", flush=True)
+            
             lower = url.lower()
             original_url = url
             if not any(lower.endswith(e) for e in exts):
@@ -526,26 +545,38 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
                     continue
             valid_posts += 1
             print(f"Reddit: Attempting to download from post: {post_title}... (URL: {url[:50]}...)", flush=True)
+            
+            # Final URL cleanup before download
+            final_url = url.strip()
+            # Remove any query parameters that might cause issues
+            if '?' in final_url and any(final_url.lower().endswith(ext) for ext in exts):
+                base_url = final_url.split('?')[0]
+                if any(base_url.lower().endswith(ext) for ext in exts):
+                    print(f"Reddit: Removed query parameters: {final_url} -> {base_url}", flush=True)
+                    final_url = base_url
+            
+            print(f"Reddit: Final URL for download: '{final_url}'", flush=True)
             try:
-                rr = requests.get(url, headers=headers, timeout=15, stream=True)
-                print(f"Reddit: Download response status: {rr.status_code}", flush=True)
+                rr = requests.get(final_url, headers=headers, timeout=15, stream=True)
+                print(f"Reddit: Download response status: {rr.status_code} for URL: {final_url}", flush=True)
                 rr.raise_for_status()
                 ct = (rr.headers.get('content-type') or '').lower()
                 print(f"Reddit: Content-type: {ct}", flush=True)
                 if not any(k in ct for k in ['image/', 'video/']):
-                    if not re.search(r'\.(jpg|jpeg|png|gif|webp|mp4)$', lower):
-                        print(f"Reddit: Invalid content type and extension for: {url[:50]}...", flush=True)
+                    if not re.search(r'\.(jpg|jpeg|png|gif|webp|mp4)$', final_url.lower()):
+                        print(f"Reddit: Invalid content type and extension for: {final_url[:50]}...", flush=True)
                         continue
                 ext = '.jpg'
-                if '.png' in lower:
+                final_lower = final_url.lower()
+                if '.png' in final_lower:
                     ext = '.png'
-                elif '.gif' in lower:
+                elif '.gif' in final_lower:
                     ext = '.gif'
-                elif '.webp' in lower:
+                elif '.webp' in final_lower:
                     ext = '.webp'
-                elif '.mp4' in lower:
+                elif '.mp4' in final_lower:
                     ext = '.mp4'
-                p = os.path.join(output_dir, f'reddit_{subreddit}_{abs(hash(url)) % 10**8}{ext}')
+                p = os.path.join(output_dir, f'reddit_{subreddit}_{abs(hash(final_url)) % 10**8}{ext}')
                 print(f"Reddit: Downloading to: {p}", flush=True)
                 size = 0
                 with open(p, 'wb') as f:
@@ -561,17 +592,17 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
                     except Exception:
                         pass
                     continue
-                add_url_to_history(url)
+                add_url_to_history(final_url)
                 print(f"Reddit: Successfully downloaded: {p}", flush=True)
                 return p
             except requests.exceptions.Timeout:
-                print(f"Reddit: Download timeout for: {url[:50]}...", flush=True)
+                print(f"Reddit: Download timeout for: {final_url[:50]}...", flush=True)
                 continue
             except requests.exceptions.RequestException as e:
-                print(f"Reddit: Download request failed for {url[:50]}...: {e}", flush=True)
+                print(f"Reddit: Download request failed for {final_url[:50]}...: {e}", flush=True)
                 continue
             except Exception as e:
-                print(f"Reddit: Download error for {url[:50]}...: {e}", flush=True)
+                print(f"Reddit: Download error for {final_url[:50]}...: {e}", flush=True)
                 continue
         print(f"Reddit: Processed {processed_posts} posts, found {valid_posts} valid media posts, but no successful downloads", flush=True)
         return None
