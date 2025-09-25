@@ -26,6 +26,42 @@ except Exception:
 
 load_dotenv()
 
+# Suppress spammy 'Empty response received.' lines coming from third-party libs (moviepy/pytube/etc.) by collapsing repeats.
+try:
+    import sys, threading
+    _spam_phrase = "Empty response received."
+    _orig_write = sys.stdout.write
+    _lock = threading.Lock()
+    _last_line = {"text": None, "count": 0, "last_flush": 0.0}
+    _flush_interval = 5.0  # seconds
+    def _flush_summary(force=False):
+        now = time.time()
+        if _last_line["count"] > 1 and (force or now - _last_line["last_flush"] >= _flush_interval):
+            _orig_write(f"(suppressed {_last_line['count']-1} repeats of '{_spam_phrase}')\n")
+            _last_line["count"] = 0
+            _last_line["last_flush"] = now
+    def _wrapped_write(data: str) -> int:
+        try:
+            if _spam_phrase in data:
+                with _lock:
+                    if _last_line["text"] == _spam_phrase:
+                        _last_line["count"] += 1
+                    else:
+                        _flush_summary(force=True)
+                        _last_line["text"] = _spam_phrase
+                        _last_line["count"] = 1
+                    _last_line["last_flush"] = time.time()
+                return len(data)
+            else:
+                with _lock:
+                    _flush_summary(force=True)
+                return _orig_write(data)
+        except Exception:
+            return _orig_write(data)
+    sys.stdout.write = _wrapped_write
+except Exception:
+    pass
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 for _name in (
@@ -278,20 +314,35 @@ async def cmd_generate(update, context):
             sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS if 'MAX_PARALLEL_GENERATIONS' in globals() else 3)
             async def gen_one(i: int):
                 async with sem:
-                    def run_generation():
-                        return generate_meme_video(
-                            pinterest_urls=pinterest_urls,
-                            music_playlists=music_playlists,
-                            pin_num=pin_num,
-                            audio_duration=audio_duration,
-                            progress=None,
-                            reddit_sources=reddit_sources,
-                        )
-                    try:
-                        res = await asyncio.to_thread(run_generation)
-                    except Exception:
-                        res = None
-                    return (i, res)
+                    attempts = 0
+                    last_res = None
+                    while attempts < 3:
+                        attempts += 1
+                        def run_generation():
+                            try:
+                                seed = int.from_bytes(os.urandom(4), 'big') ^ (i + attempts * 7919)
+                                return generate_meme_video(
+                                    pinterest_urls=pinterest_urls,
+                                    music_playlists=music_playlists,
+                                    pin_num=pin_num,
+                                    audio_duration=audio_duration,
+                                    progress=None,
+                                    seed=seed,
+                                    variant_group=i % 5,
+                                    reddit_sources=reddit_sources,
+                                )
+                            except Exception as e:
+                                logging.warning(f"Batch gen #{i} attempt {attempts} failed: {e}")
+                                return None
+                        try:
+                            last_res = await asyncio.to_thread(run_generation)
+                        except Exception as e:
+                            logging.error(f"Background thread exception gen #{i} attempt {attempts}: {e}")
+                            last_res = None
+                        if last_res and getattr(last_res, 'video_path', None):
+                            break
+                        await asyncio.sleep(0.5 * attempts)
+                    return (i, last_res)
             gathered = await asyncio.gather(*[gen_one(i) for i in range(batch_count)])
             result_map = {idx_res: val for idx_res, val in gathered}
             success = 0
