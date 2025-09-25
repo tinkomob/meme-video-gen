@@ -71,7 +71,7 @@ HELP_TEXT = (
     "Команды:\n"
     "/start — приветствие\n"
     "/help — помощь\n"
-    "/generate — сгенерировать видео (опционально: кол-во пинов и длительность аудио)\n"
+    "/generate — генерация мемов. Форматы: /generate N (N видео), /generate <pin_num> <audio_duration> [count=M]. Примеры: /generate 3; /generate 80 12 count=2\n"
     "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), музыка (music_playlists.json)\n"
     "/deploy — опубликовать последнее видео (опционально: соцсети, приватность, dry)\n"
     "/dryrun — показать/изменить режим публикации (on/off)\n"
@@ -246,72 +246,81 @@ async def cmd_generate(update, context):
     except Exception:
         pass
     args = context.args or []
-    pin_num = parse_int(args[0], 50) if len(args) >= 1 else 10000
-    audio_duration = parse_int(args[1], 10) if len(args) >= 2 else 10
-
+    count = 1
+    pin_num = 10000
+    audio_duration = 10
+    if args:
+        if len(args) == 1:
+            v = parse_int(args[0], 1)
+            if v > 1:
+                count = min(v, 20)
+            else:
+                pin_num = v
+        else:
+            # Старая сигнатура: pin_num audio_duration (и опционально count=N)
+            pin_num = parse_int(args[0], 10000)
+            audio_duration = parse_int(args[1], 10) if len(args) >= 2 else 10
+            for a in args[2:]:
+                if a.startswith("count="):
+                    try:
+                        count = min(int(a.split("=",1)[1]), 20)
+                    except Exception:
+                        pass
     pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
     music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
     reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
-
     if not pinterest_urls and not music_playlists and not reddit_sources:
         await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json, music_playlists.json или reddit_sources.json")
         return
-    context.chat_data["gen_msg_ids"] = []
-    context.chat_data.pop("progress_msg_id", None)
-    context.chat_data.pop("progress_lines", None)
-    start_msg = await _progress_init(context, update.effective_chat.id, f"Запускаю генерацию... pins={pin_num}, audio={audio_duration}s")
-
-    loop = asyncio.get_running_loop()
-
-    def run_generation():
-        def progress(msg: str):
-            asyncio.run_coroutine_threadsafe(_progress_queue(context, update.effective_chat.id, msg), loop)
-        result = generate_meme_video(
-            pinterest_urls=pinterest_urls,
-            music_playlists=music_playlists,
-            pin_num=pin_num,
-            audio_duration=audio_duration,
-            progress=progress,
-            reddit_sources=reddit_sources,
-        )
-        return result
-
-    result = await asyncio.to_thread(run_generation)
-
-    if not result or not result.video_path:
-        await update.message.reply_text("Не удалось создать видео.")
-        return
-
-    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
-
-    caption = _format_video_info(result)
-
-    kb = None
-    if InlineKeyboardButton and InlineKeyboardMarkup:
-        kb = InlineKeyboardMarkup(
-            [
+    for idx in range(count):
+        context.chat_data["gen_msg_ids"] = []
+        context.chat_data.pop("progress_msg_id", None)
+        context.chat_data.pop("progress_lines", None)
+        header = f"Запускаю генерацию... pins={pin_num}, audio={audio_duration}s"
+        if count > 1:
+            header = f"[{idx+1}/{count}] {header}"
+        await _progress_init(context, update.effective_chat.id, header)
+        loop = asyncio.get_running_loop()
+        def run_generation():
+            def progress(msg: str):
+                if count > 1:
+                    msg = f"[{idx+1}/{count}] {msg}"
+                asyncio.run_coroutine_threadsafe(_progress_queue(context, update.effective_chat.id, msg), loop)
+            return generate_meme_video(
+                pinterest_urls=pinterest_urls,
+                music_playlists=music_playlists,
+                pin_num=pin_num,
+                audio_duration=audio_duration,
+                progress=progress,
+                reddit_sources=reddit_sources,
+            )
+        result = await asyncio.to_thread(run_generation)
+        if not result or not result.video_path:
+            await update.message.reply_text(f"[{idx+1}/{count}] Не удалось создать видео.")
+            continue
+        new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
+        caption = _format_video_info(result)
+        if count > 1:
+            caption = f"[{idx+1}/{count}]\n" + caption
+        kb = None
+        if InlineKeyboardButton and InlineKeyboardMarkup:
+            kb = InlineKeyboardMarkup([
                 [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
                 [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
                 [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
-            ]
-        )
-
-    try:
-        m = await update.message.reply_video(
-            video=open(result.video_path, "rb"),
-            caption=caption,
-            reply_markup=kb,
-        )
+            ])
         try:
-            if m and getattr(m, "message_id", None):
-                _add_msg_id(context, m.message_id)
+            m = await update.message.reply_video(video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
+            try:
+                if m and getattr(m, "message_id", None):
+                    _add_msg_id(context, m.message_id)
+            except Exception:
+                pass
         except Exception:
-            pass
-    except Exception:
-        try:
-            await update.message.reply_text(caption, reply_markup=kb)
-        except Exception:
-            await update.message.reply_text(caption)
+            try:
+                await update.message.reply_text(caption, reply_markup=kb)
+            except Exception:
+                await update.message.reply_text(caption)
 
 
 async def cmd_deploy(update, context):
@@ -352,16 +361,18 @@ async def cmd_deploy(update, context):
         await update.message.reply_text("Последний файл не найден на диске.")
         return
 
-    await update.message.reply_text("Публикую... Это может занять несколько минут.")
+    await update.message.reply_text("Начинаю публикацию… Подождите, это может занять несколько минут.")
 
     loop = asyncio.get_running_loop()
 
     def run_deploy():
         def progress(msg: str):
-            asyncio.run_coroutine_threadsafe(
-                update.message.reply_text(msg), loop
-            )
-        links = deploy_to_socials(
+            show = True
+            if msg.startswith("⬆️ ") or (msg.startswith("✅ ") and "— завершено" in msg):
+                show = False
+            if show:
+                asyncio.run_coroutine_threadsafe(update.message.reply_text(msg), loop)
+        return deploy_to_socials(
             video_path=video_path,
             thumbnail_path=thumbnail_path,
             source_url=source_url or "",
@@ -371,7 +382,6 @@ async def cmd_deploy(update, context):
             dry_run=_get_bot_dry_run(context) if dry_run_opt is None else dry_run_opt,
             progress=progress,
         )
-        return links
 
     links = await asyncio.to_thread(run_deploy)
 
@@ -431,13 +441,17 @@ async def on_callback_publish(update, context):
         await q.message.reply_text("Файл видео отсутствует на диске.")
         return
 
-    await q.message.reply_text("Публикую… Подождите, это займёт несколько минут.")
+    await q.message.reply_text("Начинаю публикацию… Подождите, это займёт несколько минут.")
 
     loop = asyncio.get_running_loop()
 
     def run_deploy():
         def progress(msg: str):
-            asyncio.run_coroutine_threadsafe(q.message.reply_text(msg), loop)
+            show = True
+            if msg.startswith("⬆️ ") or (msg.startswith("✅ ") and "— завершено" in msg):
+                show = False
+            if show:
+                asyncio.run_coroutine_threadsafe(q.message.reply_text(msg), loop)
         return deploy_to_socials(
             video_path=video_path,
             thumbnail_path=thumbnail_path,
@@ -569,11 +583,15 @@ async def on_callback_publish_selected(update, context):
         return
     sel = _get_selection_for_item(context, item_id)
     socials = sorted(sel) if sel else None
-    await q.message.reply_text("Публикую выбранные платформы…")
+    await q.message.reply_text("Начинаю публикацию выбранных платформ…")
     loop = asyncio.get_running_loop()
     def run_deploy():
         def progress(msg: str):
-            asyncio.run_coroutine_threadsafe(q.message.reply_text(msg), loop)
+            show = True
+            if msg.startswith("⬆️ ") or (msg.startswith("✅ ") and "— завершено" in msg):
+                show = False
+            if show:
+                asyncio.run_coroutine_threadsafe(q.message.reply_text(msg), loop)
         return deploy_to_socials(
             video_path=video_path,
             thumbnail_path=thumbnail_path,
@@ -617,11 +635,15 @@ async def on_callback_publish_all(update, context):
     if not video_path or not os.path.exists(video_path):
         await q.message.reply_text("Файл видео отсутствует на диске.")
         return
-    await q.message.reply_text("Публикую во все платформы…")
+    await q.message.reply_text("Начинаю публикацию во все платформы…")
     loop = asyncio.get_running_loop()
     def run_deploy():
         def progress(msg: str):
-            asyncio.run_coroutine_threadsafe(q.message.reply_text(msg), loop)
+            show = True
+            if msg.startswith("⬆️ ") or (msg.startswith("✅ ") and "— завершено" in msg):
+                show = False
+            if show:
+                asyncio.run_coroutine_threadsafe(q.message.reply_text(msg), loop)
         return deploy_to_socials(
             video_path=video_path,
             thumbnail_path=thumbnail_path,

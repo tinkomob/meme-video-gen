@@ -261,7 +261,6 @@ def deploy_to_socials(
     
     yt_link = None
     if 'youtube' in socials:
-        notify("⬆️ Публикую на YouTube…")
         if dry_run:
             yt_link = f"https://youtu.be/dry-run-{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to YouTube with title: {generated['title']}", flush=True)
@@ -284,11 +283,9 @@ def deploy_to_socials(
                     resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
                     if resp and resp.get('id'):
                         yt_link = f"https://youtu.be/{resp.get('id')}"
-        notify("✅ YouTube — завершено")
     
     insta_link = None
     if 'instagram' in socials:
-        notify("⬆️ Публикую в Instagram…")
         if dry_run:
             insta_link = f"https://www.instagram.com/reel/dry-run-{generated['title'].replace(' ', '-').lower()}/"
             print(f"DRY RUN: Would upload to Instagram with caption: {generated.get('description', '')[:50]}...", flush=True)
@@ -318,11 +315,9 @@ def deploy_to_socials(
                         insta_link = f"https://www.instagram.com/reel/{code}/"
             except Exception:
                 pass
-        notify("✅ Instagram — завершено")
 
     tiktok_link = None
     if 'tiktok' in socials:
-        notify("⬆️ Публикую в TikTok…")
         if dry_run:
             tiktok_link = f"https://www.tiktok.com/dry-run/{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to TikTok with description: {generated.get('description', '')[:50]}...", flush=True)
@@ -359,11 +354,9 @@ def deploy_to_socials(
                         print("TikTok upload returned None")
                 except Exception as e:
                     print(f"TikTok upload exception: {e}", flush=True)
-        notify("✅ TikTok — завершено")
 
     x_link = None
     if 'x' in socials or 'twitter' in socials:
-        notify("⬆️ Публикую в X (Twitter)…")
         if dry_run:
             x_link = f"https://x.com/user/status/dry-run-{generated['title'].replace(' ', '-').lower()}"
             print(f"DRY RUN: Would upload to X with text: {generated.get('description', '')[:50]}...", flush=True)
@@ -399,6 +392,5 @@ def deploy_to_socials(
                     print("X upload returned None or missing id")
             except Exception as e:
                 print(f"X upload exception: {e}", flush=True)
-        notify("✅ X — завершено")
 
     return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link, 'x': x_link}
