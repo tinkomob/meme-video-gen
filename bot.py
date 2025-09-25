@@ -1164,9 +1164,14 @@ async def _scheduled_job(context):
         except Exception:
             results.append(None)
     if cid and results:
+        generation_id = os.urandom(4).hex()
+        msg_ids = []
+        item_ids = [it['id'] for it in results if it]
         lines = ["Автогенерация завершена. Отправлено 3 варианта ниже:"]
         try:
-            await app.bot.send_message(chat_id=cid, text="\n".join(lines))
+            m0 = await app.bot.send_message(chat_id=cid, text="\n".join(lines))
+            if m0 and getattr(m0, 'message_id', None):
+                msg_ids.append(m0.message_id)
         except Exception:
             pass
         for item in results:
@@ -1179,12 +1184,32 @@ async def _scheduled_job(context):
             try:
                 if item.get('video_path') and os.path.exists(item.get('video_path')):
                     info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
-                    await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=info_text, reply_markup=kb)
+                    mv = await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=info_text, reply_markup=kb)
                 else:
                     info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
-                    await app.bot.send_message(chat_id=cid, text=info_text, reply_markup=kb)
+                    mv = await app.bot.send_message(chat_id=cid, text=info_text, reply_markup=kb)
+                if mv and getattr(mv, 'message_id', None):
+                    msg_ids.append(mv.message_id)
             except Exception:
                 pass
+        try:
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                regen_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Сгенерировать заново", callback_data=f"schedregen:{generation_id}")]])
+            else:
+                regen_kb = None
+            regen_msg = await app.bot.send_message(chat_id=cid, text="Если варианты не подходят – можно сгенерировать заново", reply_markup=regen_kb)
+            if regen_msg and getattr(regen_msg, 'message_id', None):
+                msg_ids.append(regen_msg.message_id)
+        except Exception:
+            pass
+        try:
+            store = app.bot_data.get('scheduled_generations')
+            if not isinstance(store, dict):
+                store = {}
+                app.bot_data['scheduled_generations'] = store
+            store[generation_id] = {'item_ids': item_ids, 'msg_ids': msg_ids, 'chat_id': cid}
+        except Exception:
+            pass
     # schedule next remaining today or generate tomorrow set
     schedule_list = get_daily_schedule_iso()
     tznow2 = datetime.now(tz)
@@ -1372,6 +1397,145 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback_publish_all, pattern=r"^publishall:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_cancel_choose, pattern=r"^cancelchoose:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_regenerate, pattern=r"^regenerate:\d+"))
+    async def on_callback_scheduled_regenerate(update, context):
+        q = update.callback_query
+        await q.answer()
+        data = q.data or ""
+        gen_id = data.split(":",1)[1] if ":" in data else None
+        if not gen_id:
+            await q.message.reply_text("Не удалось определить генерацию.")
+            return
+        store = context.application.bot_data.get('scheduled_generations')
+        entry = store.get(gen_id) if isinstance(store, dict) else None
+        if not entry:
+            await q.message.reply_text("Данные генерации не найдены или уже удалены.")
+            return
+        item_ids = entry.get('item_ids') or []
+        msg_ids = entry.get('msg_ids') or []
+        chat_id = entry.get('chat_id') or q.message.chat_id
+        try:
+            hist = load_video_history()
+            target_set = {str(i) for i in item_ids}
+            remaining = []
+            for it in hist:
+                iid = str(it.get('id'))
+                if iid in target_set:
+                    for p in [it.get('video_path'), it.get('thumbnail_path')]:
+                        try:
+                            if p and os.path.exists(p):
+                                os.remove(p)
+                        except Exception:
+                            pass
+                else:
+                    remaining.append(it)
+            save_video_history(remaining)
+        except Exception:
+            pass
+        for mid in set(msg_ids):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+        try:
+            if isinstance(store, dict):
+                store.pop(gen_id, None)
+        except Exception:
+            pass
+        await context.bot.send_message(chat_id=chat_id, text="Удалил предыдущие варианты. Начинаю новую генерацию…")
+        pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
+        music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+        reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+        sem = context.application.bot_data.get('gen_sem')
+        if sem is None:
+            from app.config import MAX_PARALLEL_GENERATIONS
+            sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
+            context.application.bot_data['gen_sem'] = sem
+        async def gen_one(idx:int, attempt:int):
+            async with sem:
+                def run_generation():
+                    seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 8647)
+                    return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources)
+                return await asyncio.to_thread(run_generation)
+        gens = await asyncio.gather(*[gen_one(i,0) for i in range(3)], return_exceptions=True)
+        def result_source(res):
+            return getattr(res,'source_url', None) if res else None
+        for attempt in range(1, DUP_REGEN_RETRIES+1):
+            seen = set()
+            dup_idx = []
+            for i,res in enumerate(gens):
+                if isinstance(res, Exception) or not res:
+                    dup_idx.append(i)
+                    continue
+                src = result_source(res)
+                if not src or src in seen:
+                    dup_idx.append(i)
+                else:
+                    seen.add(src)
+            if not dup_idx:
+                break
+            regen = await asyncio.gather(*[gen_one(i, attempt) for i in dup_idx], return_exceptions=True)
+            for di,nr in zip(dup_idx, regen):
+                gens[di] = nr
+        new_results = []
+        for res in gens:
+            try:
+                if isinstance(res, Exception) or not res:
+                    continue
+                vp = getattr(res, 'video_path', None)
+                tp = getattr(res, 'thumbnail_path', None)
+                sp = getattr(res, 'source_url', None)
+                ap = getattr(res, 'audio_path', None)
+                if vp and os.path.exists(vp):
+                    it = add_video_history_item(vp, tp, sp, ap)
+                    new_results.append(it)
+            except Exception:
+                pass
+        if not new_results:
+            await context.bot.send_message(chat_id=chat_id, text="Не удалось создать новые варианты")
+            return
+        new_gen_id = os.urandom(4).hex()
+        msg_ids2 = []
+        try:
+            mhead = await context.bot.send_message(chat_id=chat_id, text="Готово. Новые варианты ниже:")
+            if mhead and getattr(mhead,'message_id',None):
+                msg_ids2.append(mhead.message_id)
+        except Exception:
+            pass
+        for it in new_results:
+            vid = it['id']
+            kb = None
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
+            try:
+                if it.get('video_path') and os.path.exists(it.get('video_path')):
+                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
+                    mv = await context.bot.send_video(chat_id=chat_id, video=open(it.get('video_path'),'rb'), caption=info_text, reply_markup=kb)
+                else:
+                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
+                    mv = await context.bot.send_message(chat_id=chat_id, text=info_text, reply_markup=kb)
+                if mv and getattr(mv,'message_id',None):
+                    msg_ids2.append(mv.message_id)
+            except Exception:
+                pass
+        try:
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                regen_kb2 = InlineKeyboardMarkup([[InlineKeyboardButton("Сгенерировать заново", callback_data=f"schedregen:{new_gen_id}")]])
+            else:
+                regen_kb2 = None
+            mregen = await context.bot.send_message(chat_id=chat_id, text="Если снова не подходит – можно ещё раз", reply_markup=regen_kb2)
+            if mregen and getattr(mregen,'message_id',None):
+                msg_ids2.append(mregen.message_id)
+        except Exception:
+            pass
+        try:
+            store2 = context.application.bot_data.get('scheduled_generations')
+            if not isinstance(store2, dict):
+                store2 = {}
+                context.application.bot_data['scheduled_generations'] = store2
+            store2[new_gen_id] = {'item_ids':[it['id'] for it in new_results], 'msg_ids':msg_ids2, 'chat_id':chat_id}
+        except Exception:
+            pass
+    app.add_handler(CallbackQueryHandler(on_callback_scheduled_regenerate, pattern=r"^schedregen:[A-Fa-f0-9]+"))
 
     async def cmd_dryrun(update, context):
         args = context.args or []
