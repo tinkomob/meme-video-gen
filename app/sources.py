@@ -427,11 +427,14 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
 def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
     try:
         if not sources:
+            print("Reddit: No sources provided", flush=True)
             return None
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         raw = random.choice(sources)
         raw = raw.strip()
+        print(f"Reddit: Selected raw source: '{raw}'", flush=True)
         if not raw:
+            print("Reddit: Empty source after strip", flush=True)
             return None
         if raw.startswith('http://') or raw.startswith('https://'):
             parsed = urlparse(raw)
@@ -442,35 +445,66 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
                     sr = parts[i + 1]
                     break
             if not sr:
+                print(f"Reddit: Could not extract subreddit from URL: {raw}", flush=True)
                 return None
             subreddit = sr
         else:
             subreddit = raw.lstrip('r/').strip()
+        print(f"Reddit: Using subreddit: {subreddit}", flush=True)
         sort = random.choice(['hot', 'top', 'new'])
         base = f'https://www.reddit.com/r/{subreddit}/{sort}.json'
         params = {'limit': str(random.randint(30, 80))}
         if sort == 'top':
             params['t'] = random.choice(['day', 'week', 'month'])
+        print(f"Reddit: Requesting {base} with params: {params}", flush=True)
         headers = {'User-Agent': 'Mozilla/5.0 MemeVideoGen/1.0'}
         try:
             r = requests.get(base, headers=headers, params=params, timeout=12)
+            print(f"Reddit: Response status: {r.status_code}", flush=True)
             if r.status_code == 429:
+                print("Reddit: Rate limited (429)", flush=True)
                 return None
+            if r.status_code != 200:
+                print(f"Reddit: HTTP error {r.status_code}: {r.text[:200]}", flush=True)
             r.raise_for_status()
             data = r.json()
-        except Exception:
+            print(f"Reddit: JSON response keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}", flush=True)
+        except requests.exceptions.Timeout:
+            print("Reddit: Request timed out", flush=True)
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"Reddit: Request failed: {e}", flush=True)
+            return None
+        except ValueError as e:
+            print(f"Reddit: JSON decode failed: {e}", flush=True)
+            if 'r' in locals():
+                print(f"Reddit: Response text (first 200 chars): {r.text[:200]}", flush=True)
+            return None
+        except Exception as e:
+            print(f"Reddit: Unexpected error during request: {e}", flush=True)
             return None
         children = (((data or {}).get('data') or {}).get('children')) or []
+        print(f"Reddit: Found {len(children)} posts", flush=True)
         random.shuffle(children)
         exts = ('.jpg', '.jpeg', '.png', '.gif', '.webp', '.mp4')
+        valid_posts = 0
+        processed_posts = 0
         for ch in children:
+            processed_posts += 1
             d = (ch or {}).get('data') or {}
-            if d.get('over_18') or d.get('stickied'):
+            post_title = d.get('title', 'Unknown')[:50]
+            if d.get('over_18'):
+                print(f"Reddit: Skipping NSFW post: {post_title}...", flush=True)
+                continue
+            if d.get('stickied'):
+                print(f"Reddit: Skipping stickied post: {post_title}...", flush=True)
                 continue
             url = d.get('url_overridden_by_dest') or d.get('url') or ''
             if not url:
+                print(f"Reddit: No URL for post: {post_title}...", flush=True)
                 continue
             lower = url.lower()
+            original_url = url
             if not any(lower.endswith(e) for e in exts):
                 if d.get('post_hint') == 'image' and ('preview' in d):
                     images = (((d.get('preview') or {}).get('images')) or [])
@@ -478,16 +512,29 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
                         src = ((images[0] or {}).get('source') or {}).get('url') or ''
                         src = src.replace('&amp;', '&')
                         if src:
+                            print(f"Reddit: Using preview image for post: {post_title}... (original: {original_url[:50]}... -> preview: {src[:50]}...)", flush=True)
                             url = src
                             lower = url.lower()
+                        else:
+                            print(f"Reddit: No preview source for post: {post_title}...", flush=True)
+                            continue
+                    else:
+                        print(f"Reddit: No preview images for post: {post_title}...", flush=True)
+                        continue
                 else:
+                    print(f"Reddit: Post not an image/video: {post_title}... (URL: {original_url[:50]}..., hint: {d.get('post_hint')})", flush=True)
                     continue
+            valid_posts += 1
+            print(f"Reddit: Attempting to download from post: {post_title}... (URL: {url[:50]}...)", flush=True)
             try:
                 rr = requests.get(url, headers=headers, timeout=15, stream=True)
+                print(f"Reddit: Download response status: {rr.status_code}", flush=True)
                 rr.raise_for_status()
                 ct = (rr.headers.get('content-type') or '').lower()
+                print(f"Reddit: Content-type: {ct}", flush=True)
                 if not any(k in ct for k in ['image/', 'video/']):
                     if not re.search(r'\.(jpg|jpeg|png|gif|webp|mp4)$', lower):
+                        print(f"Reddit: Invalid content type and extension for: {url[:50]}...", flush=True)
                         continue
                 ext = '.jpg'
                 if '.png' in lower:
@@ -499,22 +546,35 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
                 elif '.mp4' in lower:
                     ext = '.mp4'
                 p = os.path.join(output_dir, f'reddit_{subreddit}_{abs(hash(url)) % 10**8}{ext}')
+                print(f"Reddit: Downloading to: {p}", flush=True)
                 size = 0
                 with open(p, 'wb') as f:
                     for chunk in rr.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
                             size += len(chunk)
+                print(f"Reddit: Downloaded {size} bytes", flush=True)
                 if size < 1000:
+                    print(f"Reddit: File too small ({size} bytes), removing", flush=True)
                     try:
                         os.remove(p)
                     except Exception:
                         pass
                     continue
                 add_url_to_history(url)
+                print(f"Reddit: Successfully downloaded: {p}", flush=True)
                 return p
-            except Exception:
+            except requests.exceptions.Timeout:
+                print(f"Reddit: Download timeout for: {url[:50]}...", flush=True)
                 continue
+            except requests.exceptions.RequestException as e:
+                print(f"Reddit: Download request failed for {url[:50]}...: {e}", flush=True)
+                continue
+            except Exception as e:
+                print(f"Reddit: Download error for {url[:50]}...: {e}", flush=True)
+                continue
+        print(f"Reddit: Processed {processed_posts} posts, found {valid_posts} valid media posts, but no successful downloads", flush=True)
         return None
-    except Exception:
+    except Exception as e:
+        print(f"Reddit: Fatal error in fetch_one_from_reddit: {e}", flush=True)
         return None
