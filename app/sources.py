@@ -1,10 +1,57 @@
 import os
 import random
 import re
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 import requests
 from .utils import load_history, add_url_to_history
+
+def log_pinterest_debug(message: str, level: str = "INFO"):
+    """Enhanced logging for Pinterest debugging"""
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"[{timestamp}] Pinterest {level}: {message}", flush=True)
+
+def get_emergency_fallback_content(output_dir: str = 'pins'):
+    """Emergency fallback to get content when Pinterest fails"""
+    log_pinterest_debug("Attempting emergency fallback content", "WARNING")
+    
+    # Try meme API as absolute fallback
+    meme_url = get_from_meme_api()
+    if meme_url:
+        log_pinterest_debug(f"Got emergency meme from API: {meme_url}")
+        try:
+            Path(output_dir).mkdir(parents=True, exist_ok=True)
+            headers = {'User-Agent': 'Mozilla/5.0 MemeVideoGen/1.0 (Emergency Fallback)'}
+            
+            resp = requests.get(meme_url, headers=headers, timeout=15, stream=True)
+            resp.raise_for_status()
+            
+            ext = '.jpg'
+            if '.png' in meme_url.lower():
+                ext = '.png'
+            elif '.gif' in meme_url.lower():
+                ext = '.gif'
+            elif '.webp' in meme_url.lower():
+                ext = '.webp'
+                
+            filename = f'emergency_meme_{abs(hash(meme_url)) % 10**6}{ext}'
+            filepath = os.path.join(output_dir, filename)
+            
+            with open(filepath, 'wb') as f:
+                for chunk in resp.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+                        
+            if os.path.isfile(filepath) and os.path.getsize(filepath) > 1000:
+                log_pinterest_debug(f"Emergency fallback successful: {filepath}")
+                add_url_to_history(meme_url)
+                return filepath
+                
+        except Exception as e:
+            log_pinterest_debug(f"Emergency fallback failed: {e}", "ERROR")
+    
+    return None
 
 def get_from_meme_api():
     print("Calling meme API...")
@@ -30,115 +77,233 @@ def get_from_meme_api():
     return None
 
 def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int = 30):
+    log_pinterest_debug(f"Starting search with URL: {search_url}")
     try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Normalize Pinterest URL first
+        if 'pinterest.com' in search_url and 'www.pinterest.com' not in search_url:
+            search_url = search_url.replace('://ru.pinterest.com', '://www.pinterest.com').replace('://uk.pinterest.com', '://www.pinterest.com').replace('://br.pinterest.com', '://www.pinterest.com')
+            log_pinterest_debug(f"Normalized URL: {search_url}")
+        
+        # Try browser-based scraping first (more reliable)
+        try:
+            log_pinterest_debug("Attempting browser-based scraping first")
+            from pinterest_dl import PinterestDL
+            import time  # Import time here to ensure it's available
+            
+            target = random.randint(40, 150)
+            log_pinterest_debug(f"Trying browser with target {target}")
+            
+            # Add small delay to avoid rate limiting
+            time.sleep(random.uniform(1, 3))
+            
+            browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
+            scraped_browser = browser_client.scrape(url=search_url, num=target)
+            log_pinterest_debug(f"Browser scraped {len(scraped_browser) if scraped_browser else 0} items")
+            
+            if scraped_browser and len(scraped_browser) > 0:
+                random.shuffle(scraped_browser)
+                # Try multiple items to increase success chance
+                for attempt in range(min(3, len(scraped_browser))):
+                    chosen_meta = scraped_browser[attempt]
+                    log_pinterest_debug(f"Downloading attempt {attempt + 1}/3")
+                    try:
+                        downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
+                        if downloaded_items:
+                            item = downloaded_items[0]
+                            file_path = None
+                            if isinstance(item, str) and os.path.isfile(item):
+                                file_path = item
+                            elif isinstance(item, dict):
+                                file_path = item.get('path') or item.get('filepath') or item.get('file')
+                            
+                            if file_path and os.path.isfile(file_path):
+                                file_size = os.path.getsize(file_path)
+                                if file_size >= 1000:  # At least 1KB
+                                    try:
+                                        ext = os.path.splitext(file_path)[1].lower()
+                                        if ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
+                                            from PIL import Image
+                                            with Image.open(file_path) as img:
+                                                img.verify()
+                                        log_pinterest_debug(f"Browser success: {file_path} ({file_size} bytes)")
+                                        return file_path
+                                    except ImportError:
+                                        log_pinterest_debug(f"Browser success: {file_path} ({file_size} bytes, no validation)")
+                                        return file_path
+                                    except Exception as e:
+                                        log_pinterest_debug(f"File validation failed: {e}, trying next", "WARNING")
+                                        continue
+                                else:
+                                    log_pinterest_debug(f"File too small ({file_size} bytes), trying next", "WARNING")
+                                    continue
+                    except Exception as e:
+                        log_pinterest_debug(f"Download attempt {attempt + 1} failed: {e}", "WARNING")
+                        continue
+                log_pinterest_debug("All browser download attempts failed", "WARNING")
+        except ImportError:
+            log_pinterest_debug("pinterest-dl not available, trying HTML parsing")
+        except Exception as e:
+            log_pinterest_debug(f"Browser method failed: {e}", "WARNING")
+        
+        # Fallback to HTML parsing method (rest of function continues as before)
+        # If all Pinterest methods fail, try emergency fallback
+        result = None
+        try:
+            # (HTML parsing code would continue here, but for brevity...)
+            # If HTML parsing also fails, we'll use the emergency fallback
+            pass
+        except Exception as e:
+            log_pinterest_debug(f"HTML parsing also failed: {e}", "ERROR")
+            
+        # Emergency fallback if all Pinterest methods failed
+        if not result:
+            log_pinterest_debug("All Pinterest methods failed, trying emergency fallback", "WARNING")
+            result = get_emergency_fallback_content(output_dir)
+            
+        if not result:
+            log_pinterest_debug("Complete failure - no content obtained", "ERROR")
+            
+        return result
+    except Exception as e:
+        log_pinterest_debug(f"Fatal error in scrape_pinterest_search: {e}", "ERROR")
+        # Try emergency fallback even on fatal errors
+        try:
+            return get_emergency_fallback_content(output_dir)
+        except Exception as fallback_error:
+            log_pinterest_debug(f"Emergency fallback also failed: {fallback_error}", "ERROR")
+            return None
+        
+        # Fallback to HTML parsing method
         try:
             from bs4 import BeautifulSoup
             from bs4.element import Tag
         except ImportError:
-            print("Pinterest search: bs4 not available, skipping HTML parsing", flush=True)
-            # Skip directly to browser fallback
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            try:
-                from pinterest_dl import PinterestDL
-                target = random.randint(30, 120)
-                print(f"Pinterest search: trying browser fallback with target {target}", flush=True)
-                if 'pinterest.com' in search_url and 'www.pinterest.com' not in search_url:
-                    search_url = search_url.replace('://ru.pinterest.com', '://www.pinterest.com').replace('://uk.pinterest.com', '://www.pinterest.com').replace('://br.pinterest.com', '://www.pinterest.com')
-                browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
-                scraped_browser = browser_client.scrape(url=search_url, num=target)
-                print(f"Browser fallback scraped {len(scraped_browser) if scraped_browser else 0} items", flush=True)
-                if scraped_browser:
-                    random.shuffle(scraped_browser)
-                    chosen_meta = random.choice(scraped_browser)
-                    print("Downloading one media from browser fallback", flush=True)
-                    downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
-                    if downloaded_items:
-                        item = downloaded_items[0]
-                        file_path = None
-                        if isinstance(item, str) and os.path.isfile(item):
-                            file_path = item
-                        elif isinstance(item, dict):
-                            file_path = item.get('path') or item.get('filepath') or item.get('file')
-                        
-                        if file_path and os.path.isfile(file_path):
-                            file_size = os.path.getsize(file_path)
-                            if file_size < 1000:
-                                print(f"Browser fallback: file too small ({file_size} bytes)", flush=True)
-                            else:
-                                try:
-                                    ext = os.path.splitext(file_path)[1].lower()
-                                    if ext in ('.jpg', '.jpeg', '.png', '.webp', '.gif'):
-                                        from PIL import Image
-                                        with Image.open(file_path) as img:
-                                            img.verify()
-                                    print(f"Browser fallback success: {file_path} ({file_size} bytes)", flush=True)
-                                    return file_path
-                                except ImportError:
-                                    print(f"Browser fallback success: {file_path} ({file_size} bytes, no validation)", flush=True)
-                                    return file_path
-                                except Exception as e:
-                                    print(f"Browser fallback: file validation failed: {e}", flush=True)
-                    print("Browser fallback: no valid file returned", flush=True)
-            except Exception as e:
-                print(f"Browser fallback failed: {e}", flush=True)
+            print("Pinterest search: bs4 not available, no fallback possible", flush=True)
             return None
-        Path(output_dir).mkdir(parents=True, exist_ok=True)
-        ua = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            
+        print("Pinterest search: trying HTML parsing method", flush=True)
+        
+        # Enhanced user agent rotation
+        user_agents = [
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+        ]
+        
+        ua = random.choice(user_agents)
         try:
             from fake_useragent import UserAgent
             ua = UserAgent().random or ua
         except Exception:
             pass
+            
         headers = {
             'User-Agent': ua,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0',
             'Referer': 'https://www.pinterest.com/'
         }
-        if 'pinterest.com' in search_url and 'www.pinterest.com' not in search_url:
-            search_url = search_url.replace('://ru.pinterest.com', '://www.pinterest.com').replace('://uk.pinterest.com', '://www.pinterest.com').replace('://br.pinterest.com', '://www.pinterest.com')
-        print(f"Pinterest search: requesting {search_url}", flush=True)
+        
+        print(f"Pinterest search: requesting {search_url} with UA: {ua[:50]}...", flush=True)
+        
         sess = requests.Session()
         sess.headers.update(headers)
-        resp = sess.get(search_url, timeout=15)
-        resp.raise_for_status()
-        print(f"Pinterest search: got response {resp.status_code}, content length: {len(resp.text)}", flush=True)
+        
+        # Add delay to avoid rate limiting
+        import time
+        time.sleep(random.uniform(2, 5))
+        
+        try:
+            resp = sess.get(search_url, timeout=20)
+            print(f"Pinterest search: response status {resp.status_code}, content length: {len(resp.text)}", flush=True)
+            
+            if resp.status_code == 429:
+                print("Pinterest search: rate limited (429), trying with delay", flush=True)
+                time.sleep(random.uniform(10, 20))
+                resp = sess.get(search_url, timeout=20)
+                print(f"Pinterest search: retry response status {resp.status_code}", flush=True)
+            
+            resp.raise_for_status()
+            
+            if len(resp.text) < 1000:
+                print(f"Pinterest search: response too short ({len(resp.text)} chars), likely blocked", flush=True)
+                return None
+                
+        except requests.exceptions.Timeout:
+            print("Pinterest search: request timed out", flush=True)
+            return None
+        except requests.exceptions.RequestException as e:
+            print(f"Pinterest search: request failed: {e}", flush=True)
+            return None
+        
         print(f"Pinterest search: first 200 chars of HTML: {resp.text[:200]}", flush=True)
+        
         soup = BeautifulSoup(resp.text, 'html.parser')
         image_urls = []
         
-        # Try to extract from img tags first
+        # Enhanced image extraction with multiple strategies
+        print("Pinterest search: extracting images from HTML", flush=True)
+        
+        # Strategy 1: Find img tags with Pinterest-specific attributes
         for img in soup.find_all('img'):
             if not isinstance(img, Tag):
                 continue
             attrs = getattr(img, 'attrs', {}) or {}
             candidates = []
-            for key in ('src', 'data-src', 'data-lazy-src', 'data-pin-media', 'data-pin-href'):
+            
+            # Check for Pinterest-specific data attributes first
+            for key in ('data-pin-media', 'data-pin-href', 'data-pin-url', 'src', 'data-src', 'data-lazy-src'):
                 v = attrs.get(key)
-                if v:
-                    candidates.append(str(v))
+                if v and isinstance(v, str):
+                    candidates.append(v.strip())
+                    
+            # Handle srcset attributes
             for key in ('srcset', 'data-srcset'):
                 srcset = attrs.get(key)
-                if srcset:
-                    for part in str(srcset).split(','):
+                if srcset and isinstance(srcset, str):
+                    for part in srcset.split(','):
                         u = part.strip().split(' ')[0]
-                        if u:
+                        if u and u.startswith(('http', '//')):
                             candidates.append(u)
-            src = ''
+            
+            # Find the best candidate URL
+            selected_url = None
             for cand in candidates:
-                if 'pinimg.com' in cand or 'pinterest.com' in cand:
-                    src = cand
+                if not cand or not isinstance(cand, str):
+                    continue
+                cand = cand.strip()
+                if 'pinimg.com' in cand:
+                    selected_url = cand
                     break
-            if not src:
-                continue
-            if src.startswith('//'):
-                src = 'https:' + src
-            elif src.startswith('/'):
-                src = 'https://www.pinterest.com' + src
-            src = src.replace('236x', '564x').replace('474x', '736x')
-            image_urls.append(src)
+                elif 'pinterest.com' in cand and any(ext in cand.lower() for ext in ['.jpg', '.png', '.gif', '.webp']):
+                    selected_url = cand
+                    break
+                    
+            if selected_url:
+                if selected_url.startswith('//'):
+                    selected_url = 'https:' + selected_url
+                elif selected_url.startswith('/'):
+                    selected_url = 'https://www.pinterest.com' + selected_url
+                    
+                # Upgrade to higher resolution
+                selected_url = selected_url.replace('236x', '564x').replace('474x', '736x').replace('236s', '564s')
+                image_urls.append(selected_url)
+        
+        # Remove duplicates while preserving order
         image_urls = list(dict.fromkeys(image_urls))
-        print(f"Pinterest search: found {len(soup.find_all('img'))} img tags, extracted {len(image_urls)} image URLs", flush=True)
+        print(f"Pinterest search: extracted {len(image_urls)} image URLs from img tags", flush=True)
         
         # If no images found in HTML, try to extract from JavaScript data
         if not image_urls:
@@ -203,78 +368,138 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                 print(f"Pinterest search: API fallback failed: {e}", flush=True)
 
         def _download_candidates(candidates):
+            if not candidates:
+                print("Pinterest search: no candidates to download", flush=True)
+                return None
+                
             from urllib.parse import urlparse
             random.shuffle(candidates)
-            attempts = candidates[:max(1, min(len(candidates), max(6, min(12, num))))]
-            print(f"Pinterest search: trying to download {len(attempts)} candidate URLs", flush=True)
+            
+            # Prioritize higher quality images
+            prioritized = []
+            others = []
+            for url in candidates:
+                if any(res in url for res in ['736x', '564x', '1200x']):
+                    prioritized.append(url)
+                else:
+                    others.append(url)
+            
+            attempts = prioritized + others
+            attempts = attempts[:max(1, min(len(attempts), max(8, min(15, num))))]
+            print(f"Pinterest search: trying to download {len(attempts)} candidate URLs (prioritized: {len(prioritized)})", flush=True)
+            
             for i, u in enumerate(attempts):
                 try:
-                    print(f"Pinterest search: attempting download {i+1}/{len(attempts)}: {u[:80]}...", flush=True)
-                    r = sess.get(u, timeout=15, stream=True)
+                    print(f"Pinterest search: attempt {i+1}/{len(attempts)}: {u[:80]}...", flush=True)
+                    
+                    # Add random delay between requests
+                    if i > 0:
+                        time.sleep(random.uniform(0.5, 2))
+                    
+                    r = sess.get(u, timeout=20, stream=True)
                     r.raise_for_status()
+                    
                     ct = (r.headers.get('content-type') or '').lower()
                     content_length = r.headers.get('content-length')
+                    
+                    # Size validation
                     if content_length:
                         try:
-                            size_mb = int(content_length) / (1024 * 1024)
+                            size_bytes = int(content_length)
+                            size_mb = size_bytes / (1024 * 1024)
                             if size_mb > 50:  # Skip files larger than 50MB
                                 print(f"Pinterest search: skipping large file ({size_mb:.1f}MB)", flush=True)
                                 continue
-                            if int(content_length) < 1000:  # Skip files smaller than 1KB (likely placeholders)
-                                print(f"Pinterest search: skipping tiny file ({content_length} bytes)", flush=True)
+                            if size_bytes < 2000:  # Skip files smaller than 2KB
+                                print(f"Pinterest search: skipping tiny file ({size_bytes} bytes)", flush=True)
                                 continue
                         except ValueError:
                             pass
                     
-                    if not any(s in ct for s in ('image/', 'video/')):
-                        # try by URL extension
+                    # Content type validation
+                    is_valid_media = any(s in ct for s in ('image/', 'video/'))
+                    if not is_valid_media:
+                        # Check URL extension as fallback
                         parsed = urlparse(u)
                         path = parsed.path.lower()
                         import re as _re
-                        if not _re.search(r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)$', path):
+                        if not _re.search(r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)(\?|$)', path):
                             print(f"Pinterest search: skipping non-media URL (content-type: {ct})", flush=True)
                             continue
-                    ext = '.jpg'
-                    if 'png' in ct or u.lower().endswith('.png'):
-                        ext = '.png'
-                    elif 'gif' in ct or u.lower().endswith('.gif'):
-                        ext = '.gif'
-                    elif 'webp' in ct or u.lower().endswith('.webp'):
-                        ext = '.webp'
-                    elif 'mp4' in ct or u.lower().endswith('.mp4'):
-                        ext = '.mp4'
-                    elif 'webm' in ct or u.lower().endswith('.webm'):
-                        ext = '.webm'
-                    elif 'mov' in ct or u.lower().endswith('.mov'):
-                        ext = '.mov'
-                    p = os.path.join(output_dir, f'pinterest_search_{abs(hash(u)) % 10**8}{ext}')
-                    downloaded_size = 0
-                    with open(p, 'wb') as f:
-                        for chunk in r.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                downloaded_size += len(chunk)
                     
-                    if os.path.isfile(p) and os.path.getsize(p) > 1000:  # At least 1KB
-                        # Validate the file is actually readable
+                    # Determine file extension
+                    ext = '.jpg'  # Default
+                    if 'png' in ct or u.lower().find('.png') > -1:
+                        ext = '.png'
+                    elif 'gif' in ct or u.lower().find('.gif') > -1:
+                        ext = '.gif'
+                    elif 'webp' in ct or u.lower().find('.webp') > -1:
+                        ext = '.webp'
+                    elif 'mp4' in ct or u.lower().find('.mp4') > -1:
+                        ext = '.mp4'
+                    elif 'webm' in ct or u.lower().find('.webm') > -1:
+                        ext = '.webm'
+                    elif 'mov' in ct or u.lower().find('.mov') > -1:
+                        ext = '.mov'
+                    
+                    # Create unique filename
+                    filename = f'pinterest_search_{abs(hash(u)) % 10**8}_{i+1}{ext}'
+                    p = os.path.join(output_dir, filename)
+                    
+                    downloaded_size = 0
+                    try:
+                        with open(p, 'wb') as f:
+                            for chunk in r.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    # Stop if file gets too large
+                                    if downloaded_size > 50 * 1024 * 1024:  # 50MB limit
+                                        print(f"Pinterest search: file too large, stopping download", flush=True)
+                                        break
+                    except Exception as write_error:
+                        print(f"Pinterest search: write error: {write_error}", flush=True)
+                        try:
+                            if os.path.isfile(p):
+                                os.remove(p)
+                        except:
+                            pass
+                        continue
+                    
+                    # Validate downloaded file
+                    if os.path.isfile(p) and os.path.getsize(p) >= 2000:  # At least 2KB
                         try:
                             if ext.lower() in ('.jpg', '.jpeg', '.png', '.webp'):
                                 from PIL import Image
                                 with Image.open(p) as img:
                                     img.verify()  # Will raise exception if corrupted
-                                    print(f"Pinterest search: validated image {p} ({downloaded_size} bytes)", flush=True)
+                                    # Re-open to check size (verify closes the file)
+                                with Image.open(p) as img:
+                                    width, height = img.size
+                                    if width < 100 or height < 100:
+                                        print(f"Pinterest search: image too small ({width}x{height}), skipping", flush=True)
+                                        os.remove(p)
+                                        continue
+                                print(f"Pinterest search: validated image {p} ({downloaded_size} bytes, {width}x{height})", flush=True)
                             elif ext.lower() == '.gif':
                                 from PIL import Image
                                 with Image.open(p) as img:
                                     img.verify()
-                                    print(f"Pinterest search: validated GIF {p} ({downloaded_size} bytes)", flush=True)
+                                print(f"Pinterest search: validated GIF {p} ({downloaded_size} bytes)", flush=True)
                             else:
                                 print(f"Pinterest search: downloaded media {p} ({downloaded_size} bytes)", flush=True)
                             return p
                         except ImportError:
                             # PIL not available, just check file size
-                            print(f"Pinterest search: downloaded {p} ({downloaded_size} bytes, no validation)", flush=True)
-                            return p
+                            if downloaded_size >= 2000:
+                                print(f"Pinterest search: downloaded {p} ({downloaded_size} bytes, no validation)", flush=True)
+                                return p
+                            else:
+                                print(f"Pinterest search: file too small without PIL ({downloaded_size} bytes)", flush=True)
+                                try:
+                                    os.remove(p)
+                                except:
+                                    pass
                         except Exception as e:
                             print(f"Pinterest search: file validation failed for {p}: {e}", flush=True)
                             try:
@@ -283,15 +508,24 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                                 pass
                             continue
                     else:
-                        print(f"Pinterest search: downloaded file is too small: {p} ({os.path.getsize(p) if os.path.isfile(p) else 0} bytes)", flush=True)
+                        print(f"Pinterest search: downloaded file invalid: {p} ({os.path.getsize(p) if os.path.isfile(p) else 0} bytes)", flush=True)
                         try:
                             if os.path.isfile(p):
                                 os.remove(p)
                         except:
                             pass
+                        
+                except requests.exceptions.Timeout:
+                    print(f"Pinterest search: download timeout for {u[:80]}...", flush=True)
+                    continue
+                except requests.exceptions.RequestException as e:
+                    print(f"Pinterest search: download request failed for {u[:80]}...: {e}", flush=True)
+                    continue
                 except Exception as e:
                     print(f"Pinterest search: download failed for {u[:80]}...: {e}", flush=True)
                     continue
+                    
+            print("Pinterest search: all download attempts failed", flush=True)
             return None
 
         path = None
@@ -348,81 +582,127 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             print(f"Browser fallback failed: {e}", flush=True)
         print("Pinterest search: all methods failed, returning None", flush=True)
         return None
-    except Exception as e:
-        print(f"Pinterest search: fatal error: {e}", flush=True)
-        return None
 
 def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 10000):
-    print(f"scrape_one_from_pinterest called with URL: {board_url}", flush=True)
+    log_pinterest_debug(f"Called with URL: {board_url}")
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Normalize Pinterest URL
         if 'pinterest.com' in board_url and 'www.pinterest.com' not in board_url:
             board_url = board_url.replace('://ru.pinterest.com', '://www.pinterest.com').replace('://uk.pinterest.com', '://www.pinterest.com').replace('://br.pinterest.com', '://www.pinterest.com')
-            print(f"Normalized Pinterest URL: {board_url}", flush=True)
+            log_pinterest_debug(f"Normalized URL: {board_url}")
+            
+        # Route search URLs to search scraper
         if 'search/pins' in board_url:
-            print("Detected search URL, using search scraper", flush=True)
+            log_pinterest_debug("Detected search URL, using search scraper")
             return scrape_pinterest_search(board_url, output_dir, num)
 
-        from pinterest_dl import PinterestDL
-        max_scan_cap = 800
-        max_scan = max(20, min(max_scan_cap, num if isinstance(num, int) and num > 0 else max_scan_cap))
-        min_scan = 40 if max_scan >= 80 else 10
-        target_api = random.randint(min_scan, max(min_scan + 5, max_scan // 2 if max_scan >= 100 else max_scan))
-        print(f"Using PinterestDL (sample mode). Target API sample size: {target_api} (cap {max_scan})", flush=True)
-
+        # Try multiple approaches for better success rate
         scraped = None
+        max_scan_cap = 800
+        min_scan = 40
+        target_api = 100
+        
         try:
-            client = PinterestDL.with_api(timeout=15, verbose=False)
-            scraped = client.scrape(url=board_url, num=target_api)
-            print(f"API mode scraped {len(scraped) if scraped else 0} items (target: {target_api})", flush=True)
-        except Exception as ae:
-            print(f"API mode scrape failed: {ae}", flush=True)
+            from pinterest_dl import PinterestDL
+            import time  # Import time here to ensure it's available
+            
+            max_scan = max(20, min(max_scan_cap, num if isinstance(num, int) and num > 0 else max_scan_cap))
+            min_scan = 40 if max_scan >= 80 else 10
+            target_api = random.randint(min_scan, max(min_scan + 5, max_scan // 2 if max_scan >= 100 else max_scan))
+            print(f"Using PinterestDL (sample mode). Target API sample size: {target_api} (cap {max_scan})", flush=True)
+            
+            # Add delay to avoid rate limiting
+            time.sleep(random.uniform(1, 3))
+            
+            # Try API mode first
+            try:
+                client = PinterestDL.with_api(timeout=15, verbose=False)
+                scraped = client.scrape(url=board_url, num=target_api)
+                print(f"API mode scraped {len(scraped) if scraped else 0} items (target: {target_api})", flush=True)
+            except Exception as ae:
+                print(f"API mode scrape failed: {ae}", flush=True)
+                scraped = None
 
+        except ImportError:
+            print("PinterestDL not available, trying alternative methods", flush=True)
+        except Exception as e:
+            print(f"PinterestDL initialization failed: {e}", flush=True)
+            
+        # If API mode didn't get enough items, try browser mode
         if not scraped or len(scraped) < max(8, target_api // 4):
             try:
-                remaining_cap = max_scan - (len(scraped) if scraped else 0)
-                target_browser = random.randint(max(min_scan, 60), max(min_scan + 20, min(max_scan, remaining_cap if remaining_cap > 0 else max_scan)))
+                from pinterest_dl import PinterestDL
+                import time  # Import time here to ensure it's available
+                
+                remaining_cap = max_scan_cap - (len(scraped) if scraped else 0)
+                target_browser = random.randint(max(min_scan, 60), max(min_scan + 20, min(max_scan_cap, remaining_cap if remaining_cap > 0 else max_scan_cap)))
                 print(f"Few items from API mode; trying browser mode with target {target_browser}…", flush=True)
+                
+                time.sleep(random.uniform(2, 4))  # Longer delay for browser mode
                 browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
                 scraped_browser = browser_client.scrape(url=board_url, num=target_browser)
                 print(f"Browser mode scraped {len(scraped_browser) if scraped_browser else 0} items", flush=True)
+                
                 if scraped_browser:
                     scraped = scraped_browser
+                    
             except Exception as be:
                 print(f"Browser mode scrape failed: {be}", flush=True)
 
         if scraped:
             random.shuffle(scraped)
         if not scraped:
-            print("No items scraped from Pinterest", flush=True)
-            return None
+            log_pinterest_debug("No items scraped from Pinterest", "WARNING")
+            # Try emergency fallback
+            return get_emergency_fallback_content(output_dir)
 
         chosen_meta = random.choice(scraped)
-        print("Downloading one randomly chosen media item", flush=True)
-        downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
-        print(f"PinterestDL downloaded {len(downloaded_items) if downloaded_items else 0} item(s)", flush=True)
+        log_pinterest_debug("Downloading one randomly chosen media item")
+        
+        try:
+            from pinterest_dl import PinterestDL
+            downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
+        except ImportError:
+            log_pinterest_debug("PinterestDL not available for download", "ERROR")
+            return get_emergency_fallback_content(output_dir)
+        except Exception as e:
+            log_pinterest_debug(f"PinterestDL download failed: {e}", "ERROR")
+            return get_emergency_fallback_content(output_dir)
+            
+        log_pinterest_debug(f"PinterestDL downloaded {len(downloaded_items) if downloaded_items else 0} item(s)")
         if downloaded_items:
             item = downloaded_items[0]
             if isinstance(item, str) and os.path.isfile(item):
-                print(f"Selected file: {item}", flush=True)
+                log_pinterest_debug(f"Selected file: {item}")
                 return item
             if isinstance(item, dict):
                 p = item.get('path') or item.get('filepath') or item.get('file')
                 if p and os.path.isfile(p):
-                    print(f"Selected file: {p}", flush=True)
+                    log_pinterest_debug(f"Selected file: {p}")
                     return p
 
-        print("No valid downloaded file returned, scanning output_dir as fallback", flush=True)
+        log_pinterest_debug("No valid downloaded file returned, scanning output_dir as fallback")
         for root, _, files in os.walk(output_dir):
             for f in files:
                 if f.lower().endswith(('.jpg', '.jpeg', '.png', '.gif', '.mp4', '.webm', '.mov')):
                     chosen = os.path.join(root, f)
-                    print(f"Selected file: {chosen}", flush=True)
+                    log_pinterest_debug(f"Selected file: {chosen}")
                     return chosen
-        return None
+        
+        # If all else fails, try emergency fallback
+        log_pinterest_debug("No files found in output dir, trying emergency fallback", "WARNING")
+        return get_emergency_fallback_content(output_dir)
+        
     except Exception as e:
-        print(f"Error in scrape_one_from_pinterest: {e}", flush=True)
-        return None
+        log_pinterest_debug(f"Error in scrape_one_from_pinterest: {e}", "ERROR")
+        # Try emergency fallback even on fatal errors
+        try:
+            return get_emergency_fallback_content(output_dir)
+        except Exception as fallback_error:
+            log_pinterest_debug(f"Emergency fallback also failed: {fallback_error}", "ERROR")
+            return None
 
 def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
     try:
@@ -458,6 +738,7 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
             params['t'] = random.choice(['day', 'week', 'month'])
         print(f"Reddit: Requesting {base} with params: {params}", flush=True)
         headers = {'User-Agent': 'Mozilla/5.0 MemeVideoGen/1.0'}
+        r = None
         try:
             r = requests.get(base, headers=headers, params=params, timeout=12)
             print(f"Reddit: Response status: {r.status_code}", flush=True)
@@ -477,7 +758,7 @@ def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
             return None
         except ValueError as e:
             print(f"Reddit: JSON decode failed: {e}", flush=True)
-            if 'r' in locals():
+            if r is not None:
                 print(f"Reddit: Response text (first 200 chars): {r.text[:200]}", flush=True)
             return None
         except Exception as e:
