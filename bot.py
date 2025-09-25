@@ -257,7 +257,6 @@ async def cmd_generate(update, context):
             else:
                 pin_num = v
         else:
-            # Старая сигнатура: pin_num audio_duration (и опционально count=N)
             pin_num = parse_int(args[0], 10000)
             audio_duration = parse_int(args[1], 10) if len(args) >= 2 else 10
             for a in args[2:]:
@@ -272,55 +271,115 @@ async def cmd_generate(update, context):
     if not pinterest_urls and not music_playlists and not reddit_sources:
         await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json, music_playlists.json или reddit_sources.json")
         return
-    for idx in range(count):
-        context.chat_data["gen_msg_ids"] = []
-        context.chat_data.pop("progress_msg_id", None)
-        context.chat_data.pop("progress_lines", None)
-        header = f"Запускаю генерацию... pins={pin_num}, audio={audio_duration}s"
-        if count > 1:
-            header = f"[{idx+1}/{count}] {header}"
-        await _progress_init(context, update.effective_chat.id, header)
-        loop = asyncio.get_running_loop()
-        def run_generation():
-            def progress(msg: str):
-                if count > 1:
-                    msg = f"[{idx+1}/{count}] {msg}"
-                asyncio.run_coroutine_threadsafe(_progress_queue(context, update.effective_chat.id, msg), loop)
-            return generate_meme_video(
-                pinterest_urls=pinterest_urls,
-                music_playlists=music_playlists,
-                pin_num=pin_num,
-                audio_duration=audio_duration,
-                progress=progress,
-                reddit_sources=reddit_sources,
-            )
-        result = await asyncio.to_thread(run_generation)
-        if not result or not result.video_path:
-            await update.message.reply_text(f"[{idx+1}/{count}] Не удалось создать видео.")
-            continue
-        new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
-        caption = _format_video_info(result)
-        if count > 1:
-            caption = f"[{idx+1}/{count}]\n" + caption
-        kb = None
-        if InlineKeyboardButton and InlineKeyboardMarkup:
-            kb = InlineKeyboardMarkup([
-                [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
-                [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
-                [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
-            ])
-        try:
-            m = await update.message.reply_video(video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
+    if count > 1:
+        await update.message.reply_text(f"Запускаю генерацию {count} мемов в фоне (параллельно)… Это может занять несколько минут.")
+        async def background_batch(chat_id: int, batch_count: int):
+            start_ts = time.monotonic()
+            sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS if 'MAX_PARALLEL_GENERATIONS' in globals() else 3)
+            async def gen_one(i: int):
+                async with sem:
+                    def run_generation():
+                        return generate_meme_video(
+                            pinterest_urls=pinterest_urls,
+                            music_playlists=music_playlists,
+                            pin_num=pin_num,
+                            audio_duration=audio_duration,
+                            progress=None,
+                            reddit_sources=reddit_sources,
+                        )
+                    try:
+                        res = await asyncio.to_thread(run_generation)
+                    except Exception:
+                        res = None
+                    return (i, res)
+            gathered = await asyncio.gather(*[gen_one(i) for i in range(batch_count)])
+            result_map = {idx_res: val for idx_res, val in gathered}
+            success = 0
+            fail = 0
+            for idx in range(batch_count):
+                result = result_map.get(idx)
+                if not result or not result.video_path:
+                    fail += 1
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=f"[{idx+1}/{batch_count}] ❌ Не удалось создать видео.")
+                    except Exception:
+                        pass
+                    continue
+                success += 1
+                new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
+                caption = _format_video_info(result)
+                caption = f"[{idx+1}/{batch_count}]\n" + caption
+                kb = None
+                if InlineKeyboardButton and InlineKeyboardMarkup:
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
+                        [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
+                        [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
+                    ])
+                try:
+                    m = await context.bot.send_video(chat_id=chat_id, video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
+                    try:
+                        if m and getattr(m, "message_id", None):
+                            _add_msg_id(context, m.message_id)
+                    except Exception:
+                        pass
+                except Exception:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=caption, reply_markup=kb)
+                    except Exception:
+                        pass
+            elapsed = time.monotonic() - start_ts
+            mins = int(elapsed // 60)
+            secs = int(elapsed % 60)
+            summary = f"Готово. Успех: {success}, ошибки: {fail}. Время: {mins}м {secs}с." if mins else f"Готово. Успех: {success}, ошибки: {fail}. Время: {secs}с."
             try:
-                if m and getattr(m, "message_id", None):
-                    _add_msg_id(context, m.message_id)
+                await context.bot.send_message(chat_id=chat_id, text=summary)
             except Exception:
                 pass
+        asyncio.create_task(background_batch(update.effective_chat.id, count))
+        return
+    context.chat_data["gen_msg_ids"] = []
+    context.chat_data.pop("progress_msg_id", None)
+    context.chat_data.pop("progress_lines", None)
+    header = f"Запускаю генерацию... pins={pin_num}, audio={audio_duration}s"
+    await _progress_init(context, update.effective_chat.id, header)
+    loop = asyncio.get_running_loop()
+    def run_generation():
+        def progress(msg: str):
+            asyncio.run_coroutine_threadsafe(_progress_queue(context, update.effective_chat.id, msg), loop)
+        return generate_meme_video(
+            pinterest_urls=pinterest_urls,
+            music_playlists=music_playlists,
+            pin_num=pin_num,
+            audio_duration=audio_duration,
+            progress=progress,
+            reddit_sources=reddit_sources,
+        )
+    result = await asyncio.to_thread(run_generation)
+    if not result or not result.video_path:
+        await update.message.reply_text("Не удалось создать видео.")
+        return
+    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
+    caption = _format_video_info(result)
+    kb = None
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
+            [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
+            [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
+        ])
+    try:
+        m = await update.message.reply_video(video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
+        try:
+            if m and getattr(m, "message_id", None):
+                _add_msg_id(context, m.message_id)
         except Exception:
-            try:
-                await update.message.reply_text(caption, reply_markup=kb)
-            except Exception:
-                await update.message.reply_text(caption)
+            pass
+    except Exception:
+        try:
+            await update.message.reply_text(caption, reply_markup=kb)
+        except Exception:
+            await update.message.reply_text(caption)
 
 
 async def cmd_deploy(update, context):
@@ -491,8 +550,6 @@ def _get_selection_for_item(context, item_id: str) -> set[str]:
         sel = set()
         store[str(item_id)] = sel
     return sel
-
-
 def _platforms_keyboard(item_id: str, selection: set[str]):
     if not (InlineKeyboardButton and InlineKeyboardMarkup):
         return None
@@ -516,8 +573,6 @@ def _platforms_keyboard(item_id: str, selection: set[str]):
         ],
     ]
     return InlineKeyboardMarkup(rows)
-
-
 async def on_callback_choose_platforms(update, context):
     q = update.callback_query
     await q.answer()
@@ -533,7 +588,6 @@ async def on_callback_choose_platforms(update, context):
         await q.message.reply_text(text, reply_markup=kb)
     except Exception:
         pass
-
 
 async def on_callback_toggle_platform(update, context):
     q = update.callback_query
