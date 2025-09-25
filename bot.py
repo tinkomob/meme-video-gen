@@ -37,7 +37,12 @@ try:
     def _flush_summary(force=False):
         now = time.time()
         if _last_line["count"] > 1 and (force or now - _last_line["last_flush"] >= _flush_interval):
-            _orig_write(f"(suppressed {_last_line['count']-1} repeats of '{_spam_phrase}')\n")
+            try:
+                from app.debug import get_phase
+                phase = get_phase()
+            except Exception:
+                phase = 'unknown'
+            _orig_write(f"(suppressed {_last_line['count']-1} repeats of '{_spam_phrase}' phase={phase})\n")
             _last_line["count"] = 0
             _last_line["last_flush"] = now
     def _wrapped_write(data: str) -> int:

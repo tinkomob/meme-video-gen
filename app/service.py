@@ -17,6 +17,7 @@ from .video import convert_to_tiktok_format, generate_thumbnail
 from .metadata import generate_metadata_from_source
 from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload
 from .uploaders import tiktok_upload, x_upload
+from .debug import set_phase
 
 class GenerationResult:
     def __init__(self, video_path: str | None, thumbnail_path: str | None, source_url: str | None, audio_path: str | None, audio_title: str | None = None):
@@ -57,6 +58,7 @@ def generate_meme_video(
     reddit_sources: list[str] | None = None,
 ):
     notify = (lambda msg: progress(msg) if callable(progress) else None)
+    set_phase('init')
     # use unique ephemeral dirs per generation to allow parallel runs
     unique_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
     pins_dir = f"{DEFAULT_PINS_DIR}_{unique_id}"
@@ -139,6 +141,7 @@ def generate_meme_video(
     tried = []
     for name, provider in sources_candidates:
         print(f"Trying source provider: {name}", flush=True)
+        set_phase(f'source:{name}')
         path, src = provider()
         tried.append(name)
         if path:
@@ -167,6 +170,7 @@ def generate_meme_video(
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
     if chosen_music:
+        set_phase('audio_download')
         notify("🎵 Скачиваю трек из плейлиста…")
         audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
         print(f"Downloaded audio path: {audio_path}", flush=True)
@@ -175,6 +179,7 @@ def generate_meme_video(
             # Get audio title before processing
             audio_title = get_song_title(audio_path)
             notify("✂️ Вырезаю аудио-клип нужной длительности…")
+            set_phase('audio_clip')
             audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
             print(f"Extracted audio clip path: {audio_clip_path}", flush=True)
             if audio_path != audio_clip_path and os.path.exists(audio_path):
@@ -185,6 +190,7 @@ def generate_meme_video(
     # create unique output/thumbnail names to avoid overwriting when generating multiple candidates
     unique_suffix = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
     output_path = f"tiktok_video_{unique_suffix}.mp4"
+    set_phase('video_convert')
     notify("🎬 Конвертирую видео в формат TikTok…")
     print(f"Starting video conversion with downloaded_path: {downloaded_path}, output_path: {output_path}", flush=True)
     result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path, seed=seed, variant_group=variant_group)
@@ -195,6 +201,7 @@ def generate_meme_video(
         return GenerationResult(None, None, chosen_pinterest, None, audio_title)
     
     thumbnail_path = f"thumbnail_{unique_suffix}.jpg"
+    set_phase('thumbnail')
     notify("🖼️ Генерирую миниатюру…")
     print(f"Generating thumbnail for: {output_path}", flush=True)
     thumb_result = generate_thumbnail(output_path, thumbnail_path)
@@ -225,6 +232,7 @@ def generate_meme_video(
         "tiktok_video_*.mp4",
         "thumbnail_*.jpg"
     ]) 
+    set_phase('done')
     notify("✅ Готово! Видео и миниатюра созданы")
     return GenerationResult(output_path, thumbnail_path, chosen_pinterest, original_audio_path, audio_title)
 
