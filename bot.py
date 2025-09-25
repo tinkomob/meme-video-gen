@@ -3,6 +3,7 @@ import os
 import json
 import time
 import logging
+import threading
 from typing import Optional
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
@@ -15,7 +16,7 @@ from app.utils import load_urls_json, replace_file_from_bytes, clear_video_histo
 from app.history import add_video_history_item, load_video_history, save_video_history
 from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso, set_daily_schedule_iso, get_daily_schedule_iso, set_selected_chat_id, get_selected_chat_id
-from app.config import DAILY_GENERATIONS, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES
+from app.config import DAILY_GENERATIONS, DUP_REGEN_RETRIES
 from app.video import get_video_metadata
 
 try:
@@ -28,7 +29,7 @@ load_dotenv()
 
 # Suppress spammy 'Empty response received.' lines coming from third-party libs (moviepy/pytube/etc.) by collapsing repeats.
 try:
-    import sys, threading
+    import sys
     _spam_phrase = "Empty response received."
     _orig_write = sys.stdout.write
     _lock = threading.Lock()
@@ -64,6 +65,36 @@ try:
         except Exception:
             return _orig_write(data)
     sys.stdout.write = _wrapped_write
+except Exception:
+    pass
+
+# Global crash instrumentation
+try:
+    import sys, traceback
+    def _global_excepthook(exctype, value, tb):
+        try:
+            with open('crash.log', 'a', encoding='utf-8') as f:
+                f.write('\n=== Uncaught Exception ===\n')
+                traceback.print_exception(exctype, value, tb, file=f)
+        except Exception:
+            pass
+        sys.__excepthook__(exctype, value, tb)
+    sys.excepthook = _global_excepthook
+except Exception:
+    pass
+
+# Heartbeat writer to detect external restarts
+try:
+    def _heartbeat():
+        while True:
+            try:
+                with open('heartbeat.log', 'w', encoding='utf-8') as f:
+                    f.write(str(int(time.time())))
+            except Exception:
+                pass
+            time.sleep(30)
+    th = threading.Thread(target=_heartbeat, daemon=True)
+    th.start()
 except Exception:
     pass
 
@@ -313,42 +344,43 @@ async def cmd_generate(update, context):
         await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json, music_playlists.json или reddit_sources.json")
         return
     if count > 1:
-        await update.message.reply_text(f"Запускаю генерацию {count} мемов в фоне (параллельно)… Это может занять несколько минут.")
+        await update.message.reply_text(f"Запускаю генерацию {count} мемов последовательно… Это может занять несколько минут.")
         async def background_batch(chat_id: int, batch_count: int):
             start_ts = time.monotonic()
-            sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS if 'MAX_PARALLEL_GENERATIONS' in globals() else 3)
             async def gen_one(i: int):
-                async with sem:
-                    attempts = 0
-                    last_res = None
-                    while attempts < 3:
-                        attempts += 1
-                        def run_generation():
-                            try:
-                                seed = int.from_bytes(os.urandom(4), 'big') ^ (i + attempts * 7919)
-                                return generate_meme_video(
-                                    pinterest_urls=pinterest_urls,
-                                    music_playlists=music_playlists,
-                                    pin_num=pin_num,
-                                    audio_duration=audio_duration,
-                                    progress=None,
-                                    seed=seed,
-                                    variant_group=i % 5,
-                                    reddit_sources=reddit_sources,
-                                )
-                            except Exception as e:
-                                logging.warning(f"Batch gen #{i} attempt {attempts} failed: {e}")
-                                return None
+                attempts = 0
+                last_res = None
+                while attempts < 3:
+                    attempts += 1
+                    def run_generation():
                         try:
-                            last_res = await asyncio.to_thread(run_generation)
+                            seed = int.from_bytes(os.urandom(4), 'big') ^ (i + attempts * 7919)
+                            return generate_meme_video(
+                                pinterest_urls=pinterest_urls,
+                                music_playlists=music_playlists,
+                                pin_num=pin_num,
+                                audio_duration=audio_duration,
+                                progress=None,
+                                seed=seed,
+                                variant_group=i % 5,
+                                reddit_sources=reddit_sources,
+                            )
                         except Exception as e:
-                            logging.error(f"Background thread exception gen #{i} attempt {attempts}: {e}")
-                            last_res = None
-                        if last_res and getattr(last_res, 'video_path', None):
-                            break
-                        await asyncio.sleep(0.5 * attempts)
-                    return (i, last_res)
-            gathered = await asyncio.gather(*[gen_one(i) for i in range(batch_count)])
+                            logging.warning(f"Batch gen #{i} attempt {attempts} failed: {e}")
+                            return None
+                    try:
+                        last_res = await asyncio.to_thread(run_generation)
+                    except Exception as e:
+                        logging.error(f"Background thread exception gen #{i} attempt {attempts}: {e}")
+                        last_res = None
+                    if last_res and getattr(last_res, 'video_path', None):
+                        break
+                    await asyncio.sleep(0.5 * attempts)
+                return (i, last_res)
+            gathered = []
+            for i in range(batch_count):
+                result = await gen_one(i)
+                gathered.append(result)
             result_map = {idx_res: val for idx_res, val in gathered}
             success = 0
             fail = 0
@@ -1167,17 +1199,16 @@ async def _scheduled_job(context):
     if not cid:
         logging.warning("Не найден chat_id для уведомления")
     cleanup_old_temp_dirs()
-    sem = context.application.bot_data.get('gen_sem')
-    if sem is None:
-        sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
-        context.application.bot_data['gen_sem'] = sem
     async def gen_one(idx: int, attempt: int):
-        async with sem:
-            def run_generation():
-                seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 9973)
-                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources)
-            return await asyncio.to_thread(run_generation)
-    gens = await asyncio.gather(*[gen_one(i,0) for i in range(3)], return_exceptions=True)
+        def run_generation():
+            seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 9973)
+            return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources)
+        return await asyncio.to_thread(run_generation)
+    
+    gens = []
+    for i in range(3):
+        result = await gen_one(i, 0)
+        gens.append(result)
     # anti-duplicate by source_url
     def result_source(res):
         return getattr(res,'source_url', None) if res else None
@@ -1196,9 +1227,9 @@ async def _scheduled_job(context):
                 seen.add(src)
         if not dup_indexes:
             break
-        regen = await asyncio.gather(*[gen_one(i, attempt) for i in dup_indexes], return_exceptions=True)
-        for di, new_res in zip(dup_indexes, regen):
-            gens[di] = new_res
+        for i in dup_indexes:
+            new_res = await gen_one(i, attempt)
+            gens[i] = new_res
     results = []
     for res in gens:
         try:
@@ -1376,12 +1407,6 @@ def main():
         except Exception:
             pass
         try:
-            if appinst.bot_data.get('gen_sem') is None:
-                from app.config import MAX_PARALLEL_GENERATIONS
-                appinst.bot_data['gen_sem'] = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
-        except Exception:
-            pass
-        try:
             async def watchdog():
                 tz = ZoneInfo("Asia/Tomsk")
                 while True:
@@ -1501,18 +1526,16 @@ def main():
         pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
         music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
         reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
-        sem = context.application.bot_data.get('gen_sem')
-        if sem is None:
-            from app.config import MAX_PARALLEL_GENERATIONS
-            sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
-            context.application.bot_data['gen_sem'] = sem
         async def gen_one(idx:int, attempt:int):
-            async with sem:
-                def run_generation():
-                    seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 8647)
-                    return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources)
-                return await asyncio.to_thread(run_generation)
-        gens = await asyncio.gather(*[gen_one(i,0) for i in range(3)], return_exceptions=True)
+            def run_generation():
+                seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 8647)
+                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources)
+            return await asyncio.to_thread(run_generation)
+        
+        gens = []
+        for i in range(3):
+            result = await gen_one(i, 0)
+            gens.append(result)
         def result_source(res):
             return getattr(res,'source_url', None) if res else None
         for attempt in range(1, DUP_REGEN_RETRIES+1):
@@ -1529,9 +1552,9 @@ def main():
                     seen.add(src)
             if not dup_idx:
                 break
-            regen = await asyncio.gather(*[gen_one(i, attempt) for i in dup_idx], return_exceptions=True)
-            for di,nr in zip(dup_idx, regen):
-                gens[di] = nr
+            for i in dup_idx:
+                new_res = await gen_one(i, attempt)
+                gens[i] = new_res
         new_results = []
         for res in gens:
             try:
@@ -1669,17 +1692,16 @@ def main():
         pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
         music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
         cleanup_old_temp_dirs()
-        sem = context.application.bot_data.get('gen_sem')
-        if sem is None:
-            sem = asyncio.Semaphore(MAX_PARALLEL_GENERATIONS)
-            context.application.bot_data['gen_sem'] = sem
         async def gen_one_manual(idx:int, attempt:int):
-            async with sem:
-                def run_generation():
-                    seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 7919)
-                    return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5)
-                return await asyncio.to_thread(run_generation)
-        gens = await asyncio.gather(*[gen_one_manual(i,0) for i in range(3)], return_exceptions=True)
+            def run_generation():
+                seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 7919)
+                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5)
+            return await asyncio.to_thread(run_generation)
+        
+        gens = []
+        for i in range(3):
+            result = await gen_one_manual(i, 0)
+            gens.append(result)
         def result_source(res):
             return getattr(res,'source_url', None) if res else None
         for attempt in range(1, DUP_REGEN_RETRIES+1):
@@ -1696,9 +1718,9 @@ def main():
                     seen.add(src)
             if not dup_idx:
                 break
-            regen = await asyncio.gather(*[gen_one_manual(i, attempt) for i in dup_idx], return_exceptions=True)
-            for di,nr in zip(dup_idx, regen):
-                gens[di] = nr
+            for i in dup_idx:
+                new_res = await gen_one_manual(i, attempt)
+                gens[i] = new_res
         results = []
         for res in gens:
             try:
