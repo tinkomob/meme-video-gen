@@ -6,78 +6,212 @@ from pathlib import Path
 from urllib.parse import urlparse
 import requests
 from .utils import load_history, add_url_to_history
+from .pinterest_monitor import should_use_pinterest_fallback, get_pinterest_status
 
 def log_pinterest_debug(message: str, level: str = "INFO"):
     """Enhanced logging for Pinterest debugging"""
     timestamp = time.strftime("%H:%M:%S")
     print(f"[{timestamp}] Pinterest {level}: {message}", flush=True)
 
+def is_pinterest_blocked():
+    """Check if Pinterest is accessible with a simple test"""
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get('https://www.pinterest.com', headers=headers, timeout=10)
+        return resp.status_code >= 400
+    except Exception:
+        return True
+
+def handle_pinterest_recovery():
+    """Attempt to recover from Pinterest blocking by waiting and retrying"""
+    log_pinterest_debug("Attempting Pinterest recovery sequence", "WARNING")
+    
+    # Wait with exponential backoff
+    wait_times = [30, 60, 120, 300]  # 30s, 1m, 2m, 5m
+    
+    for i, wait_time in enumerate(wait_times):
+        log_pinterest_debug(f"Waiting {wait_time}s before retry {i+1}/{len(wait_times)}")
+        time.sleep(wait_time)
+        
+        if not is_pinterest_blocked():
+            log_pinterest_debug(f"Pinterest recovered after {wait_time}s wait!")
+            return True
+        
+        log_pinterest_debug(f"Pinterest still blocked after {wait_time}s wait")
+    
+    log_pinterest_debug("Pinterest recovery failed, staying with fallback content", "ERROR")
+    return False
+
 def get_emergency_fallback_content(output_dir: str = 'pins'):
-    """Emergency fallback to get content when Pinterest fails"""
+    """Enhanced emergency fallback to get content when Pinterest fails"""
     log_pinterest_debug("Attempting emergency fallback content", "WARNING")
     
-    # Try meme API as absolute fallback
-    meme_url = get_from_meme_api()
-    if meme_url:
-        log_pinterest_debug(f"Got emergency meme from API: {meme_url}")
-        try:
-            Path(output_dir).mkdir(parents=True, exist_ok=True)
-            headers = {'User-Agent': 'Mozilla/5.0 MemeVideoGen/1.0 (Emergency Fallback)'}
-            
-            resp = requests.get(meme_url, headers=headers, timeout=15, stream=True)
-            resp.raise_for_status()
-            
-            ext = '.jpg'
-            if '.png' in meme_url.lower():
-                ext = '.png'
-            elif '.gif' in meme_url.lower():
-                ext = '.gif'
-            elif '.webp' in meme_url.lower():
-                ext = '.webp'
-                
-            filename = f'emergency_meme_{abs(hash(meme_url)) % 10**6}{ext}'
-            filepath = os.path.join(output_dir, filename)
-            
-            with open(filepath, 'wb') as f:
-                for chunk in resp.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        
-            if os.path.isfile(filepath) and os.path.getsize(filepath) > 1000:
-                log_pinterest_debug(f"Emergency fallback successful: {filepath}")
-                add_url_to_history(meme_url)
-                return filepath
-                
-        except Exception as e:
-            log_pinterest_debug(f"Emergency fallback failed: {e}", "ERROR")
+    # Try multiple meme APIs as fallback
+    meme_sources = [
+        'https://meme-api.com/gimme',
+        'https://api.imgflip.com/get_memes',
+        'https://meme-api.herokuapp.com/gimme',
+    ]
     
+    for i, api_url in enumerate(meme_sources):
+        try:
+            log_pinterest_debug(f"Trying meme API {i+1}/{len(meme_sources)}: {api_url}")
+            
+            if 'meme-api.com' in api_url or 'meme-api.herokuapp.com' in api_url:
+                # Standard meme-api format
+                resp = requests.get(api_url, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                if data.get('nsfw', True):  # Skip NSFW
+                    log_pinterest_debug("Meme is NSFW, skipping")
+                    continue
+                    
+                meme_url = data.get('url')
+                if not meme_url:
+                    log_pinterest_debug("No URL in response")
+                    continue
+                    
+            elif 'imgflip.com' in api_url:
+                # ImgFlip API format
+                resp = requests.get(api_url, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                memes = data.get('data', {}).get('memes', [])
+                if not memes:
+                    log_pinterest_debug("No memes in ImgFlip response")
+                    continue
+                    
+                # Pick random meme from ImgFlip
+                meme = random.choice(memes)
+                meme_url = meme.get('url')
+                if not meme_url:
+                    log_pinterest_debug("No URL in ImgFlip meme")
+                    continue
+            else:
+                continue
+            
+            # Check if we've used this URL before
+            hist = load_history()
+            if meme_url in hist['urls']:
+                log_pinterest_debug(f"Meme {meme_url} already used, trying next API")
+                continue
+                
+            log_pinterest_debug(f"Got fresh meme from API {i+1}: {meme_url}")
+            
+            # Download the meme
+            try:
+                Path(output_dir).mkdir(parents=True, exist_ok=True)
+                headers = {'User-Agent': 'Mozilla/5.0 MemeVideoGen/1.0 (Emergency Fallback)'}
+                
+                download_resp = requests.get(meme_url, headers=headers, timeout=15, stream=True)
+                download_resp.raise_for_status()
+                
+                # Determine file extension
+                ext = '.jpg'
+                content_type = download_resp.headers.get('content-type', '').lower()
+                if 'png' in content_type or '.png' in meme_url.lower():
+                    ext = '.png'
+                elif 'gif' in content_type or '.gif' in meme_url.lower():
+                    ext = '.gif'
+                elif 'webp' in content_type or '.webp' in meme_url.lower():
+                    ext = '.webp'
+                elif 'jpeg' in content_type or '.jpeg' in meme_url.lower():
+                    ext = '.jpg'
+                    
+                filename = f'emergency_meme_{abs(hash(meme_url)) % 10**6}_{i+1}{ext}'
+                filepath = os.path.join(output_dir, filename)
+                
+                # Download with size checking
+                downloaded_size = 0
+                with open(filepath, 'wb') as f:
+                    for chunk in download_resp.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+                            downloaded_size += len(chunk)
+                            # Stop if file gets too large (50MB limit)
+                            if downloaded_size > 50 * 1024 * 1024:
+                                log_pinterest_debug("Emergency file too large, stopping download")
+                                break
+                                
+                if os.path.isfile(filepath) and os.path.getsize(filepath) > 1000:
+                    log_pinterest_debug(f"Emergency fallback successful: {filepath} ({downloaded_size} bytes)")
+                    add_url_to_history(meme_url)
+                    return filepath
+                else:
+                    log_pinterest_debug(f"Emergency file too small or missing: {filepath}")
+                    try:
+                        if os.path.exists(filepath):
+                            os.remove(filepath)
+                    except:
+                        pass
+                        
+            except Exception as download_error:
+                log_pinterest_debug(f"Emergency download failed for API {i+1}: {download_error}")
+                continue
+                
+        except Exception as api_error:
+            log_pinterest_debug(f"Emergency API {i+1} failed: {api_error}")
+            continue
+    
+    log_pinterest_debug("All emergency fallback attempts failed", "ERROR")
     return None
 
 def get_from_meme_api():
-    print("Calling meme API...")
-    url = 'https://meme-api.com/gimme'
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        print(f"Meme API response: {data}", flush=True)
-        if not data.get('nsfw', True):
-            meme_url = data['url']
-            hist = load_history()
-            if meme_url in hist['urls']:
-                print(f"Meme {meme_url} already used, skipping", flush=True)
-                return None
-            print(f"Got fresh meme: {meme_url}", flush=True)
-            return meme_url
-        else:
-            print("Meme is NSFW, skipping", flush=True)
-    except Exception as e:
-        print(f"Error getting meme from API: {e}", flush=True)
-    print("No suitable meme found", flush=True)
+    """Get meme from API with enhanced error handling"""
+    log_pinterest_debug("Calling meme API...")
+    
+    # Try multiple endpoints for better reliability
+    endpoints = [
+        'https://meme-api.com/gimme',
+        'https://meme-api.herokuapp.com/gimme',
+        'https://meme-api.com/gimme/memes',
+        'https://meme-api.com/gimme/dankmemes',
+    ]
+    
+    for endpoint in endpoints:
+        try:
+            log_pinterest_debug(f"Trying endpoint: {endpoint}")
+            r = requests.get(endpoint, timeout=10)
+            r.raise_for_status()
+            data = r.json()
+            log_pinterest_debug(f"Meme API response from {endpoint}: success")
+            
+            if not data.get('nsfw', True):
+                meme_url = data.get('url')
+                if meme_url:
+                    hist = load_history()
+                    if meme_url in hist['urls']:
+                        log_pinterest_debug(f"Meme {meme_url} already used, trying next endpoint")
+                        continue
+                    log_pinterest_debug(f"Got fresh meme: {meme_url}")
+                    return meme_url
+                else:
+                    log_pinterest_debug("No URL in response")
+            else:
+                log_pinterest_debug("Meme is NSFW, trying next endpoint")
+        except Exception as e:
+            log_pinterest_debug(f"Error with endpoint {endpoint}: {e}")
+            continue
+    
+    log_pinterest_debug("No suitable meme found from any endpoint", "WARNING")
     return None
 
 def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int = 30):
     log_pinterest_debug(f"Starting search with URL: {search_url}")
+    
+    # Check Pinterest monitor first
+    if should_use_pinterest_fallback():
+        status = get_pinterest_status()
+        log_pinterest_debug(f"Pinterest monitor suggests fallback mode (failures: {status['consecutive_failures']}, last success: {status['last_success_seconds_ago']}s ago)", "WARNING")
+        return get_emergency_fallback_content(output_dir)
+    
+    # Early Pinterest availability check
+    if is_pinterest_blocked():
+        log_pinterest_debug("Pinterest appears blocked, using emergency fallback immediately", "WARNING")
+        return get_emergency_fallback_content(output_dir)
+    
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
@@ -86,30 +220,36 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             search_url = search_url.replace('://ru.pinterest.com', '://www.pinterest.com').replace('://uk.pinterest.com', '://www.pinterest.com').replace('://br.pinterest.com', '://www.pinterest.com')
             log_pinterest_debug(f"Normalized URL: {search_url}")
         
-        # Try browser-based scraping first (more reliable)
+        # Try browser-based scraping with enhanced error handling
         try:
             log_pinterest_debug("Attempting browser-based scraping first")
             from pinterest_dl import PinterestDL
-            import time  # Import time here to ensure it's available
+            import time
             
-            target = random.randint(40, 150)
+            target = random.randint(20, 80)  # Reduced target to avoid timeout
             log_pinterest_debug(f"Trying browser with target {target}")
             
-            # Add small delay to avoid rate limiting
-            time.sleep(random.uniform(1, 3))
+            # Add delay to avoid rate limiting
+            time.sleep(random.uniform(2, 5))  # Increased delay
             
-            browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
+            # Set shorter timeout to fail fast
+            browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True, timeout=30)
             scraped_browser = browser_client.scrape(url=search_url, num=target)
             log_pinterest_debug(f"Browser scraped {len(scraped_browser) if scraped_browser else 0} items")
             
             if scraped_browser and len(scraped_browser) > 0:
                 random.shuffle(scraped_browser)
                 # Try multiple items to increase success chance
-                for attempt in range(min(3, len(scraped_browser))):
+                for attempt in range(min(5, len(scraped_browser))):  # Increased attempts
                     chosen_meta = scraped_browser[attempt]
-                    log_pinterest_debug(f"Downloading attempt {attempt + 1}/3")
+                    log_pinterest_debug(f"Downloading attempt {attempt + 1}/5")
                     try:
-                        downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
+                        # Download without timeout parameter
+                        downloaded_items = PinterestDL.download_media(
+                            media=[chosen_meta], 
+                            output_dir=output_dir, 
+                            download_streams=True
+                        )
                         if downloaded_items:
                             item = downloaded_items[0]
                             file_path = None
@@ -140,12 +280,20 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                                     continue
                     except Exception as e:
                         log_pinterest_debug(f"Download attempt {attempt + 1} failed: {e}", "WARNING")
+                        # If we get "Empty response received", fail fast
+                        if "empty response" in str(e).lower():
+                            log_pinterest_debug("Detected empty response, switching to fallback", "WARNING")
+                            break
                         continue
                 log_pinterest_debug("All browser download attempts failed", "WARNING")
         except ImportError:
             log_pinterest_debug("pinterest-dl not available, trying HTML parsing")
         except Exception as e:
             log_pinterest_debug(f"Browser method failed: {e}", "WARNING")
+            # If we detect Pinterest blocking patterns, skip to fallback immediately
+            if any(pattern in str(e).lower() for pattern in ["empty response", "timeout", "connection", "blocked"]):
+                log_pinterest_debug("Detected Pinterest blocking pattern, switching to emergency fallback", "WARNING")
+                return get_emergency_fallback_content(output_dir)
         
         # Fallback to HTML parsing method (rest of function continues as before)
         # If all Pinterest methods fail, try emergency fallback
@@ -585,6 +733,18 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
 
 def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 10000):
     log_pinterest_debug(f"Called with URL: {board_url}")
+    
+    # Check Pinterest monitor first
+    if should_use_pinterest_fallback():
+        status = get_pinterest_status()
+        log_pinterest_debug(f"Pinterest monitor suggests fallback mode (failures: {status['consecutive_failures']}, last success: {status['last_success_seconds_ago']}s ago)", "WARNING")
+        return get_emergency_fallback_content(output_dir)
+    
+    # Early Pinterest availability check
+    if is_pinterest_blocked():
+        log_pinterest_debug("Pinterest appears blocked, using emergency fallback immediately", "WARNING")
+        return get_emergency_fallback_content(output_dir)
+    
     try:
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         
@@ -600,62 +760,68 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
 
         # Try multiple approaches for better success rate
         scraped = None
-        max_scan_cap = 800
-        min_scan = 40
-        target_api = 100
+        max_scan_cap = 400  # Reduced from 800
+        min_scan = 20       # Reduced from 40
+        target_api = 50     # Reduced from 100
         
         try:
             from pinterest_dl import PinterestDL
-            import time  # Import time here to ensure it's available
+            import time
             
-            max_scan = max(20, min(max_scan_cap, num if isinstance(num, int) and num > 0 else max_scan_cap))
-            min_scan = 40 if max_scan >= 80 else 10
-            target_api = random.randint(min_scan, max(min_scan + 5, max_scan // 2 if max_scan >= 100 else max_scan))
-            print(f"Using PinterestDL (sample mode). Target API sample size: {target_api} (cap {max_scan})", flush=True)
+            max_scan = max(10, min(max_scan_cap, num if isinstance(num, int) and num > 0 else max_scan_cap))
+            target_api = random.randint(min_scan, max(min_scan + 5, max_scan // 2 if max_scan >= 50 else max_scan))
+            log_pinterest_debug(f"Using PinterestDL (sample mode). Target API sample size: {target_api} (cap {max_scan})")
             
             # Add delay to avoid rate limiting
-            time.sleep(random.uniform(1, 3))
+            time.sleep(random.uniform(2, 4))  # Increased delay
             
-            # Try API mode first
+            # Try API mode first with timeout handling
             try:
-                client = PinterestDL.with_api(timeout=15, verbose=False)
+                client = PinterestDL.with_api(timeout=10, verbose=False)  # Reduced timeout
                 scraped = client.scrape(url=board_url, num=target_api)
-                print(f"API mode scraped {len(scraped) if scraped else 0} items (target: {target_api})", flush=True)
+                log_pinterest_debug(f"API mode scraped {len(scraped) if scraped else 0} items (target: {target_api})")
             except Exception as ae:
-                print(f"API mode scrape failed: {ae}", flush=True)
+                log_pinterest_debug(f"API mode scrape failed: {ae}", "WARNING")
                 scraped = None
+                # If we detect empty response or blocking, skip to fallback
+                if any(pattern in str(ae).lower() for pattern in ["empty response", "timeout", "connection", "blocked"]):
+                    log_pinterest_debug("Detected blocking pattern in API mode, switching to emergency fallback", "WARNING")
+                    return get_emergency_fallback_content(output_dir)
 
         except ImportError:
-            print("PinterestDL not available, trying alternative methods", flush=True)
+            log_pinterest_debug("PinterestDL not available, trying alternative methods")
         except Exception as e:
-            print(f"PinterestDL initialization failed: {e}", flush=True)
+            log_pinterest_debug(f"PinterestDL initialization failed: {e}")
             
-        # If API mode didn't get enough items, try browser mode
-        if not scraped or len(scraped) < max(8, target_api // 4):
+        # If API mode didn't get enough items, try browser mode with enhanced error handling
+        if not scraped or len(scraped) < max(4, target_api // 4):  # Reduced threshold
             try:
                 from pinterest_dl import PinterestDL
-                import time  # Import time here to ensure it's available
+                import time
                 
                 remaining_cap = max_scan_cap - (len(scraped) if scraped else 0)
-                target_browser = random.randint(max(min_scan, 60), max(min_scan + 20, min(max_scan_cap, remaining_cap if remaining_cap > 0 else max_scan_cap)))
-                print(f"Few items from API mode; trying browser mode with target {target_browser}…", flush=True)
+                target_browser = random.randint(max(min_scan, 30), max(min_scan + 10, min(max_scan_cap, remaining_cap if remaining_cap > 0 else max_scan_cap)))
+                log_pinterest_debug(f"Few items from API mode; trying browser mode with target {target_browser}")
                 
-                time.sleep(random.uniform(2, 4))  # Longer delay for browser mode
-                browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
+                time.sleep(random.uniform(3, 6))  # Longer delay for browser mode
+                browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True, timeout=30)
                 scraped_browser = browser_client.scrape(url=board_url, num=target_browser)
-                print(f"Browser mode scraped {len(scraped_browser) if scraped_browser else 0} items", flush=True)
+                log_pinterest_debug(f"Browser mode scraped {len(scraped_browser) if scraped_browser else 0} items")
                 
                 if scraped_browser:
                     scraped = scraped_browser
                     
             except Exception as be:
-                print(f"Browser mode scrape failed: {be}", flush=True)
+                log_pinterest_debug(f"Browser mode scrape failed: {be}", "WARNING")
+                # Check for blocking patterns
+                if any(pattern in str(be).lower() for pattern in ["empty response", "timeout", "connection", "blocked"]):
+                    log_pinterest_debug("Detected blocking pattern in browser mode, switching to emergency fallback", "WARNING")
+                    return get_emergency_fallback_content(output_dir)
 
         if scraped:
             random.shuffle(scraped)
         if not scraped:
-            log_pinterest_debug("No items scraped from Pinterest", "WARNING")
-            # Try emergency fallback
+            log_pinterest_debug("No items scraped from Pinterest, using emergency fallback", "WARNING")
             return get_emergency_fallback_content(output_dir)
 
         chosen_meta = random.choice(scraped)
@@ -669,6 +835,9 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
             return get_emergency_fallback_content(output_dir)
         except Exception as e:
             log_pinterest_debug(f"PinterestDL download failed: {e}", "ERROR")
+            # Check for blocking patterns in download
+            if any(pattern in str(e).lower() for pattern in ["empty response", "timeout", "connection", "blocked"]):
+                log_pinterest_debug("Detected blocking pattern during download, switching to emergency fallback", "WARNING")
             return get_emergency_fallback_content(output_dir)
             
         log_pinterest_debug(f"PinterestDL downloaded {len(downloaded_items) if downloaded_items else 0} item(s)")

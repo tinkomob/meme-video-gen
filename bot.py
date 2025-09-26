@@ -11,7 +11,7 @@ from io import BytesIO
 
 from dotenv import load_dotenv
 from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
-from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs
+from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs, replace_audio_in_video
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
 from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
@@ -145,9 +145,11 @@ HELP_TEXT = (
     "/help — помощь\n"
     "/generate — генерация мемов. Форматы: /generate N (N видео), /generate <pin_num> <audio_duration> [count=M]. Примеры: /generate 3; /generate 80 12 count=2\n"
     "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), музыка (music_playlists.json)\n"
+    "  После генерации доступны кнопки: Опубликовать, Выбрать платформы, Сменить трек, Сгенерировать заново\n"
     "/deploy — опубликовать последнее видео (опционально: соцсети, приватность, dry)\n"
     "/dryrun — показать/изменить режим публикации (on/off)\n"
     "/checkfiles — проверить cookies.txt, youtube_cookies.txt, client_secrets.json, token.pickle и instagram_session.json\n"
+    "/pinterestcheck — проверить состояние Pinterest и режим резервного источника контента\n"
     "/history — последние публикации\n"
     "/uploadcookies — загрузить cookies.txt (TikTok) как документ\n"
     "/uploadytcookies — загрузить youtube_cookies.txt (YouTube) как документ\n"
@@ -161,6 +163,8 @@ HELP_TEXT = (
     "/chatid — показать и сохранить текущий chat id\n"
     "/cleanup — очистить старые временные каталоги pins_*/ audio_*\n"
     "/rebuildschedule — пересоздать расписание генераций на сегодня\n"
+    "\n"
+    "Кнопка 'Сменить трек' заменяет аудиотрек в уже созданном видео на случайный из плейлистов (макс. 12 сек).\n"
 )
 
 
@@ -402,6 +406,7 @@ async def cmd_generate(update, context):
                     kb = InlineKeyboardMarkup([
                         [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
                         [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
+                        [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
                         [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
                     ])
                 try:
@@ -454,6 +459,7 @@ async def cmd_generate(update, context):
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
             [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
+            [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
             [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
         ])
     try:
@@ -888,11 +894,115 @@ async def on_callback_regenerate(update, context):
             [
                 [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
                 [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
+                [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
                 [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
             ]
         )
     try:
         m = await context.bot.send_video(chat_id=update.effective_chat.id, video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
+        try:
+            if m and getattr(m, "message_id", None):
+                _add_msg_id(context, m.message_id)
+        except Exception:
+            pass
+    except Exception:
+        try:
+            await q.message.reply_text(caption, reply_markup=kb)
+        except Exception:
+            await q.message.reply_text(caption)
+
+
+async def on_callback_change_audio(update, context):
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    item_id = data.split(":", 1)[1] if ":" in data else None
+    if not item_id:
+        await q.message.reply_text("Не удалось определить видео для смены аудио.")
+        return
+
+    hist = load_video_history()
+    item = next((it for it in hist if str(it.get("id")) == str(item_id)), None)
+    if not item:
+        await q.message.reply_text("Элемент истории не найден.")
+        return
+    
+    video_path = item.get("video_path")
+    if not video_path or not os.path.exists(video_path):
+        await q.message.reply_text("Файл видео отсутствует на диске.")
+        return
+
+    music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+    if not music_playlists:
+        await q.message.reply_text("Нет доступных плейлистов для замены аудио.")
+        return
+
+    await q.message.reply_text("🎵 Начинаю замену аудиотрека...")
+    
+    loop = asyncio.get_running_loop()
+    
+    def run_audio_replacement():
+        def progress(msg: str):
+            asyncio.run_coroutine_threadsafe(q.message.reply_text(msg), loop)
+        
+        return replace_audio_in_video(
+            video_path=video_path,
+            music_playlists=music_playlists,
+            audio_duration=12,
+            progress=progress
+        )
+
+    result = await asyncio.to_thread(run_audio_replacement)
+    
+    if not result or not result.video_path:
+        await q.message.reply_text("❌ Не удалось заменить аудио в видео.")
+        return
+    
+    # Удаляем старое видео из истории
+    hist = [it for it in hist if str(it.get("id")) != str(item_id)]
+    save_video_history(hist)
+    
+    # Удаляем старые файлы
+    old_video = item.get("video_path")
+    old_thumbnail = item.get("thumbnail_path")
+    for p in [old_video, old_thumbnail]:
+        try:
+            if p and os.path.exists(p):
+                os.remove(p)
+        except Exception:
+            pass
+    
+    # Добавляем новое видео в историю
+    new_item = add_video_history_item(
+        result.video_path, 
+        result.thumbnail_path, 
+        item.get("source_url"), 
+        None,  # audio_path
+        None   # deployment_links
+    )
+    
+    caption = f"✅ Аудио заменено!\n"
+    if result.audio_title:
+        caption += f"🎵 Новый трек: {result.audio_title}\n"
+    if item.get("source_url"):
+        caption += f"📎 Источник: {item.get('source_url')}"
+    
+    kb = None
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
+            [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
+            [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
+            [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
+        ])
+    
+    try:
+        m = await context.bot.send_video(
+            chat_id=update.effective_chat.id, 
+            video=open(result.video_path, "rb"), 
+            caption=caption, 
+            reply_markup=kb
+        )
         try:
             if m and getattr(m, "message_id", None):
                 _add_msg_id(context, m.message_id)
@@ -1040,6 +1150,53 @@ async def cmd_checkfiles(update, context):
     if not os.path.exists("instagram_session.json"):
         lines.append("Для Instagram загрузите instagram_session.json командой /uploadinstasession")
     await update.message.reply_text("\n".join(lines))
+
+
+async def cmd_pinterestcheck(update, context):
+    """Check Pinterest status and availability"""
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
+    
+    try:
+        from app.pinterest_monitor import get_pinterest_monitor
+        
+        await update.message.reply_text("Проверяю состояние Pinterest...")
+        
+        monitor = get_pinterest_monitor()
+        
+        # Force immediate check
+        is_available = monitor.force_check()
+        status = monitor.get_status_info()
+        
+        lines = ["🔍 Состояние Pinterest:"]
+        
+        if is_available:
+            lines.append("✅ Pinterest доступен")
+        else:
+            lines.append("❌ Pinterest заблокирован или недоступен")
+        
+        if status['fallback_mode']:
+            lines.append("⚠️ Активен режим резервного источника контента")
+        else:
+            lines.append("✅ Используется Pinterest как основной источник")
+        
+        lines.append(f"📊 Последовательных ошибок: {status['consecutive_failures']}")
+        lines.append(f"⏰ Последняя проверка: {status['last_check_seconds_ago']} сек. назад")
+        lines.append(f"✅ Последний успешный доступ: {status['last_success_seconds_ago']} сек. назад")
+        
+        if status['recovery_attempts'] > 0:
+            lines.append(f"🔄 Попытки восстановления: {status['recovery_attempts']}")
+        
+        if status['fallback_mode']:
+            lines.append("\n💡 В режиме резервного источника используются альтернативные meme API")
+            lines.append("Pinterest будет автоматически проверяться каждые 5 минут")
+        
+        await update.message.reply_text("\n".join(lines))
+        
+    except Exception as e:
+        await update.message.reply_text(f"Ошибка при проверке Pinterest: {e}")
 
 
 async def on_document_received(update, context):
@@ -1267,7 +1424,11 @@ async def _scheduled_job(context):
             vid = item['id']
             kb = None
             if InlineKeyboardButton and InlineKeyboardMarkup:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
+                    [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
+                    [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
+                ])
             try:
                 if item.get('video_path') and os.path.exists(item.get('video_path')):
                     info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
@@ -1459,6 +1620,7 @@ def main():
     app.add_handler(CommandHandler("uploadtoken", cmd_uploadtoken))
     app.add_handler(CommandHandler("clearhistory", cmd_clearhistory))
     app.add_handler(CommandHandler("checkfiles", cmd_checkfiles))
+    app.add_handler(CommandHandler("pinterestcheck", cmd_pinterestcheck))
     async def cmd_cleanup(update, context):
         try:
             set_last_chat_id(update.effective_chat.id)
@@ -1478,6 +1640,7 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback_publish_all, pattern=r"^publishall:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_cancel_choose, pattern=r"^cancelchoose:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_regenerate, pattern=r"^regenerate:\d+"))
+    app.add_handler(CallbackQueryHandler(on_callback_change_audio, pattern=r"^changeaudio:\d+"))
     async def on_callback_scheduled_regenerate(update, context):
         q = update.callback_query
         await q.answer()
@@ -1584,7 +1747,11 @@ def main():
             vid = it['id']
             kb = None
             if InlineKeyboardButton and InlineKeyboardMarkup:
-                kb = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
+                    [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
+                    [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
+                ])
             try:
                 if it.get('video_path') and os.path.exists(it.get('video_path')):
                     info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
@@ -1755,7 +1922,11 @@ def main():
             vid = it['id']
             kb2 = None
             if InlineKeyboardButton and InlineKeyboardMarkup:
-                kb2 = InlineKeyboardMarkup([[InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],[InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")]])
+                kb2 = InlineKeyboardMarkup([
+                    [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
+                    [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
+                    [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
+                ])
             try:
                 info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
                 await update.message.reply_video(video=open(it['video_path'],'rb'), caption=info_text, reply_markup=kb2)

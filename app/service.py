@@ -428,3 +428,120 @@ def deploy_to_socials(
                 notify(f"❌ X: исключение при загрузке — {e}")
 
     return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link, 'x': x_link}
+
+def replace_audio_in_video(
+    video_path: str,
+    music_playlists: list[str],
+    audio_duration: int = 12,
+    progress: Optional[Callable[[str], None]] = None,
+):
+    notify = (lambda msg: progress(msg) if callable(progress) else None)
+    
+    if not os.path.exists(video_path):
+        notify("❌ Видео файл не найден")
+        return None
+    
+    if not music_playlists:
+        notify("❌ Список плейлистов пуст")
+        return None
+    
+    unique_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
+    audio_dir = f"{DEFAULT_AUDIO_DIR}_{unique_id}"
+    Path(audio_dir).mkdir(parents=True, exist_ok=True)
+    
+    try:
+        chosen_music = random.choice(music_playlists)
+        notify("🎵 Скачиваю новый трек из плейлиста…")
+        set_phase('audio_download')
+        
+        audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
+        if not audio_path:
+            notify("❌ Не удалось скачать аудио")
+            return None
+        
+        notify("✂️ Вырезаю аудио-клип нужной длительности…")
+        set_phase('audio_clip')
+        audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
+        
+        if not audio_clip_path:
+            notify("❌ Не удалось вырезать аудио-клип")
+            return None
+        
+        # Создаем новое видео с замененным аудио
+        unique_suffix = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
+        new_video_path = f"tiktok_video_{unique_suffix}.mp4"
+        
+        notify("🎬 Заменяю аудио в видео…")
+        set_phase('audio_replace')
+        
+        try:
+            from moviepy.editor import VideoFileClip, AudioFileClip
+            
+            video_clip = VideoFileClip(video_path)
+            new_audio = AudioFileClip(audio_clip_path)
+            
+            # Обрезаем аудио по длительности видео
+            video_duration = video_clip.duration
+            if new_audio.duration > video_duration:
+                new_audio = new_audio.subclip(0, video_duration)
+            
+            # Заменяем аудио
+            final_video = video_clip.set_audio(new_audio)
+            final_video.write_videofile(new_video_path, verbose=False, logger=None)
+            
+            # Освобождаем ресурсы
+            video_clip.close()
+            new_audio.close() 
+            final_video.close()
+            
+        except Exception as e:
+            notify(f"❌ Ошибка при замене аудио: {e}")
+            return None
+        
+        # Получаем название трека
+        audio_title = get_song_title(audio_path)
+        
+        # Создаем новую миниатюру
+        thumbnail_path = f"thumbnail_{unique_suffix}.jpg"
+        notify("🖼️ Генерирую новую миниатюру…")
+        set_phase('thumbnail')
+        thumb_result = generate_thumbnail(new_video_path, thumbnail_path)
+        
+        if not thumb_result or not os.path.exists(thumb_result):
+            notify("❌ Не удалось создать миниатюру")
+            return None
+        
+        # Очистка временных файлов
+        if audio_clip_path and os.path.exists(audio_clip_path):
+            try:
+                os.remove(audio_clip_path)
+            except Exception:
+                pass
+        if audio_path and os.path.exists(audio_path):
+            try:
+                os.remove(audio_path)
+            except Exception:
+                pass
+        
+        # Удаляем временную директорию
+        try:
+            if Path(audio_dir).exists():
+                shutil.rmtree(audio_dir, ignore_errors=True)
+        except Exception:
+            pass
+        
+        set_phase('done')
+        notify("✅ Аудио успешно заменено!")
+        
+        return GenerationResult(new_video_path, thumbnail_path, None, None, audio_title)
+        
+    except Exception as e:
+        notify(f"❌ Общая ошибка при замене аудио: {e}")
+        return None
+    finally:
+        # Очистка в случае ошибки
+        try:
+            if Path(audio_dir).exists():
+                shutil.rmtree(audio_dir, ignore_errors=True)
+        except Exception:
+            pass
