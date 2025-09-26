@@ -288,9 +288,18 @@ def deploy_to_socials(
             else:
                 yt = youtube_authenticate()
                 if yt is not None:
-                    resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
+                    try:
+                        resp = youtube_upload_short(yt, video_path, generated['title'], generated['description'], tags=generated['tags'], privacyStatus=privacy)
+                    except Exception as e:
+                        resp = None
+                        notify(f"❌ YouTube: ошибка загрузки — {e}")
                     if resp and resp.get('id'):
                         yt_link = f"https://youtu.be/{resp.get('id')}"
+                    else:
+                        if yt_link is None:
+                            notify("❌ YouTube: загрузка не удалась")
+                else:
+                    notify("❌ YouTube: аутентификация не удалась")
     
     insta_link = None
     if 'instagram' in socials:
@@ -316,13 +325,19 @@ def deploy_to_socials(
                     if hasattr(insta, 'code'):
                         code = getattr(insta, 'code')
                     elif isinstance(insta, dict):
+                        if 'error' in insta:
+                            err = insta.get('error') or 'Ошибка'
+                            det = insta.get('details') or ''
+                            notify(f"❌ Instagram: {err}{(': ' + det) if det else ''}")
                         code = insta.get('code')
                         if not code and 'url' in insta and isinstance(insta['url'], str):
                             insta_link = insta['url']
                     if code and not insta_link:
                         insta_link = f"https://www.instagram.com/reel/{code}/"
+                else:
+                    notify("❌ Instagram: загрузка не удалась")
             except Exception:
-                pass
+                notify("❌ Instagram: непредвиденная ошибка при обработке ответа")
 
     tiktok_link = None
     if 'tiktok' in socials:
@@ -356,12 +371,21 @@ def deploy_to_socials(
                                 print(f"TikTok upload likely successful (WebDriver error handled): {tiktok_link}")
                             else:
                                 print(f"TikTok upload response: {resp}")
+                                err = resp.get('error') if isinstance(resp, dict) else None
+                                det = resp.get('details') if isinstance(resp, dict) else None
+                                if err or det:
+                                    notify(f"❌ TikTok: {err or 'ошибка'}{(': ' + det) if det else ''}")
+                                else:
+                                    notify("❌ TikTok: загрузка не удалась")
                         else:
                             print(f"TikTok upload returned non-dict response: {type(resp)}")
+                            notify("❌ TikTok: неожиданный ответ от сервиса")
                     else:
                         print("TikTok upload returned None")
+                        notify("❌ TikTok: загрузка не удалась")
                 except Exception as e:
                     print(f"TikTok upload exception: {e}", flush=True)
+                    notify(f"❌ TikTok: исключение при загрузке — {e}")
 
     x_link = None
     if 'x' in socials or 'twitter' in socials:
@@ -398,7 +422,9 @@ def deploy_to_socials(
                     print(f"X upload successful: {x_link}")
                 else:
                     print("X upload returned None or missing id")
+                    notify("❌ X: загрузка не удалась")
             except Exception as e:
                 print(f"X upload exception: {e}", flush=True)
+                notify(f"❌ X: исключение при загрузке — {e}")
 
     return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link, 'x': x_link}
