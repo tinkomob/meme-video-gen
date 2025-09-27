@@ -5,6 +5,8 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 import requests
+import threading
+from typing import Any
 _LOG_SUPPRESS_WINDOW = 15
 _EMPTY_RESP_STATE = {"last": 0.0, "suppressed": 0}
 from .utils import load_history, add_url_to_history
@@ -28,6 +30,22 @@ def log_pinterest_debug(message: str, level: str = "INFO"):
         print(f"[{timestamp}] Pinterest {level}: {message}", flush=True)
         return
     print(f"[{timestamp}] Pinterest {level}: {message}", flush=True)
+
+def run_with_timeout(fn, timeout_seconds, *args, **kwargs):
+    result: dict[str, Any] = {"value": None, "error": None}
+    def _target():
+        try:
+            result["value"] = fn(*args, **kwargs)
+        except Exception as e:
+            result["error"] = e
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(timeout_seconds)
+    if t.is_alive():
+        return False, None, TimeoutError("operation timed out")
+    if result["error"] is not None:
+        return False, None, result["error"]
+    return True, result["value"], None
 
 def is_pinterest_blocked():
     """Check if Pinterest is accessible with a simple test"""
@@ -250,7 +268,13 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             
             # Set shorter timeout to fail fast
             browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True, timeout=30)
-            scraped_browser = browser_client.scrape(url=search_url, num=target)
+            ok, scraped_browser, err = run_with_timeout(browser_client.scrape, 35, url=search_url, num=target)
+            if not ok:
+                if isinstance(err, TimeoutError):
+                    log_pinterest_debug("Browser scrape timed out, switching to emergency fallback", "WARNING")
+                    return get_emergency_fallback_content(output_dir)
+                log_pinterest_debug(f"Browser scrape error: {err}", "WARNING")
+                scraped_browser = None
             log_pinterest_debug(f"Browser scraped {len(scraped_browser) if scraped_browser else 0} items")
             
             if scraped_browser and len(scraped_browser) > 0:
@@ -261,11 +285,20 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                     log_pinterest_debug(f"Downloading attempt {attempt + 1}/5")
                     try:
                         # Download without timeout parameter
-                        downloaded_items = PinterestDL.download_media(
-                            media=[chosen_meta], 
-                            output_dir=output_dir, 
+                        ok, downloaded_items, derr = run_with_timeout(
+                            PinterestDL.download_media,
+                            20,
+                            media=[chosen_meta],
+                            output_dir=output_dir,
                             download_streams=True
                         )
+                        if not ok:
+                            if isinstance(derr, TimeoutError):
+                                log_pinterest_debug("Download timed out, trying next candidate", "WARNING")
+                                continue
+                            if derr is not None:
+                                raise derr
+                            raise RuntimeError("download failed without error detail")
                         if downloaded_items:
                             item = downloaded_items[0]
                             file_path = None
@@ -706,13 +739,25 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             target = random.randint(30, 120)
             print(f"Search page direct download failed; trying browser fallback with target {target}", flush=True)
             browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
-            scraped_browser = browser_client.scrape(url=search_url, num=target)
+            ok, scraped_browser, err = run_with_timeout(browser_client.scrape, 35, url=search_url, num=target)
+            if not ok:
+                print(f"Browser fallback scrape failed: {err}", flush=True)
+                scraped_browser = None
             print(f"Browser fallback scraped {len(scraped_browser) if scraped_browser else 0} items", flush=True)
             if scraped_browser:
                 random.shuffle(scraped_browser)
                 chosen_meta = random.choice(scraped_browser)
                 print("Downloading one media from browser fallback", flush=True)
-                downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
+                ok, downloaded_items, derr = run_with_timeout(
+                    PinterestDL.download_media,
+                    20,
+                    media=[chosen_meta],
+                    output_dir=output_dir,
+                    download_streams=True
+                )
+                if not ok:
+                    print(f"Browser fallback download error: {derr}", flush=True)
+                    downloaded_items = None
                 if downloaded_items:
                     item = downloaded_items[0]
                     file_path = None
@@ -794,7 +839,14 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
             # Try API mode first with timeout handling
             try:
                 client = PinterestDL.with_api(timeout=10, verbose=False)  # Reduced timeout
-                scraped = client.scrape(url=board_url, num=target_api)
+                ok, scraped_api, err = run_with_timeout(client.scrape, 15, url=board_url, num=target_api)
+                if not ok:
+                    if isinstance(err, TimeoutError):
+                        log_pinterest_debug("API scrape timed out, switching to emergency fallback", "WARNING")
+                        return get_emergency_fallback_content(output_dir)
+                    log_pinterest_debug(f"API scrape error: {err}", "WARNING")
+                    scraped_api = None
+                scraped = scraped_api
                 log_pinterest_debug(f"API mode scraped {len(scraped) if scraped else 0} items (target: {target_api})")
             except Exception as ae:
                 log_pinterest_debug(f"API mode scrape failed: {ae}", "WARNING")
@@ -821,7 +873,13 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
                 
                 time.sleep(random.uniform(3, 6))  # Longer delay for browser mode
                 browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True, timeout=30)
-                scraped_browser = browser_client.scrape(url=board_url, num=target_browser)
+                ok, scraped_browser, err = run_with_timeout(browser_client.scrape, 35, url=board_url, num=target_browser)
+                if not ok:
+                    if isinstance(err, TimeoutError):
+                        log_pinterest_debug("Browser scrape timed out, switching to emergency fallback", "WARNING")
+                        return get_emergency_fallback_content(output_dir)
+                    log_pinterest_debug(f"Browser scrape error: {err}", "WARNING")
+                    scraped_browser = None
                 log_pinterest_debug(f"Browser mode scraped {len(scraped_browser) if scraped_browser else 0} items")
                 
                 if scraped_browser:
@@ -845,7 +903,19 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
         
         try:
             from pinterest_dl import PinterestDL
-            downloaded_items = PinterestDL.download_media(media=[chosen_meta], output_dir=output_dir, download_streams=True)
+            ok, downloaded_items, derr = run_with_timeout(
+                PinterestDL.download_media,
+                20,
+                media=[chosen_meta],
+                output_dir=output_dir,
+                download_streams=True
+            )
+            if not ok:
+                if isinstance(derr, TimeoutError):
+                    log_pinterest_debug("Download timed out, switching to emergency fallback", "WARNING")
+                    return get_emergency_fallback_content(output_dir)
+                log_pinterest_debug(f"PinterestDL download error: {derr}", "ERROR")
+                raise derr if derr is not None else RuntimeError("download failed without error detail")
         except ImportError:
             log_pinterest_debug("PinterestDL not available for download", "ERROR")
             return get_emergency_fallback_content(output_dir)
