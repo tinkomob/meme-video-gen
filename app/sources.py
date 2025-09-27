@@ -5,12 +5,28 @@ import time
 from pathlib import Path
 from urllib.parse import urlparse
 import requests
+_LOG_SUPPRESS_WINDOW = 15
+_EMPTY_RESP_STATE = {"last": 0.0, "suppressed": 0}
 from .utils import load_history, add_url_to_history
 from .pinterest_monitor import should_use_pinterest_fallback, get_pinterest_status
 
 def log_pinterest_debug(message: str, level: str = "INFO"):
     """Enhanced logging for Pinterest debugging"""
     timestamp = time.strftime("%H:%M:%S")
+    lower = (message or "").lower()
+    if "empty response" in lower:
+        now = time.time()
+        last = _EMPTY_RESP_STATE.get("last", 0.0)
+        suppressed = _EMPTY_RESP_STATE.get("suppressed", 0)
+        if now - last < _LOG_SUPPRESS_WINDOW:
+            _EMPTY_RESP_STATE["suppressed"] = suppressed + 1
+            return
+        if suppressed > 0:
+            print(f"[{timestamp}] Pinterest {level}: suppressed {suppressed} repeats of 'Empty response received.' phase=source:pinterest", flush=True)
+            _EMPTY_RESP_STATE["suppressed"] = 0
+        _EMPTY_RESP_STATE["last"] = now
+        print(f"[{timestamp}] Pinterest {level}: {message}", flush=True)
+        return
     print(f"[{timestamp}] Pinterest {level}: {message}", flush=True)
 
 def is_pinterest_blocked():
