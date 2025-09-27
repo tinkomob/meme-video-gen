@@ -1484,23 +1484,25 @@ def _build_daily_schedule_for_date(date_obj, count: int) -> list[datetime]:
     end = (start + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     total_seconds = int((end - start).total_seconds())
     if count <= 1:
-        return [start + timedelta(seconds=int(total_seconds/2))]
+        return [start + timedelta(seconds=int(total_seconds / 2))]
     segment = total_seconds / count
     times = []
+    # Jitter is limited to a fraction of the segment to keep slots spread out
+    # This guarantees that adjacent items won't collapse too close (e.g., < 1 hour)
+    jitter_max = int(max(0, min(1800, segment / 3)))
     for i in range(count):
         seg_start = start + timedelta(seconds=int(i * segment))
         seg_end = start + timedelta(seconds=int((i + 1) * segment))
-        span = int((seg_end - seg_start).total_seconds())
-        if span <= 0:
-            span = 60
-        jitter = int(os.urandom(2).hex(), 16) % span
-        t = seg_start + timedelta(seconds=jitter)
+        center = seg_start + timedelta(seconds=int(segment / 2))
+        r = int.from_bytes(os.urandom(2), 'big')
+        delta = (r % (2 * jitter_max + 1)) - jitter_max if jitter_max > 0 else 0
+        t = center + timedelta(seconds=int(delta))
         if t < seg_start:
             t = seg_start
-        if t > seg_end:
+        if t >= seg_end:
             t = seg_end - timedelta(seconds=1)
         times.append(t)
-    times = sorted(times)
+    times.sort()
     return times
 
 def _schedule_next_job(app):
@@ -1951,7 +1953,17 @@ def main():
         future = [t for t in times if t > now]
         if future:
             _reschedule_to(context.application, future[0])
-        await update.message.reply_text("Расписание на сегодня пересоздано. /scheduleinfo для просмотра.")
+        today_dts = sorted(times)
+        lines = [
+            f"Сейчас: {now.strftime('%d.%m %H:%M:%S')} Asia/Tomsk",
+            f"Всего на сегодня: {len(today_dts)} (окно 10:00–24:00)",
+        ]
+        for idx, dt in enumerate(today_dts, start=1):
+            status = "(прошло)" if dt < now else ""
+            lines.append(f"#{idx} {dt.strftime('%H:%M:%S')} {status}")
+        if not today_dts:
+            lines.append("На сегодня нет расписания — будет сгенерировано автоматически позже")
+        await update.message.reply_text("\n".join(lines))
 
     app.add_handler(CommandHandler("rebuildschedule", cmd_rebuildschedule))
 
