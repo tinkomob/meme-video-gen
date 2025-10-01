@@ -56,6 +56,7 @@ def generate_meme_video(
     seed: int | None = None,
     variant_group: int | None = None,
     reddit_sources: list[str] | None = None,
+    twitter_sources: list[str] | None = None,
 ):
     notify = (lambda msg: progress(msg) if callable(progress) else None)
     set_phase('init')
@@ -82,12 +83,11 @@ def generate_meme_video(
     def _reddit_provider():
         if not reddit_sources:
             return None, None
-        notify("� Пробую Reddit…")
+        notify("🎯 Пробую Reddit…")
         try:
             from .sources import fetch_one_from_reddit
             path = fetch_one_from_reddit(reddit_sources, output_dir=pins_dir)
             if path:
-                # Попытка извлечь сабреддит из имени файла
                 base = os.path.basename(path)
                 parts = base.split('_')
                 sr = parts[1] if len(parts) >= 2 else 'reddit'
@@ -95,6 +95,23 @@ def generate_meme_video(
                 return path, f"reddit:{sr}"
         except Exception as e:
             print(f"Reddit provider error: {e}", flush=True)
+        return None, None
+
+    def _twitter_provider():
+        if not twitter_sources:
+            return None, None
+        notify("🐦 Пробую Twitter/X…")
+        try:
+            from .sources import fetch_one_from_twitter
+            path = fetch_one_from_twitter(twitter_sources, output_dir=pins_dir)
+            if path:
+                base = os.path.basename(path)
+                parts = base.split('_')
+                username = parts[1] if len(parts) >= 2 else 'twitter'
+                notify("🖼️ Получено изображение из Twitter")
+                return path, f"twitter:@{username}"
+        except Exception as e:
+            print(f"Twitter provider error: {e}", flush=True)
         return None, None
 
     def _meme_api_provider():
@@ -132,8 +149,9 @@ def generate_meme_video(
         sources_candidates.append(("pinterest", _pinterest_provider))
     if reddit_sources:
         sources_candidates.append(("reddit", _reddit_provider))
-    # meme API всегда как потенциальный источник
-    # sources_candidates.append(("meme_api", _meme_api_provider))
+    if twitter_sources:
+        sources_candidates.append(("twitter", _twitter_provider))
+    sources_candidates.append(("meme_api", _meme_api_provider))
 
     random.shuffle(sources_candidates)
     downloaded_path = None

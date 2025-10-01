@@ -6,11 +6,235 @@ from pathlib import Path
 from urllib.parse import urlparse
 import requests
 import threading
+import asyncio
 from typing import Any
+import urllib3
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 _LOG_SUPPRESS_WINDOW = 15
 _EMPTY_RESP_STATE = {"last": 0.0, "suppressed": 0}
 from .utils import load_history, add_url_to_history
 from .pinterest_monitor import should_use_pinterest_fallback, get_pinterest_status
+from .config import DEFAULT_PINS_DIR
+
+# Twitter caching and rate limiting (1 request per 15 minutes on Free plan)
+_TWITTER_CACHE_FILE = 'twitter_cache.json'
+_TWITTER_RATE_WINDOW_SECONDS = 15 * 60
+
+def _now_ts() -> float:
+    return time.time()
+
+def _load_twitter_cache() -> dict:
+    try:
+        import json
+        if os.path.isfile(_TWITTER_CACHE_FILE):
+            with open(_TWITTER_CACHE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f) or {}
+    except Exception:
+        pass
+    return {"next_allowed_ts": 0.0, "users": {}, "media": []}
+
+def _save_twitter_cache(data: dict):
+    try:
+        import json
+        tmp = _TWITTER_CACHE_FILE + '.tmp'
+        with open(tmp, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, _TWITTER_CACHE_FILE)
+    except Exception:
+        pass
+
+def _twitter_cache_put_user(username: str, user_id: str):
+    data = _load_twitter_cache()
+    users = data.get('users') or {}
+    users[username.lower()] = {"id": str(user_id), "ts": _now_ts()}
+    data['users'] = users
+    _save_twitter_cache(data)
+
+def _twitter_cache_get_user(username: str) -> str | None:
+    data = _load_twitter_cache()
+    users = data.get('users') or {}
+    info = users.get(username.lower())
+    return (info or {}).get('id') if info else None
+
+def _twitter_cache_add_media(username: str, urls: list[str]):
+    if not urls:
+        return
+    data = _load_twitter_cache()
+    media = data.get('media') or []
+    ts = _now_ts()
+    for u in urls:
+        media.append({"username": username.lower(), "url": u, "ts": ts})
+    # de-dup, keep latest
+    seen = set()
+    dedup = []
+    for m in reversed(media):
+        key = m.get('url')
+        if key and key not in seen:
+            seen.add(key)
+            dedup.append(m)
+    data['media'] = list(reversed(dedup))[-500:]  # cap cache size
+    _save_twitter_cache(data)
+
+def _twitter_cache_pop_candidate(exclude_urls: set[str]) -> tuple[str | None, str | None]:
+    data = _load_twitter_cache()
+    media = data.get('media') or []
+    for i, m in enumerate(media):
+        url = (m or {}).get('url')
+        if not url or url in exclude_urls:
+            continue
+        # pop and save
+        picked = media.pop(i)
+        data['media'] = media
+        _save_twitter_cache(data)
+        return picked.get('username'), url
+    return None, None
+
+def _twitter_rate_next_allowed() -> float:
+    data = _load_twitter_cache()
+    return float(data.get('next_allowed_ts') or 0.0)
+
+def _twitter_rate_mark_window(reset_epoch: float | None = None):
+    data = _load_twitter_cache()
+    now = _now_ts()
+    if reset_epoch and reset_epoch > now:
+        data['next_allowed_ts'] = float(reset_epoch)
+    else:
+        data['next_allowed_ts'] = now + _TWITTER_RATE_WINDOW_SECONDS
+    _save_twitter_cache(data)
+
+## Twikit fallback removed by request
+
+def _nitter_try_get_one(username: str, output_dir: str) -> str | None:
+    try:
+        print(f"Twitter: Trying Nitter fallback for @{username}", flush=True)
+        bases = [
+            'https://nitter.net',
+            'https://nitter.poast.org',
+        ]
+        random.shuffle(bases)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+        }
+        for base in bases:
+            try:
+                print(f"Twitter: Nitter trying instance: {base}", flush=True)
+                path_candidates = [f'/{username}/media', f'/{username}']
+                random.shuffle(path_candidates)
+                page_candidates = [None]
+                try:
+                    # try up to 2 random pages in [1..5]
+                    page_candidates += random.sample(list(range(1, 6)), k=2)
+                except Exception:
+                    pass
+                for path in path_candidates:
+                    for page in page_candidates:
+                        url = base + path + (f"?page={page}" if page else "")
+                        print(f"Twitter: Nitter fetching: {url}", flush=True)
+                        try:
+                            r = requests.get(url, headers=headers, timeout=60, verify=False)
+                        except Exception as req_err:
+                            print(f"Twitter: Nitter request error: {type(req_err).__name__}: {req_err}", flush=True)
+                            raise
+
+                        print(f"Twitter: Nitter response: {r.status_code}", flush=True)
+                        if r.status_code != 200:
+                            continue
+                        html = r.text
+                        try:
+                            from bs4 import BeautifulSoup
+                        except Exception:
+                            return None
+                        soup = BeautifulSoup(html, 'html.parser')
+                        links = []
+                        def _attr_str(v):
+                            if isinstance(v, list):
+                                return v[0] if v else None
+                            return v
+                        for a in soup.select('a[href^="/pic/"]'):
+                            href = _attr_str(a.get('href'))
+                            if isinstance(href, str) and href.startswith('/pic/'):
+                                links.append(base + href)
+                        for img in soup.select('img[src^="/pic/"]'):
+                            src = _attr_str(img.get('src'))
+                            if isinstance(src, str) and src.startswith('/pic/'):
+                                links.append(base + src)
+                        # de-dup while preserving order
+                        seen = set()
+                        uniq = []
+                        for lk in links:
+                            if lk not in seen:
+                                seen.add(lk)
+                                uniq.append(lk)
+                        print(f"Twitter: Nitter found {len(uniq)} image links", flush=True)
+                        if not uniq:
+                            continue
+                        try:
+                            sample_k = min(len(uniq), random.randint(3, 8))
+                            sample_links = random.sample(uniq, k=sample_k)
+                        except Exception:
+                            random.shuffle(uniq)
+                            sample_links = uniq[:6]
+                        print(f"Twitter: Nitter trying {len(sample_links)} random images", flush=True)
+                        for link in sample_links:
+                            try:
+                                rr = requests.get(link, headers=headers, timeout=15, stream=True, verify=False)
+                                if rr.status_code != 200:
+                                    continue
+                                ctype = (rr.headers.get('content-type') or '').lower()
+                                if 'image/' not in ctype:
+                                    continue
+                                ext = '.jpg'
+                                if 'png' in ctype:
+                                    ext = '.png'
+                                elif 'gif' in ctype:
+                                    ext = '.gif'
+                                elif 'webp' in ctype:
+                                    ext = '.webp'
+                                fn = f'nitter_{username}_{abs(hash(link)) % 10**8}{ext}'
+                                p = os.path.join(output_dir, fn)
+                                size = 0
+                                with open(p, 'wb') as f:
+                                    for chunk in rr.iter_content(chunk_size=8192):
+                                        if chunk:
+                                            f.write(chunk)
+                                            size += len(chunk)
+                                            if size > 50 * 1024 * 1024:
+                                                break
+                                if os.path.isfile(p) and os.path.getsize(p) >= 1000:
+                                    try:
+                                        from PIL import Image
+                                        with Image.open(p) as img:
+                                            img.verify()
+                                        with Image.open(p) as img:
+                                            w, h = img.size
+                                            if w < 100 or h < 100:
+                                                os.remove(p)
+                                                continue
+                                    except ImportError:
+                                        pass
+                                    add_url_to_history(link)
+                                    print(f"Twitter: Nitter fallback downloaded: {p}", flush=True)
+                                    return p
+                                else:
+                                    try:
+                                        if os.path.exists(p):
+                                            os.remove(p)
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
+            except Exception as inst_err:
+                print(f"Twitter: Nitter instance {base} failed: {inst_err}", flush=True)
+                continue
+        print(f"Twitter: Nitter fallback exhausted all instances for @{username}", flush=True)
+        return None
+    except Exception as e:
+        print(f"Twitter: Nitter fallback error: {e}", flush=True)
+        return None
 
 def log_pinterest_debug(message: str, level: str = "INFO"):
     """Enhanced logging for Pinterest debugging"""
@@ -1251,6 +1475,302 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
         except Exception as fallback_error:
             log_pinterest_debug(f"Emergency fallback also failed: {fallback_error}", "ERROR")
             return None
+
+def fetch_one_from_twitter(sources: list[str], output_dir: str = 'pins'):
+    try:
+        if not sources:
+            print("Twitter: No sources provided", flush=True)
+            return None
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+
+        # Optional API client (used at most once due to severe rate limits)
+        try:
+            import tweepy
+        except ImportError:
+            tweepy = None  # allow non-API fallbacks
+
+        from .config import X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET, X_BEARER_TOKEN
+        bearer_token = X_BEARER_TOKEN
+        has_oauth = all([X_CONSUMER_KEY, X_CONSUMER_SECRET, X_ACCESS_TOKEN, X_ACCESS_TOKEN_SECRET])
+
+        def _parse_user(raw: str) -> tuple[str | None, str | None]:
+            uname = None
+            uid = None
+            if raw.startswith('http://') or raw.startswith('https://'):
+                parsed = urlparse(raw)
+                parts = [p for p in parsed.path.split('/') if p]
+                if parts:
+                    if len(parts) >= 3 and parts[0] == 'i' and parts[1] == 'user' and parts[2].isdigit():
+                        uid = parts[2]
+                    else:
+                        uname = parts[0].lstrip('@')
+            else:
+                m = re.match(r'^id:(\d+)$', raw)
+                if m:
+                    uid = m.group(1)
+                elif raw.isdigit():
+                    uid = raw
+                else:
+                    uname = raw.lstrip('@').strip()
+            return uname, uid
+
+        source_list = [s.strip() for s in sources if isinstance(s, str) and s.strip()]
+        random.shuffle(source_list)
+
+        client = None
+        api_used = False
+
+        # Iterate a few provided accounts to increase success chance
+        for raw in source_list[:min(4, len(source_list))]:
+            raw = raw.strip()
+            print(f"Twitter: Selected source: '{raw}'", flush=True)
+            username, user_id_override = _parse_user(raw)
+            if not username and not user_id_override:
+                print(f"Twitter: Could not extract username from: {raw}", flush=True)
+                continue
+            if user_id_override:
+                print(f"Twitter: Using user id: {user_id_override}", flush=True)
+            else:
+                print(f"Twitter: Using username: @{username}", flush=True)
+
+            # Cache-first
+            hist = load_history()
+            exclude = set((hist or {}).get('urls') or [])
+            cu, cached_url = _twitter_cache_pop_candidate(exclude_urls=exclude)
+            if cached_url:
+                print(f"Twitter: Using cached media from @{cu}: {cached_url[:80]}...", flush=True)
+                chosen_username = cu or username or 'twitter'
+                candidates = [{"url": cached_url, "tweet_id": "cached", "type": "photo"}]
+            else:
+                candidates = []
+
+            need_api = not candidates
+            if need_api:
+                next_allowed = _twitter_rate_next_allowed()
+                now = _now_ts()
+                if next_allowed and now < next_allowed:
+                    wait_left = int(next_allowed - now)
+                    print(f"Twitter: Within rate window, skipping API for ~{wait_left}s; no cached media", flush=True)
+                    if username:
+                        fb2 = _nitter_try_get_one(username, output_dir)
+                        if fb2:
+                            return fb2
+                    continue
+                else:
+                    # Window open: try API once (if creds and tweepy available)
+                    if tweepy and (bearer_token or has_oauth) and not api_used:
+                        if bearer_token:
+                            print("Twitter: Using Bearer Token authentication", flush=True)
+                            client = tweepy.Client(bearer_token=bearer_token)
+                        else:
+                            print("Twitter: Using OAuth 1.0a authentication", flush=True)
+                            client = tweepy.Client(
+                                consumer_key=X_CONSUMER_KEY,
+                                consumer_secret=X_CONSUMER_SECRET,
+                                access_token=X_ACCESS_TOKEN,
+                                access_token_secret=X_ACCESS_TOKEN_SECRET,
+                            )
+                        api_used = True
+                    else:
+                        client = None
+
+                    # Resolve user id
+                    user_id = user_id_override
+                    if not user_id and username:
+                        user_id = _twitter_cache_get_user(username)
+                    fresh_urls: list[str] = []
+                    try:
+                        if client:
+                            if not user_id and username:
+                                print(f"Twitter: Fetching user info for @{username}", flush=True)
+                                user_response = client.get_user(username=username)
+                                udata = getattr(user_response, 'data', None) if user_response else None
+                                if not udata:
+                                    print(f"Twitter: User @{username} not found", flush=True)
+                                    _twitter_rate_mark_window()
+                                else:
+                                    user_id = str(getattr(udata, 'id', ''))
+                                    _twitter_cache_put_user(username, user_id)
+                                    print(f"Twitter: User ID: {user_id}", flush=True)
+
+                            if user_id:
+                                print(f"Twitter: Fetching recent tweets with media from user_id={user_id}", flush=True)
+                                tweets_response = client.get_users_tweets(
+                                    id=user_id,
+                                    max_results=100,
+                                    exclude=['retweets', 'replies'],
+                                    tweet_fields=['created_at', 'attachments', 'possibly_sensitive'],
+                                    media_fields=['url', 'preview_image_url', 'type', 'variants'],
+                                    expansions=['attachments.media_keys']
+                                )
+                                _twitter_rate_mark_window()
+                                if tweets_response and getattr(tweets_response, 'data', None):
+                                    tweets = getattr(tweets_response, 'data', [])
+                                    media_dict = {}
+                                    inc = getattr(tweets_response, 'includes', None)
+                                    if inc and isinstance(inc, dict) and 'media' in inc:
+                                        for media in inc['media']:
+                                            media_dict[getattr(media, 'media_key', None)] = media
+                                    for tweet in tweets:
+                                        if getattr(tweet, 'possibly_sensitive', False):
+                                            continue
+                                        atts = getattr(tweet, 'attachments', None) or {}
+                                        media_keys = atts.get('media_keys', [])
+                                        for mk in media_keys:
+                                            m = media_dict.get(mk)
+                                            if not m:
+                                                continue
+                                            if getattr(m, 'type', None) == 'photo':
+                                                mu = getattr(m, 'url', None)
+                                                if mu and mu not in exclude:
+                                                    fresh_urls.append(mu)
+                            elif username:
+                                q = f"from:{username} has:images -is:retweet -is:reply"
+                                print(f"Twitter: Searching recent tweets: {q}", flush=True)
+                                sr = client.search_recent_tweets(
+                                    query=q,
+                                    max_results=50,
+                                    tweet_fields=['created_at', 'attachments', 'possibly_sensitive'],
+                                    media_fields=['url', 'preview_image_url', 'type', 'variants'],
+                                    expansions=['attachments.media_keys']
+                                )
+                                _twitter_rate_mark_window()
+                                if sr and getattr(sr, 'data', None):
+                                    tweets = getattr(sr, 'data', [])
+                                    media_dict = {}
+                                    inc = getattr(sr, 'includes', None)
+                                    if inc and isinstance(inc, dict) and 'media' in inc:
+                                        for media in inc['media']:
+                                            media_dict[getattr(media, 'media_key', None)] = media
+                                    for tweet in tweets:
+                                        if getattr(tweet, 'possibly_sensitive', False):
+                                            continue
+                                        atts = getattr(tweet, 'attachments', None) or {}
+                                        media_keys = atts.get('media_keys', [])
+                                        for mk in media_keys:
+                                            m = media_dict.get(mk)
+                                            if not m:
+                                                continue
+                                            if getattr(m, 'type', None) == 'photo':
+                                                mu = getattr(m, 'url', None)
+                                                if mu and mu not in exclude:
+                                                    fresh_urls.append(mu)
+                    except Exception as e:
+                        # Catch TooManyRequests or any API error conservatively
+                        if tweepy and isinstance(e, getattr(tweepy, 'TooManyRequests', tuple())):
+                            print("Twitter: API error: 429 Too Many Requests", flush=True)
+                        else:
+                            print(f"Twitter: API error: {e}", flush=True)
+                        _twitter_rate_mark_window()
+
+                    if fresh_urls:
+                        print(f"Twitter: Collected {len(fresh_urls)} fresh photo URLs", flush=True)
+                        _twitter_cache_add_media(username or 'twitter', fresh_urls)
+                        _, cached_url = _twitter_cache_pop_candidate(exclude_urls=exclude)
+                        if cached_url:
+                            candidates = [{"url": cached_url, "tweet_id": "cached", "type": "photo"}]
+                    else:
+                        print(f"Twitter: No unused images found for @{username}", flush=True)
+                        if username:
+                            fb2 = _nitter_try_get_one(username, output_dir)
+                            if fb2:
+                                return fb2
+                        continue
+
+            # Download candidates (if any)
+            if not candidates:
+                if username:
+                    fb2 = _nitter_try_get_one(username, output_dir)
+                    if fb2:
+                        return fb2
+                continue
+
+            print(f"Twitter: Found {len(candidates)} candidate images", flush=True)
+            random.shuffle(candidates)
+            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            for candidate in candidates[:5]:
+                media_url = candidate['url']
+                print(f"Twitter: Attempting to download: {media_url[:50]}...", flush=True)
+                try:
+                    r = requests.get(media_url, headers=headers, timeout=15, stream=True)
+                    print(f"Twitter: Download response status: {r.status_code}", flush=True)
+                    r.raise_for_status()
+                    ct = (r.headers.get('content-type') or '').lower()
+                    print(f"Twitter: Content-type: {ct}", flush=True)
+                    if 'image/' not in ct:
+                        print(f"Twitter: Invalid content type: {ct}", flush=True)
+                        continue
+                    ext = '.jpg'
+                    if 'png' in ct or media_url.lower().endswith('.png'):
+                        ext = '.png'
+                    elif 'gif' in ct or media_url.lower().endswith('.gif'):
+                        ext = '.gif'
+                    elif 'webp' in ct or media_url.lower().endswith('.webp'):
+                        ext = '.webp'
+                    name_user = username or 'twitter'
+                    filename = f'twitter_{name_user}_{candidate["tweet_id"]}_{abs(hash(media_url)) % 10**6}{ext}'
+                    p = os.path.join(output_dir, filename)
+                    size = 0
+                    with open(p, 'wb') as f:
+                        for chunk in r.iter_content(chunk_size=8192):
+                            if chunk:
+                                f.write(chunk)
+                                size += len(chunk)
+                                if size > 50 * 1024 * 1024:
+                                    print("Twitter: File too large, stopping download", flush=True)
+                                    break
+                    print(f"Twitter: Downloaded {size} bytes", flush=True)
+                    if size < 1000:
+                        print(f"Twitter: File too small ({size} bytes), removing", flush=True)
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+                        continue
+                    try:
+                        from PIL import Image
+                        with Image.open(p) as img:
+                            img.verify()
+                        with Image.open(p) as img:
+                            w, h = img.size
+                            if w < 100 or h < 100:
+                                print(f"Twitter: Image too small ({w}x{h}), removing", flush=True)
+                                os.remove(p)
+                                continue
+                    except ImportError:
+                        pass
+                    except Exception as e:
+                        print(f"Twitter: Image validation failed: {e}", flush=True)
+                        try:
+                            os.remove(p)
+                        except Exception:
+                            pass
+                        continue
+                    add_url_to_history(media_url)
+                    print(f"Twitter: Successfully downloaded: {p}", flush=True)
+                    return p
+                except requests.exceptions.Timeout:
+                    print(f"Twitter: Download timeout for: {media_url[:50]}...", flush=True)
+                    continue
+                except requests.exceptions.RequestException as e:
+                    print(f"Twitter: Download request failed: {e}", flush=True)
+                    continue
+                except Exception as e:
+                    print(f"Twitter: Download error: {e}", flush=True)
+                    continue
+
+            print(f"Twitter: All download attempts failed for @{username}", flush=True)
+            # Final attempt via Nitter for this username
+            if username:
+                fb2 = _nitter_try_get_one(username, output_dir)
+                if fb2:
+                    return fb2
+
+        print("Twitter: No images fetched from any provided sources", flush=True)
+        return None
+    except Exception as e:
+        print(f"Twitter: Fatal error in fetch_one_from_twitter: {e}", flush=True)
+        return None
 
 def fetch_one_from_reddit(sources: list[str], output_dir: str = 'pins'):
     try:

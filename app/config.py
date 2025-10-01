@@ -13,6 +13,13 @@ X_CONSUMER_KEY = os.getenv('X_CONSUMER_KEY')
 X_CONSUMER_SECRET = os.getenv('X_CONSUMER_SECRET')
 X_ACCESS_TOKEN = os.getenv('X_ACCESS_TOKEN')
 X_ACCESS_TOKEN_SECRET = os.getenv('X_ACCESS_TOKEN_SECRET')
+X_BEARER_TOKEN = os.getenv('X_BEARER_TOKEN') or os.getenv('TWITTER_BEARER_TOKEN')
+
+# Twikit fallback (scraper) credentials
+TWIKIT_USERNAME = os.getenv('TWIKIT_USERNAME') or os.getenv('X_USERNAME')
+TWIKIT_EMAIL = os.getenv('TWIKIT_EMAIL') or os.getenv('X_EMAIL')
+TWIKIT_PASSWORD = os.getenv('TWIKIT_PASSWORD') or os.getenv('X_PASSWORD')
+TWIKIT_COOKIES_FILE = os.getenv('TWIKIT_COOKIES_FILE', 'twitter_cookies.json')
 
 HISTORY_FILE = 'download_history.json'
 DEFAULT_PINS_DIR = 'pins'

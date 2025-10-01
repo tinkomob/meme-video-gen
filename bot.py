@@ -136,6 +136,7 @@ def _resolve_notify_chat_id() -> Optional[int]:
 DEFAULT_PINTEREST_JSON = "pinterest_urls.json"
 DEFAULT_PLAYLISTS_JSON = "music_playlists.json"
 DEFAULT_REDDIT_JSON = "reddit_sources.json"
+DEFAULT_TWITTER_JSON = "twitter_urls.json"
 ALL_SOCIALS = ["youtube", "instagram", "tiktok", "x"]
 
 
@@ -144,7 +145,7 @@ HELP_TEXT = (
     "/start — приветствие\n"
     "/help — помощь\n"
     "/generate — генерация мемов. Форматы: /generate N (N видео), /generate <pin_num> <audio_duration> [count=M]. Примеры: /generate 3; /generate 80 12 count=2\n"
-    "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), музыка (music_playlists.json)\n"
+    "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), Twitter (twitter_urls.json), музыка (music_playlists.json)\n"
     "  После генерации доступны кнопки: Опубликовать, Выбрать платформы, Сменить трек, Сгенерировать заново\n"
     "/deploy — опубликовать последнее видео (опционально: соцсети, приватность, dry)\n"
     "/dryrun — показать/изменить режим публикации (on/off)\n"
@@ -344,8 +345,9 @@ async def cmd_generate(update, context):
     pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
     music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
     reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
-    if not pinterest_urls and not music_playlists and not reddit_sources:
-        await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json, music_playlists.json или reddit_sources.json")
+    twitter_sources = load_urls_json(DEFAULT_TWITTER_JSON, [])
+    if not pinterest_urls and not music_playlists and not reddit_sources and not twitter_sources:
+        await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json, music_playlists.json, reddit_sources.json или twitter_urls.json")
         return
     if count > 1:
         await update.message.reply_text(f"Запускаю генерацию {count} мемов последовательно… Это может занять несколько минут.")
@@ -368,6 +370,7 @@ async def cmd_generate(update, context):
                                 seed=seed,
                                 variant_group=i % 5,
                                 reddit_sources=reddit_sources,
+                                twitter_sources=twitter_sources,
                             )
                         except Exception as e:
                             logging.warning(f"Batch gen #{i} attempt {attempts} failed: {e}")
@@ -447,6 +450,7 @@ async def cmd_generate(update, context):
             audio_duration=audio_duration,
             progress=progress,
             reddit_sources=reddit_sources,
+            twitter_sources=twitter_sources,
         )
     result = await asyncio.to_thread(run_generation)
     if not result or not result.video_path:
@@ -867,6 +871,7 @@ async def on_callback_regenerate(update, context):
     pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
     music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
     reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+    twitter_sources = load_urls_json(DEFAULT_TWITTER_JSON, [])
 
     loop = asyncio.get_running_loop()
 
@@ -880,6 +885,7 @@ async def on_callback_regenerate(update, context):
             audio_duration=audio_duration,
             progress=progress,
             reddit_sources=reddit_sources,
+            twitter_sources=twitter_sources,
         )
 
     result = await asyncio.to_thread(run_generation)
@@ -1352,6 +1358,7 @@ async def _scheduled_job(context):
     pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
     music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
     reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+    twitter_sources = load_urls_json(DEFAULT_TWITTER_JSON, [])
     cid = _resolve_notify_chat_id()
     if not cid:
         logging.warning("Не найден chat_id для уведомления")
@@ -1359,7 +1366,7 @@ async def _scheduled_job(context):
     async def gen_one(idx: int, attempt: int):
         def run_generation():
             seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 9973)
-            return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources)
+            return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources, twitter_sources=twitter_sources)
         return await asyncio.to_thread(run_generation)
     
     gens = []
@@ -1691,10 +1698,11 @@ def main():
         pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
         music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
         reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+        twitter_sources = load_urls_json(DEFAULT_TWITTER_JSON, [])
         async def gen_one(idx:int, attempt:int):
             def run_generation():
                 seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 8647)
-                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources)
+                return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources, twitter_sources=twitter_sources)
             return await asyncio.to_thread(run_generation)
         
         gens = []

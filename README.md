@@ -48,16 +48,25 @@ INSTAGRAM_PROXY=http://proxy:port       # Опционально
 
 ### X (Twitter)
 ```bash
+# Option 1: Bearer Token (RECOMMENDED - simpler)
+X_BEARER_TOKEN=your_bearer_token
+
+# Option 2: OAuth 1.0a (requires elevated access)
 X_CONSUMER_KEY=your_consumer_key
 X_CONSUMER_SECRET=your_consumer_secret
 X_ACCESS_TOKEN=your_access_token
 X_ACCESS_TOKEN_SECRET=your_access_token_secret
 ```
 
+Get Bearer Token: [Developer Portal](https://developer.twitter.com/en/portal/dashboard) → Your App → Keys and tokens → Generate Bearer Token
+
 ## Подготовка данных
 - pinterest_urls.json — список Pinterest URL (board/search) для загрузки картинок/видео
 - music_playlists.json — список ссылок на YouTube плейлисты для фоновой музыки
 - reddit_sources.json — список сабреддитов или ссылок на сабреддиты (например: "wtfstockphotos", "r/memes", "https://www.reddit.com/r/ProgrammerHumor/")
+- twitter_urls.json — список Twitter/X аккаунтов для загрузки изображений (например: "https://x.com/imagesooc", "@nocontextimg", "weirddalle")
+
+Подробнее о Twitter интеграции: см. [TWITTER_INTEGRATION.md](TWITTER_INTEGRATION.md)
 
 ## Зависимости и требования
 - Нужен ffmpeg в PATH для moviepy и yt-dlp постобработки
