@@ -133,7 +133,7 @@ def generate_meme_video(
     if reddit_sources:
         sources_candidates.append(("reddit", _reddit_provider))
     # meme API всегда как потенциальный источник
-    sources_candidates.append(("meme_api", _meme_api_provider))
+    # sources_candidates.append(("meme_api", _meme_api_provider))
 
     random.shuffle(sources_candidates)
     downloaded_path = None

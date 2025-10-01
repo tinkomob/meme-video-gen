@@ -273,8 +273,13 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                 if isinstance(err, TimeoutError):
                     log_pinterest_debug("Browser scrape timed out, switching to emergency fallback", "WARNING")
                     return get_emergency_fallback_content(output_dir)
-                log_pinterest_debug(f"Browser scrape error: {err}", "WARNING")
-                scraped_browser = None
+                # Check for driver issues
+                if err and "unable to obtain driver" in str(err).lower():
+                    log_pinterest_debug("Chrome driver not available, skipping browser mode", "WARNING")
+                    scraped_browser = None
+                else:
+                    log_pinterest_debug(f"Browser scrape error: {err}", "WARNING")
+                    scraped_browser = None
             log_pinterest_debug(f"Browser scraped {len(scraped_browser) if scraped_browser else 0} items")
             
             if scraped_browser and len(scraped_browser) > 0:
@@ -343,36 +348,200 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             if any(pattern in str(e).lower() for pattern in ["empty response", "timeout", "connection", "blocked"]):
                 log_pinterest_debug("Detected Pinterest blocking pattern, switching to emergency fallback", "WARNING")
                 return get_emergency_fallback_content(output_dir)
+
         
-        # Fallback to HTML parsing method (rest of function continues as before)
-        # If all Pinterest methods fail, try emergency fallback
-        result = None
+        
         try:
-            # (HTML parsing code would continue here, but for brevity...)
-            # If HTML parsing also fails, we'll use the emergency fallback
+            log_pinterest_debug("Trying Selenium scroll first", "INFO")
+            from selenium import webdriver
+            from selenium.webdriver.common.by import By
+            from selenium.webdriver.chrome.service import Service as ChromeService
+            from selenium.webdriver.support.ui import WebDriverWait
+            from selenium.webdriver.support import expected_conditions as EC
+
+            user_agents = [
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+                'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+            ]
+            ua_s = random.choice(user_agents)
+            try:
+                from fake_useragent import UserAgent
+                ua_s = UserAgent().random or ua_s
+            except Exception:
+                pass
+
+            chrome_options = webdriver.ChromeOptions()
+            chrome_options.add_argument("--headless=new")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
+            chrome_options.add_argument("--disable-gpu")
+            chrome_options.add_argument("--window-size=1920,1080")
+            chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+            chrome_options.add_argument(f"--user-agent={ua_s}")
+            try:
+                chrome_options.binary_location = "/usr/bin/google-chrome-stable"
+            except Exception:
+                pass
+
+            service = ChromeService(executable_path="/usr/local/bin/chromedriver")
+            driver = None
+            try:
+                driver = webdriver.Chrome(service=service, options=chrome_options)
+                driver.set_page_load_timeout(25)
+                driver.get(search_url)
+                WebDriverWait(driver, 15).until(lambda d: d.execute_script("return document.readyState") == "complete")
+                try:
+                    WebDriverWait(driver, 5).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+                except Exception:
+                    pass
+                import time as _t
+                
+                # Initial aggressive scroll to trigger lazy loading
+                try:
+                    for _ in range(5):
+                        driver.execute_script("window.scrollBy(0, window.innerHeight);")
+                        _t.sleep(0.3)
+                except Exception:
+                    pass
+                _t.sleep(2.0)
+                
+                image_urls_scroll = []
+                seen = set()
+                # Now do random deep scrolls
+                num_scrolls = random.randint(3, 6)
+                for scroll_idx in range(num_scrolls):
+                    try:
+                        total_h = driver.execute_script("return Math.max(document.body.scrollHeight, document.documentElement.scrollHeight)") or 0
+                    except Exception:
+                        total_h = 0
+                    target_y = 0
+                    if total_h and isinstance(total_h, (int, float)):
+                        # Progressively scroll deeper with randomness
+                        min_pos = 0.3 + (scroll_idx * 0.1)
+                        max_pos = min(0.95, 0.5 + (scroll_idx * 0.15))
+                        target_y = int(random.uniform(min_pos, max_pos) * float(total_h))
+                    try:
+                        driver.execute_script("window.scrollTo(0, arguments[0]);", target_y)
+                    except Exception:
+                        pass
+                    _t.sleep(random.uniform(2.0, 3.5))
+                    try:
+                        imgs = driver.find_elements(By.CSS_SELECTOR, 'img[src*="pinimg.com"], img[data-pin-media], img[srcset]')
+                        for el in imgs:
+                            src = el.get_attribute("src") or ""
+                            srcset = el.get_attribute("srcset") or ""
+                            cand = None
+                            if src and "pinimg.com" in src:
+                                cand = src
+                            elif srcset:
+                                parts = [p.strip().split(" ")[0] for p in srcset.split(",") if p.strip()]
+                                for p in parts:
+                                    if "pinimg.com" in p:
+                                        cand = p
+                                        break
+                            if cand and cand not in seen:
+                                seen.add(cand)
+                                cand = cand.replace('236x', '564x').replace('474x', '736x').replace('236s', '564s')
+                                image_urls_scroll.append(cand)
+                    except Exception:
+                        continue
+                if image_urls_scroll:
+                    image_urls_scroll = list(dict.fromkeys(image_urls_scroll))
+                    log_pinterest_debug(f"Selenium scroll found {len(image_urls_scroll)} image URLs", "INFO")
+                    def _dl_one(url: str):
+                        try:
+                            headers = {
+                                'User-Agent': ua_s,
+                                'Accept': '*/*',
+                                'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8'
+                            }
+                            rr = requests.get(url, headers=headers, timeout=20, stream=True)
+                            rr.raise_for_status()
+                            ct = (rr.headers.get('content-type') or '').lower()
+                            from urllib.parse import urlparse as _uparse
+                            path = _uparse(url).path.lower()
+                            ok_ct = ('image/' in ct) or ('video/' in ct)
+                            import re as _re
+                            if not ok_ct and not _re.search(r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)(\?|$)', path):
+                                return None
+                            ext = '.jpg'
+                            if 'png' in ct or '.png' in path:
+                                ext = '.png'
+                            elif 'gif' in ct or '.gif' in path:
+                                ext = '.gif'
+                            elif 'webp' in ct or '.webp' in path:
+                                ext = '.webp'
+                            elif 'mp4' in ct or '.mp4' in path:
+                                ext = '.mp4'
+                            elif 'webm' in ct or '.webm' in path:
+                                ext = '.webm'
+                            elif 'mov' in ct or '.mov' in path:
+                                ext = '.mov'
+                            fn = f'pinterest_search_selenium_{abs(hash(url)) % 10**8}{ext}'
+                            pth = os.path.join(output_dir, fn)
+                            size = 0
+                            with open(pth, 'wb') as f:
+                                for chunk in rr.iter_content(chunk_size=8192):
+                                    if chunk:
+                                        f.write(chunk)
+                                        size += len(chunk)
+                                        if size > 50 * 1024 * 1024:
+                                            break
+                            if not os.path.isfile(pth) or os.path.getsize(pth) < 2000:
+                                try:
+                                    if os.path.exists(pth):
+                                        os.remove(pth)
+                                except Exception:
+                                    pass
+                                return None
+                            try:
+                                if ext in ('.jpg', '.jpeg', '.png', '.webp'):
+                                    from PIL import Image
+                                    with Image.open(pth) as img:
+                                        img.verify()
+                                        w, h = Image.open(pth).size
+                                        if w < 100 or h < 100:
+                                            os.remove(pth)
+                                            return None
+                                return pth
+                            except ImportError:
+                                return pth
+                            except Exception:
+                                try:
+                                    os.remove(pth)
+                                except Exception:
+                                    pass
+                                return None
+                        except Exception:
+                            return None
+                    try:
+                        chosen = random.choice(image_urls_scroll)
+                        path = _dl_one(chosen)
+                        if not path and len(image_urls_scroll) > 1:
+                            backup = random.choice([u for u in image_urls_scroll if u != chosen])
+                            path = _dl_one(backup)
+                        if path:
+                            log_pinterest_debug(f"Selenium scroll download success: {path}", "INFO")
+                            return path
+                    except Exception:
+                        pass
+                else:
+                    log_pinterest_debug("Selenium scroll collected 0 URLs", "WARNING")
+            except Exception as se_err:
+                log_pinterest_debug(f"Selenium scroll first attempt failed: {se_err}", "WARNING")
+            finally:
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+        except Exception:
             pass
-        except Exception as e:
-            log_pinterest_debug(f"HTML parsing also failed: {e}", "ERROR")
-            
-        # Emergency fallback if all Pinterest methods failed
-        if not result:
-            log_pinterest_debug("All Pinterest methods failed, trying emergency fallback", "WARNING")
-            result = get_emergency_fallback_content(output_dir)
-            
-        if not result:
-            log_pinterest_debug("Complete failure - no content obtained", "ERROR")
-            
-        return result
-    except Exception as e:
-        log_pinterest_debug(f"Fatal error in scrape_pinterest_search: {e}", "ERROR")
-        # Try emergency fallback even on fatal errors
-        try:
-            return get_emergency_fallback_content(output_dir)
-        except Exception as fallback_error:
-            log_pinterest_debug(f"Emergency fallback also failed: {fallback_error}", "ERROR")
-            return None
-        
+
         # Fallback to HTML parsing method
+        log_pinterest_debug("Starting HTML parsing fallback", "INFO")
         try:
             from bs4 import BeautifulSoup
             from bs4.element import Tag
@@ -399,9 +568,9 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             
         headers = {
             'User-Agent': ua,
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
             'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
-            'Accept-Encoding': 'gzip, deflate, br',
+            'Accept-Encoding': 'gzip, deflate',
             'DNT': '1',
             'Connection': 'keep-alive',
             'Upgrade-Insecure-Requests': '1',
@@ -424,7 +593,12 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
         
         try:
             resp = sess.get(search_url, timeout=20)
-            print(f"Pinterest search: response status {resp.status_code}, content length: {len(resp.text)}", flush=True)
+            
+            # Ensure proper decoding
+            if resp.apparent_encoding and resp.apparent_encoding != resp.encoding:
+                resp.encoding = resp.apparent_encoding
+            
+            print(f"Pinterest search: response status {resp.status_code}, content length: {len(resp.content)}, encoding: {resp.encoding}", flush=True)
             
             if resp.status_code == 429:
                 print("Pinterest search: rate limited (429), trying with delay", flush=True)
@@ -434,9 +608,57 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             
             resp.raise_for_status()
             
-            if len(resp.text) < 1000:
-                print(f"Pinterest search: response too short ({len(resp.text)} chars), likely blocked", flush=True)
+            # Check if response is valid HTML/text
+            content_type = resp.headers.get('content-type', '').lower()
+            if 'text/html' not in content_type and 'application/json' not in content_type:
+                print(f"Pinterest search: unexpected content-type: {content_type}", flush=True)
+            
+            html_content = resp.text
+            if len(html_content) < 1000:
+                print(f"Pinterest search: response too short ({len(html_content)} chars), likely blocked", flush=True)
                 return None
+            
+            # Check if content looks like valid HTML
+            if not any(tag in html_content[:1000].lower() for tag in ['<!doctype', '<html', '<head', '<body', '<script']):
+                print(f"Pinterest search: response doesn't look like HTML (first 200 chars): {html_content[:200]}", flush=True)
+                # Try to decode as bytes if it appears to be compressed
+                if html_content and (html_content.startswith('\x1f\x8b') or html_content.startswith('n`') or ord(html_content[0]) < 32):
+                    print("Pinterest search: response appears compressed/binary, attempting decode", flush=True)
+                    try:
+                        import gzip
+                        import brotli
+                        raw = resp.content
+                        if raw[:2] == b'\x1f\x8b':
+                            html_content = gzip.decompress(raw).decode('utf-8', errors='replace')
+                        else:
+                            try:
+                                html_content = brotli.decompress(raw).decode('utf-8', errors='replace')
+                            except Exception:
+                                html_content = raw.decode('utf-8', errors='replace')
+                        print(f"Pinterest search: successfully decoded response, new length: {len(html_content)}", flush=True)
+                    except Exception as decompress_error:
+                        print(f"Pinterest search: failed to decompress: {decompress_error}", flush=True)
+                        # Try curl_cffi as a last resort
+                        try:
+                            from curl_cffi import requests as curl_requests
+                            ch = curl_requests.get(search_url, headers=headers, impersonate="chrome", timeout=20)
+                            ch.raise_for_status()
+                            html_content = ch.text
+                            print(f"Pinterest search: curl_cffi fetched HTML of length {len(html_content)}", flush=True)
+                        except Exception as curl_err:
+                            print(f"Pinterest search: curl_cffi fallback failed: {curl_err}", flush=True)
+                            return None
+                else:
+                    # Try curl_cffi even if it's not clearly compressed, content may be obfuscated
+                    try:
+                        from curl_cffi import requests as curl_requests
+                        ch = curl_requests.get(search_url, headers=headers, impersonate="chrome", timeout=20)
+                        ch.raise_for_status()
+                        html_content = ch.text
+                        print(f"Pinterest search: curl_cffi fetched HTML of length {len(html_content)}", flush=True)
+                    except Exception as curl_err:
+                        print(f"Pinterest search: curl_cffi fallback failed: {curl_err}", flush=True)
+                        return None
                 
         except requests.exceptions.Timeout:
             print("Pinterest search: request timed out", flush=True)
@@ -445,10 +667,28 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             print(f"Pinterest search: request failed: {e}", flush=True)
             return None
         
-        print(f"Pinterest search: first 200 chars of HTML: {resp.text[:200]}", flush=True)
+        print(f"Pinterest search: first 200 chars of HTML: {html_content[:200]}", flush=True)
         
-        soup = BeautifulSoup(resp.text, 'html.parser')
+        soup = BeautifulSoup(html_content, 'html.parser')
         image_urls = []
+
+        def _filter_media_urls(urls: list[str]) -> list[str]:
+            kept = []
+            seen = set()
+            host_re = re.compile(r'^https?://(?:(?:i\d?|i|v)\.)?pinimg\.com/', re.IGNORECASE)
+            ext_re = re.compile(r'\.(jpg|jpeg|png|gif|webp|mp4|webm|mov)(\?|$)', re.IGNORECASE)
+            for u in urls or []:
+                if not u or not isinstance(u, str):
+                    continue
+                u = u.strip()
+                if not host_re.match(u):
+                    continue
+                u = u.replace('236x', '564x').replace('474x', '736x').replace('236s', '564s')
+                if ext_re.search(u) or any(seg in u for seg in ['/736x/', '/564x/', '/originals/', '/videos/']):
+                    if u not in seen:
+                        seen.add(u)
+                        kept.append(u)
+            return kept
         
         # Enhanced image extraction with multiple strategies
         print("Pinterest search: extracting images from HTML", flush=True)
@@ -501,6 +741,10 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
         # Remove duplicates while preserving order
         image_urls = list(dict.fromkeys(image_urls))
         print(f"Pinterest search: extracted {len(image_urls)} image URLs from img tags", flush=True)
+        if image_urls:
+            before = len(image_urls)
+            image_urls = _filter_media_urls(image_urls)
+            print(f"Pinterest search: filtered img-tag URLs to {len(image_urls)} from {before}", flush=True)
         
         # If no images found in HTML, try to extract from JavaScript data
         if not image_urls:
@@ -514,14 +758,14 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                 # Look for patterns like "images":{"originals":{"url":"..."}
                 if 'pinimg.com' in script_text or '"url"' in script_text:
                     # Try to extract URLs using regex
-                    import re
+                    import re as _re
                     url_patterns = [
                         r'"url":\s*"(https://[^"]*pinimg\.com[^"]*)"',
                         r'"(https://[^"]*pinimg\.com[^"]*)"',
                         r'src["\']:\s*["\']([^"\']*pinimg\.com[^"\']*)["\']',
                     ]
                     for pattern in url_patterns:
-                        urls = re.findall(pattern, script_text)
+                        urls = _re.findall(pattern, script_text)
                         for url in urls:
                             if url and 'pinimg.com' in url:
                                 # Clean up the URL
@@ -534,6 +778,10 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             
             image_urls = list(dict.fromkeys(image_urls))
             print(f"Pinterest search: extracted {len(image_urls)} URLs from JavaScript", flush=True)
+            if image_urls:
+                before_js = len(image_urls)
+                image_urls = _filter_media_urls(image_urls)
+                print(f"Pinterest search: filtered JS URLs to {len(image_urls)} from {before_js}", flush=True)
             
         # If still no URLs, try Pinterest's internal API endpoints
         if not image_urls:
@@ -564,7 +812,7 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             except Exception as e:
                 print(f"Pinterest search: API fallback failed: {e}", flush=True)
 
-        def _download_candidates(candidates):
+        def _download_candidates(candidates, max_attempts: int | None = None):
             if not candidates:
                 print("Pinterest search: no candidates to download", flush=True)
                 return None
@@ -582,7 +830,11 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                     others.append(url)
             
             attempts = prioritized + others
-            attempts = attempts[:max(1, min(len(attempts), max(8, min(15, num))))]
+            if max_attempts is not None:
+                random.shuffle(attempts)
+                attempts = attempts[:max(1, max_attempts)]
+            else:
+                attempts = attempts[:max(1, min(len(attempts), max(8, min(15, num))))]
             print(f"Pinterest search: trying to download {len(attempts)} candidate URLs (prioritized: {len(prioritized)})", flush=True)
             
             for i, u in enumerate(attempts):
@@ -727,12 +979,24 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
 
         path = None
         if image_urls:
-            print(f"Pinterest search: attempting direct download from {len(image_urls)} URLs", flush=True)
-            path = _download_candidates(image_urls)
+            log_pinterest_debug(f"HTML parsing found {len(image_urls)} image URLs, attempting download", "INFO")
+            try:
+                chosen = random.choice(image_urls)
+                log_pinterest_debug("Selecting one random image from HTML results", "INFO")
+                path = _download_candidates([chosen], max_attempts=1)
+                if not path and len(image_urls) > 1:
+                    backup = random.choice([u for u in image_urls if u != chosen])
+                    log_pinterest_debug("First random image failed, trying one more", "WARNING")
+                    path = _download_candidates([backup], max_attempts=1)
+            except Exception as _e:
+                path = _download_candidates(image_urls)
         else:
-            print("Pinterest search: no image URLs found in HTML", flush=True)
+            log_pinterest_debug("HTML parsing: no image URLs found in page", "WARNING")
         if path:
+            log_pinterest_debug(f"HTML parsing successful: {path}", "INFO")
             return path
+
+        
 
         try:
             from pinterest_dl import PinterestDL
@@ -741,8 +1005,13 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
             browser_client = PinterestDL.with_browser(browser_type="chrome", headless=True)
             ok, scraped_browser, err = run_with_timeout(browser_client.scrape, 35, url=search_url, num=target)
             if not ok:
-                print(f"Browser fallback scrape failed: {err}", flush=True)
-                scraped_browser = None
+                # Check for driver issues
+                if err and "unable to obtain driver" in str(err).lower():
+                    print(f"Browser fallback: Chrome driver not available, skipping", flush=True)
+                    scraped_browser = None
+                else:
+                    print(f"Browser fallback scrape failed: {err}", flush=True)
+                    scraped_browser = None
             print(f"Browser fallback scraped {len(scraped_browser) if scraped_browser else 0} items", flush=True)
             if scraped_browser:
                 random.shuffle(scraped_browser)
@@ -789,8 +1058,15 @@ def scrape_pinterest_search(search_url: str, output_dir: str = 'pins', num: int 
                 print("Browser fallback: no valid file returned", flush=True)
         except Exception as e:
             print(f"Browser fallback failed: {e}", flush=True)
-        print("Pinterest search: all methods failed, returning None", flush=True)
+        log_pinterest_debug("HTML parsing and browser fallback all failed", "WARNING")
         return None
+    except Exception as e:
+        log_pinterest_debug(f"Fatal error in scrape_pinterest_search: {e}", "ERROR")
+        try:
+            return get_emergency_fallback_content(output_dir)
+        except Exception as fallback_error:
+            log_pinterest_debug(f"Emergency fallback also failed: {fallback_error}", "ERROR")
+            return None
 
 def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int = 10000):
     log_pinterest_debug(f"Called with URL: {board_url}")
@@ -818,6 +1094,18 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
         if 'search/pins' in board_url:
             log_pinterest_debug("Detected search URL, using search scraper")
             return scrape_pinterest_search(board_url, output_dir, num)
+
+        # Route ideas URLs to search scraper by extracting topic
+        if '/ideas/' in board_url:
+            log_pinterest_debug("Detected ideas URL, converting to search")
+            parts = board_url.split('/')
+            if len(parts) >= 5 and parts[3] == 'ideas':
+                topic = parts[4].replace('-', ' ')
+                import urllib.parse
+                encoded_topic = urllib.parse.quote(topic)
+                search_url = f"https://www.pinterest.com/search/pins/?q={encoded_topic}"
+                log_pinterest_debug(f"Converted ideas URL to search: {search_url}")
+                return scrape_pinterest_search(search_url, output_dir, num)
 
         # Try multiple approaches for better success rate
         scraped = None
@@ -878,8 +1166,13 @@ def scrape_one_from_pinterest(board_url: str, output_dir: str = 'pins', num: int
                     if isinstance(err, TimeoutError):
                         log_pinterest_debug("Browser scrape timed out, switching to emergency fallback", "WARNING")
                         return get_emergency_fallback_content(output_dir)
-                    log_pinterest_debug(f"Browser scrape error: {err}", "WARNING")
-                    scraped_browser = None
+                    # Check for driver issues
+                    if err and "unable to obtain driver" in str(err).lower():
+                        log_pinterest_debug("Chrome driver not available, skipping browser mode", "WARNING")
+                        scraped_browser = None
+                    else:
+                        log_pinterest_debug(f"Browser scrape error: {err}", "WARNING")
+                        scraped_browser = None
                 log_pinterest_debug(f"Browser mode scraped {len(scraped_browser) if scraped_browser else 0} items")
                 
                 if scraped_browser:

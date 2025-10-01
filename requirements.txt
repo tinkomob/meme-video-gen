@@ -21,3 +21,5 @@ tzdata
 beautifulsoup4
 lxml
 pillow
+brotli
+selenium>=4.14
