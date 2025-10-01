@@ -2,6 +2,7 @@ import os
 os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
 
 import random
+import logging
 import datetime
 import uuid
 import shutil
@@ -60,12 +61,17 @@ def generate_meme_video(
 ):
     notify = (lambda msg: progress(msg) if callable(progress) else None)
     set_phase('init')
-    # use unique ephemeral dirs per generation to allow parallel runs
-    unique_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
-    pins_dir = f"{DEFAULT_PINS_DIR}_{unique_id}"
-    audio_dir = f"{DEFAULT_AUDIO_DIR}_{unique_id}"
-    Path(pins_dir).mkdir(parents=True, exist_ok=True)
-    Path(audio_dir).mkdir(parents=True, exist_ok=True)
+    
+    try:
+        unique_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
+        pins_dir = f"{DEFAULT_PINS_DIR}_{unique_id}"
+        audio_dir = f"{DEFAULT_AUDIO_DIR}_{unique_id}"
+        Path(pins_dir).mkdir(parents=True, exist_ok=True)
+        Path(audio_dir).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        notify(f"❌ Ошибка создания временных директорий: {e}")
+        logging.error(f"Ошибка создания временных директорий: {e}", exc_info=True)
+        return GenerationResult(None, None, None, None, None)
     
     # Унифицированный список источников с случайным порядком
     sources_candidates: list[tuple[str, Callable[[], tuple[str | None, str | None]]]] = []
@@ -153,23 +159,35 @@ def generate_meme_video(
         sources_candidates.append(("twitter", _twitter_provider))
     sources_candidates.append(("meme_api", _meme_api_provider))
 
+    
     random.shuffle(sources_candidates)
     downloaded_path = None
     chosen_pinterest = None
     tried = []
-    for name, provider in sources_candidates:
-        print(f"Trying source provider: {name}", flush=True)
-        set_phase(f'source:{name}')
-        path, src = provider()
-        tried.append(name)
-        if path:
-            downloaded_path = path
-            chosen_pinterest = src
-            print(f"Source {name} succeeded with file {path}", flush=True)
-            break
-        else:
-            print(f"Source {name} returned no result, continuing", flush=True)
-    print(f"Tried sources order: {tried}", flush=True)
+    
+    try:
+        for name, provider in sources_candidates:
+            print(f"Trying source provider: {name}", flush=True)
+            set_phase(f'source:{name}')
+            try:
+                path, src = provider()
+                tried.append(name)
+                if path:
+                    downloaded_path = path
+                    chosen_pinterest = src
+                    print(f"Source {name} succeeded with file {path}", flush=True)
+                    break
+                else:
+                    print(f"Source {name} returned no result, continuing", flush=True)
+            except Exception as e:
+                logging.error(f"Ошибка при получении контента из источника {name}: {e}", exc_info=True)
+                tried.append(f"{name}(error)")
+                print(f"Source {name} failed with error: {e}, continuing", flush=True)
+        print(f"Tried sources order: {tried}", flush=True)
+    except Exception as e:
+        logging.error(f"Критическая ошибка в цикле источников: {e}", exc_info=True)
+        notify(f"❌ Критическая ошибка при поиске контента: {e}")
+        return GenerationResult(None, None, None, None, None)
     
     print(f"Final downloaded_path: {downloaded_path}", flush=True)
     if downloaded_path:
@@ -181,75 +199,93 @@ def generate_meme_video(
         notify("❌ Не удалось получить исходный мем")
         return GenerationResult(None, None, chosen_pinterest, None, None)
     
-    # Rest of the function remains the same...
+    
     audio_clip_path = None
     original_audio_path = None
     audio_title = None
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
+    
     if chosen_music:
-        set_phase('audio_download')
-        notify("🎵 Скачиваю трек из плейлиста…")
-        audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
-        print(f"Downloaded audio path: {audio_path}", flush=True)
-        if audio_path:
-            original_audio_path = audio_path
-            # Get audio title before processing
-            audio_title = get_song_title(audio_path)
-            notify("✂️ Вырезаю аудио-клип нужной длительности…")
-            set_phase('audio_clip')
-            audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
-            print(f"Extracted audio clip path: {audio_clip_path}", flush=True)
-            if audio_path != audio_clip_path and os.path.exists(audio_path):
-                try:
-                    os.remove(audio_path)
-                except Exception:
-                    pass
-    # create unique output/thumbnail names to avoid overwriting when generating multiple candidates
+        try:
+            set_phase('audio_download')
+            notify("🎵 Скачиваю трек из плейлиста…")
+            audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
+            print(f"Downloaded audio path: {audio_path}", flush=True)
+            if audio_path:
+                original_audio_path = audio_path
+                audio_title = get_song_title(audio_path)
+                notify("✂️ Вырезаю аудио-клип нужной длительности…")
+                set_phase('audio_clip')
+                audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
+                print(f"Extracted audio clip path: {audio_clip_path}", flush=True)
+                if audio_path != audio_clip_path and os.path.exists(audio_path):
+                    try:
+                        os.remove(audio_path)
+                    except Exception:
+                        pass
+        except Exception as e:
+            logging.error(f"Ошибка при обработке аудио: {e}", exc_info=True)
+            notify(f"⚠️ Ошибка при обработке аудио, продолжаю без звука: {e}")
     unique_suffix = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
     output_path = f"tiktok_video_{unique_suffix}.mp4"
-    set_phase('video_convert')
-    notify("🎬 Конвертирую видео в формат TikTok…")
-    print(f"Starting video conversion with downloaded_path: {downloaded_path}, output_path: {output_path}", flush=True)
-    result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path, seed=seed, variant_group=variant_group)
-    print(f"Video conversion result: {result_path}", flush=True)
-    if not result_path or not os.path.exists(result_path):
-        print("Video conversion failed", flush=True)
-        notify("❌ Ошибка при конвертации видео")
+    
+    try:
+        set_phase('video_convert')
+        notify("🎬 Конвертирую видео в формат TikTok…")
+        print(f"Starting video conversion with downloaded_path: {downloaded_path}, output_path: {output_path}", flush=True)
+        result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path, seed=seed, variant_group=variant_group)
+        print(f"Video conversion result: {result_path}", flush=True)
+        if not result_path or not os.path.exists(result_path):
+            print("Video conversion failed", flush=True)
+            notify("❌ Ошибка при конвертации видео")
+            return GenerationResult(None, None, chosen_pinterest, None, audio_title)
+    except Exception as e:
+        logging.error(f"Критическая ошибка при конвертации видео: {e}", exc_info=True)
+        notify(f"❌ Критическая ошибка при конвертации видео: {e}")
         return GenerationResult(None, None, chosen_pinterest, None, audio_title)
     
     thumbnail_path = f"thumbnail_{unique_suffix}.jpg"
-    set_phase('thumbnail')
-    notify("🖼️ Генерирую миниатюру…")
-    print(f"Generating thumbnail for: {output_path}", flush=True)
-    thumb_result = generate_thumbnail(output_path, thumbnail_path)
-    print(f"Thumbnail generation result: {thumb_result}", flush=True)
-    if not thumb_result or not os.path.exists(thumb_result):
-        print("Thumbnail generation failed", flush=True)
-        notify("❌ Не удалось создать миниатюру")
+    try:
+        set_phase('thumbnail')
+        notify("🖼️ Генерирую миниатюру…")
+        print(f"Generating thumbnail for: {output_path}", flush=True)
+        thumb_result = generate_thumbnail(output_path, thumbnail_path)
+        print(f"Thumbnail generation result: {thumb_result}", flush=True)
+        if not thumb_result or not os.path.exists(thumb_result):
+            print("Thumbnail generation failed", flush=True)
+            notify("❌ Не удалось создать миниатюру")
+            return GenerationResult(None, None, chosen_pinterest, None, audio_title)
+    except Exception as e:
+        logging.error(f"Критическая ошибка при создании миниатюры: {e}", exc_info=True)
+        notify(f"❌ Критическая ошибка при создании миниатюры: {e}")
         return GenerationResult(None, None, chosen_pinterest, None, audio_title)
-    if audio_clip_path and os.path.exists(audio_clip_path):
-        try:
-            os.remove(audio_clip_path)
-        except Exception:
-            pass
-    if downloaded_path and os.path.exists(downloaded_path):
-        try:
-            os.remove(downloaded_path)
-        except Exception:
-            pass
-    for d in [pins_dir, audio_dir]:
-        try:
-            if Path(d).exists():
-                shutil.rmtree(d, ignore_errors=True)
-        except Exception:
-            pass
-    ensure_gitignore_entries([
-        f"{DEFAULT_PINS_DIR}_*/",
-        f"{DEFAULT_AUDIO_DIR}_*/",
-        "tiktok_video_*.mp4",
-        "thumbnail_*.jpg"
-    ]) 
+    
+    try:
+        if audio_clip_path and os.path.exists(audio_clip_path):
+            try:
+                os.remove(audio_clip_path)
+            except Exception:
+                pass
+        if downloaded_path and os.path.exists(downloaded_path):
+            try:
+                os.remove(downloaded_path)
+            except Exception:
+                pass
+        for d in [pins_dir, audio_dir]:
+            try:
+                if Path(d).exists():
+                    shutil.rmtree(d, ignore_errors=True)
+            except Exception:
+                pass
+        ensure_gitignore_entries([
+            f"{DEFAULT_PINS_DIR}_*/",
+            f"{DEFAULT_AUDIO_DIR}_*/",
+            "tiktok_video_*.mp4",
+            "thumbnail_*.jpg"
+        ])
+    except Exception as e:
+        logging.error(f"Ошибка при очистке временных файлов: {e}", exc_info=True) 
     set_phase('done')
     notify("✅ Готово! Видео и миниатюра созданы")
     return GenerationResult(output_path, thumbnail_path, chosen_pinterest, original_audio_path, audio_title)

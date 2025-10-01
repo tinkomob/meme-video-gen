@@ -6,7 +6,10 @@ import logging
 import threading
 from typing import Optional
 from datetime import datetime, timedelta
-from zoneinfo import ZoneInfo
+try:
+    from zoneinfo import ZoneInfo
+except Exception:
+    ZoneInfo = None
 from io import BytesIO
 
 from dotenv import load_dotenv
@@ -18,6 +21,20 @@ from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COO
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso, set_daily_schedule_iso, get_daily_schedule_iso, set_selected_chat_id, get_selected_chat_id
 from app.config import DAILY_GENERATIONS, DUP_REGEN_RETRIES
 from app.video import get_video_metadata
+from app.crash_handler import save_generation_state, load_last_crash_info, clear_crash_info, get_last_uncaught_exception, get_recent_phases
+
+def _tz_tomsk():
+    try:
+        if ZoneInfo is not None:
+            return ZoneInfo("Asia/Tomsk")
+    except Exception:
+        pass
+    try:
+        from datetime import timezone
+        offset = 7
+        return timezone(timedelta(hours=offset))
+    except Exception:
+        return None
 
 try:
     from telegram import InlineKeyboardButton, InlineKeyboardMarkup
@@ -1247,7 +1264,7 @@ async def on_document_received(update, context):
 
 
 def _random_time_today_tomsk() -> datetime:
-    tz = ZoneInfo("Asia/Tomsk")
+    tz = _tz_tomsk()
     now = datetime.now(tz)
     start = now.replace(hour=10, minute=0, second=0, microsecond=0)
     # end is exclusive midnight of next day (window 10:00 – 24:00)
@@ -1264,7 +1281,7 @@ def _random_time_today_tomsk() -> datetime:
 
 
 def _random_time_tomsk_for_date(date_obj) -> datetime:
-    tz = ZoneInfo("Asia/Tomsk")
+    tz = _tz_tomsk()
     start = datetime(year=date_obj.year, month=date_obj.month, day=date_obj.day, hour=10, minute=0, second=0, microsecond=0, tzinfo=tz)
     # exclusive midnight next day
     end = (start + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=0)
@@ -1276,7 +1293,7 @@ def _random_time_tomsk_for_date(date_obj) -> datetime:
 
 
 def _compute_next_target(now: datetime) -> datetime:
-    tz = ZoneInfo("Asia/Tomsk")
+    tz = _tz_tomsk()
     saved = get_next_run_iso()
     if saved:
         try:
@@ -1317,7 +1334,7 @@ def _compute_next_target(now: datetime) -> datetime:
 
 
 def _reschedule_to(app, target_dt: datetime) -> None:
-    tz = ZoneInfo("Asia/Tomsk")
+    tz = _tz_tomsk()
     if target_dt.tzinfo is None:
         target_dt = target_dt.replace(tzinfo=tz)
     try:
@@ -1347,145 +1364,222 @@ def _reschedule_to(app, target_dt: datetime) -> None:
 async def _scheduled_job(context):
     logging.info("Запуск запланированной генерации видео (мульти режим)")
     app = context.application
-    tz = ZoneInfo("Asia/Tomsk")
+    tz = _tz_tomsk()
     tznow = datetime.now(tz)
-    schedule_list = get_daily_schedule_iso()
-    if schedule_list:
-        schedule_list = sorted(schedule_list)
-        # remove past
-        schedule_list = [x for x in schedule_list if datetime.fromisoformat(x) > tznow]
-        set_daily_schedule_iso(schedule_list)
-    pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
-    music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
-    reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
-    twitter_sources = load_urls_json(DEFAULT_TWITTER_JSON, [])
     cid = _resolve_notify_chat_id()
-    if not cid:
-        logging.warning("Не найден chat_id для уведомления")
-    cleanup_old_temp_dirs()
+    
+    try:
+        save_generation_state("started", {"time": tznow.isoformat()})
+        
+        schedule_list = get_daily_schedule_iso()
+        if schedule_list:
+            schedule_list = sorted(schedule_list)
+            schedule_list = [x for x in schedule_list if datetime.fromisoformat(x) > tznow]
+            set_daily_schedule_iso(schedule_list)
+        pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
+        music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+        reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+        twitter_sources = load_urls_json(DEFAULT_TWITTER_JSON, [])
+        
+        if not cid:
+            logging.warning("Не найден chat_id для уведомления")
+    except Exception as e:
+        logging.error(f"Ошибка инициализации запланированной генерации: {e}", exc_info=True)
+        save_generation_state("init_error", {"error": str(e), "time": datetime.now(tz).isoformat()})
+        if cid:
+            try:
+                await app.bot.send_message(chat_id=cid, text=f"❌ Ошибка инициализации генерации:\n{e}")
+            except Exception:
+                pass
+        return
+    
+    try:
+        cleanup_old_temp_dirs()
+    except Exception as e:
+        logging.warning(f"Ошибка при очистке временных директорий: {e}")
+    
     async def gen_one(idx: int, attempt: int):
         def run_generation():
-            seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 9973)
-            return generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources, twitter_sources=twitter_sources)
+            try:
+                logging.info(f"Генерация #{idx}, попытка {attempt}")
+                save_generation_state("generating", {"index": idx, "attempt": attempt, "time": datetime.now(tz).isoformat()})
+                seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 9973)
+                result = generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources, twitter_sources=twitter_sources)
+                logging.info(f"Генерация #{idx}, попытка {attempt} завершена успешно")
+                return result
+            except Exception as e:
+                logging.error(f"Критическая ошибка в генерации #{idx}, попытка {attempt}: {e}", exc_info=True)
+                save_generation_state("generation_error", {"index": idx, "attempt": attempt, "error": str(e), "time": datetime.now(tz).isoformat()})
+                return None
         return await asyncio.to_thread(run_generation)
     
     gens = []
-    for i in range(3):
-        result = await gen_one(i, 0)
-        gens.append(result)
-    # anti-duplicate by source_url
-    def result_source(res):
-        return getattr(res,'source_url', None) if res else None
-    seen = set()
-    for attempt in range(1, DUP_REGEN_RETRIES+1):
-        dup_indexes = []
-        seen.clear()
-        for i,res in enumerate(gens):
-            if isinstance(res, Exception) or not res:
-                dup_indexes.append(i)
-                continue
-            src = result_source(res)
-            if not src or src in seen:
-                dup_indexes.append(i)
-            else:
-                seen.add(src)
-        if not dup_indexes:
-            break
-        for i in dup_indexes:
-            new_res = await gen_one(i, attempt)
-            gens[i] = new_res
-    results = []
-    for res in gens:
-        try:
-            if isinstance(res, Exception):
-                results.append(None)
-                continue
-            if not res:
-                results.append(None)
-                continue
-            vp = getattr(res, 'video_path', None)
-            tp = getattr(res, 'thumbnail_path', None)
-            sp = getattr(res, 'source_url', None)
-            ap = getattr(res, 'audio_path', None)
-            if vp and os.path.exists(vp):
-                item = add_video_history_item(vp, tp, sp, ap)
-                results.append(item)
-            else:
-                results.append(None)
-        except Exception:
-            results.append(None)
-    if cid and results:
-        generation_id = os.urandom(4).hex()
-        msg_ids = []
-        item_ids = [it['id'] for it in results if it]
-        lines = ["Автогенерация завершена. Отправлено 3 варианта ниже:"]
-        try:
-            m0 = await app.bot.send_message(chat_id=cid, text="\n".join(lines))
-            if m0 and getattr(m0, 'message_id', None):
-                msg_ids.append(m0.message_id)
-        except Exception:
-            pass
-        for item in results:
-            if not item:
-                continue
-            vid = item['id']
-            kb = None
-            if InlineKeyboardButton and InlineKeyboardMarkup:
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
-                    [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
-                    [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
-                ])
+    try:
+        for i in range(3):
+            logging.info(f"Запуск генерации варианта {i+1}/3")
+            result = await gen_one(i, 0)
+            gens.append(result)
+            logging.info(f"Генерация варианта {i+1}/3 завершена")
+    except Exception as e:
+        logging.error(f"Критическая ошибка при создании вариантов: {e}", exc_info=True)
+        save_generation_state("batch_error", {"error": str(e), "time": datetime.now(tz).isoformat()})
+        if cid:
             try:
-                if item.get('video_path') and os.path.exists(item.get('video_path')):
-                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
-                    mv = await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=info_text, reply_markup=kb)
-                else:
-                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
-                    mv = await app.bot.send_message(chat_id=cid, text=info_text, reply_markup=kb)
-                if mv and getattr(mv, 'message_id', None):
-                    msg_ids.append(mv.message_id)
+                await app.bot.send_message(chat_id=cid, text=f"❌ Критическая ошибка при генерации:\n{e}")
             except Exception:
                 pass
+        return
+    
+    try:
+        def result_source(res):
+            return getattr(res,'source_url', None) if res else None
+        seen = set()
+        for attempt in range(1, DUP_REGEN_RETRIES+1):
+            dup_indexes = []
+            seen.clear()
+            for i,res in enumerate(gens):
+                if isinstance(res, Exception) or not res:
+                    dup_indexes.append(i)
+                    continue
+                src = result_source(res)
+                if not src or src in seen:
+                    dup_indexes.append(i)
+                else:
+                    seen.add(src)
+            if not dup_indexes:
+                break
+            logging.info(f"Повторная генерация дубликатов, попытка {attempt}: индексы {dup_indexes}")
+            for i in dup_indexes:
+                new_res = await gen_one(i, attempt)
+                gens[i] = new_res
+    except Exception as e:
+        logging.error(f"Ошибка при проверке дубликатов: {e}", exc_info=True)
+        save_generation_state("dedup_error", {"error": str(e), "time": datetime.now(tz).isoformat()})
+    
+    results = []
+    try:
+        for res in gens:
+            try:
+                if isinstance(res, Exception):
+                    results.append(None)
+                    continue
+                if not res:
+                    results.append(None)
+                    continue
+                vp = getattr(res, 'video_path', None)
+                tp = getattr(res, 'thumbnail_path', None)
+                sp = getattr(res, 'source_url', None)
+                ap = getattr(res, 'audio_path', None)
+                if vp and os.path.exists(vp):
+                    item = add_video_history_item(vp, tp, sp, ap)
+                    results.append(item)
+                else:
+                    results.append(None)
+            except Exception as e:
+                logging.error(f"Ошибка обработки результата генерации: {e}", exc_info=True)
+                results.append(None)
+    except Exception as e:
+        logging.error(f"Критическая ошибка при обработке результатов: {e}", exc_info=True)
+        save_generation_state("results_error", {"error": str(e), "time": datetime.now(tz).isoformat()})
+        if cid:
+            try:
+                await app.bot.send_message(chat_id=cid, text=f"❌ Ошибка обработки результатов:\n{e}")
+            except Exception:
+                pass
+        return
+    
+    
+    try:
+        save_generation_state("completed", {"time": datetime.now(tz).isoformat(), "results_count": len([r for r in results if r])})
+    except Exception as e:
+        logging.error(f"Ошибка сохранения состояния завершения: {e}")
+    
+    if cid and results:
         try:
-            if InlineKeyboardButton and InlineKeyboardMarkup:
-                regen_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Сгенерировать заново", callback_data=f"schedregen:{generation_id}")]])
-            else:
-                regen_kb = None
-            regen_msg = await app.bot.send_message(chat_id=cid, text="Если варианты не подходят – можно сгенерировать заново", reply_markup=regen_kb)
-            if regen_msg and getattr(regen_msg, 'message_id', None):
-                msg_ids.append(regen_msg.message_id)
-        except Exception:
-            pass
-        try:
-            store = app.bot_data.get('scheduled_generations')
-            if not isinstance(store, dict):
-                store = {}
-                app.bot_data['scheduled_generations'] = store
-            store[generation_id] = {'item_ids': item_ids, 'msg_ids': msg_ids, 'chat_id': cid}
-        except Exception:
-            pass
-    # schedule next remaining today or generate tomorrow set
-    schedule_list = get_daily_schedule_iso()
-    tznow2 = datetime.now(tz)
-    future = [datetime.fromisoformat(x) for x in schedule_list if datetime.fromisoformat(x) > tznow2]
-    if future:
-        next_dt = min(future)
-        _reschedule_to(app, next_dt)
-        app.bot_data['scheduled_target_iso'] = next_dt.isoformat()
-    else:
-        # build tomorrow schedule
-        tomorrow = (tznow2 + timedelta(days=1)).date()
-        times = _build_daily_schedule_for_date(tomorrow, DAILY_GENERATIONS)
-        set_daily_schedule_iso([t.isoformat() for t in times])
-        next_dt = times[0]
-        _reschedule_to(app, next_dt)
-        app.bot_data['scheduled_target_iso'] = next_dt.isoformat()
-    logging.info(f"Сформировано следующее расписание: {get_daily_schedule_iso()}")
+            generation_id = os.urandom(4).hex()
+            msg_ids = []
+            item_ids = [it['id'] for it in results if it]
+            lines = ["Автогенерация завершена. Отправлено 3 варианта ниже:"]
+            try:
+                m0 = await app.bot.send_message(chat_id=cid, text="\n".join(lines))
+                if m0 and getattr(m0, 'message_id', None):
+                    msg_ids.append(m0.message_id)
+            except Exception as e:
+                logging.error(f"Ошибка отправки заголовка: {e}")
+            
+            for item in results:
+                if not item:
+                    continue
+                vid = item['id']
+                kb = None
+                if InlineKeyboardButton and InlineKeyboardMarkup:
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
+                        [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
+                        [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
+                    ])
+                try:
+                    if item.get('video_path') and os.path.exists(item.get('video_path')):
+                        info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
+                        mv = await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=info_text, reply_markup=kb)
+                    else:
+                        info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
+                        mv = await app.bot.send_message(chat_id=cid, text=info_text, reply_markup=kb)
+                    if mv and getattr(mv, 'message_id', None):
+                        msg_ids.append(mv.message_id)
+                except Exception as e:
+                    logging.error(f"Ошибка отправки видео #{vid}: {e}")
+            
+            try:
+                if InlineKeyboardButton and InlineKeyboardMarkup:
+                    regen_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Сгенерировать заново", callback_data=f"schedregen:{generation_id}")]])
+                else:
+                    regen_kb = None
+                regen_msg = await app.bot.send_message(chat_id=cid, text="Если варианты не подходят – можно сгенерировать заново", reply_markup=regen_kb)
+                if regen_msg and getattr(regen_msg, 'message_id', None):
+                    msg_ids.append(regen_msg.message_id)
+            except Exception as e:
+                logging.error(f"Ошибка отправки кнопки регенерации: {e}")
+            
+            try:
+                store = app.bot_data.get('scheduled_generations')
+                if not isinstance(store, dict):
+                    store = {}
+                    app.bot_data['scheduled_generations'] = store
+                store[generation_id] = {'item_ids': item_ids, 'msg_ids': msg_ids, 'chat_id': cid}
+            except Exception as e:
+                logging.error(f"Ошибка сохранения данных генерации: {e}")
+        except Exception as e:
+            logging.error(f"Критическая ошибка при отправке сообщений: {e}", exc_info=True)
+            save_generation_state("send_error", {"error": str(e), "time": datetime.now(tz).isoformat()})
+    
+    try:
+        schedule_list = get_daily_schedule_iso()
+        tznow2 = datetime.now(tz)
+        future = [datetime.fromisoformat(x) for x in schedule_list if datetime.fromisoformat(x) > tznow2]
+        if future:
+            next_dt = min(future)
+            _reschedule_to(app, next_dt)
+            app.bot_data['scheduled_target_iso'] = next_dt.isoformat()
+        else:
+            tomorrow = (tznow2 + timedelta(days=1)).date()
+            times = _build_daily_schedule_for_date(tomorrow, DAILY_GENERATIONS)
+            set_daily_schedule_iso([t.isoformat() for t in times])
+            next_dt = times[0]
+            _reschedule_to(app, next_dt)
+            app.bot_data['scheduled_target_iso'] = next_dt.isoformat()
+        logging.info(f"Сформировано следующее расписание: {get_daily_schedule_iso()}")
+    except Exception as e:
+        logging.error(f"Ошибка планирования следующей генерации: {e}", exc_info=True)
+        if cid:
+            try:
+                await app.bot.send_message(chat_id=cid, text=f"⚠️ Ошибка планирования следующей генерации:\n{e}")
+            except Exception:
+                pass
 
 
 def _build_daily_schedule_for_date(date_obj, count: int) -> list[datetime]:
-    tz = ZoneInfo("Asia/Tomsk")
+    tz = _tz_tomsk()
     start = datetime(year=date_obj.year, month=date_obj.month, day=date_obj.day, hour=10, minute=0, second=0, microsecond=0, tzinfo=tz)
     # exclusive midnight: next day 00:00
     end = (start + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
@@ -1514,7 +1608,7 @@ def _build_daily_schedule_for_date(date_obj, count: int) -> list[datetime]:
 
 def _schedule_next_job(app):
     logging.info("Планирование списка ежедневных генераций")
-    tz = ZoneInfo("Asia/Tomsk")
+    tz = _tz_tomsk()
     now = datetime.now(tz)
     today_list = get_daily_schedule_iso()
     parsed = []
@@ -1561,7 +1655,50 @@ def main():
             cid = _resolve_notify_chat_id()
             if cid:
                 try:
-                    await appinst.bot.send_message(chat_id=cid, text="Бот перезапущен. Планировщик активен.")
+                    crash_info = load_last_crash_info()
+                    startup_msg = "🤖 Бот перезапущен. Планировщик активен."
+                    
+                    if crash_info:
+                        state = crash_info.get('state', 'unknown')
+                        error = crash_info.get('error', 'Неизвестная ошибка')
+                        crash_time = crash_info.get('time', 'неизвестно')
+                        details = crash_info.get('details', {})
+                        
+                        state_names = {
+                            'generation_error': 'Ошибка генерации видео',
+                            'batch_error': 'Ошибка пакетной генерации',
+                            'init_error': 'Ошибка инициализации',
+                            'dedup_error': 'Ошибка проверки дубликатов',
+                            'results_error': 'Ошибка обработки результатов',
+                            'send_error': 'Ошибка отправки сообщений'
+                        }
+                        
+                        startup_msg += f"\n\n⚠️ Обнаружена информация о предыдущей проблеме:\n"
+                        startup_msg += f"📍 Этап: {state_names.get(state, state)}\n"
+                        startup_msg += f"⏰ Время: {crash_time}\n"
+                        startup_msg += f"❌ Ошибка: {error[:200]}\n"
+                        
+                        if 'index' in details:
+                            startup_msg += f"🔢 Вариант: {details['index'] + 1}\n"
+                        if 'attempt' in details:
+                            startup_msg += f"🔄 Попытка: {details['attempt']}\n"
+                        
+                        clear_crash_info()
+                    
+                    try:
+                        last_exc = get_last_uncaught_exception()
+                        if last_exc and last_exc.get('summary'):
+                            startup_msg += f"\n\n🧯 Последнее непойманное исключение:\n{last_exc['summary'][:300]}"
+                    except Exception:
+                        pass
+                    try:
+                        phases = get_recent_phases(15)
+                        if phases:
+                            startup_msg += "\n\n📜 Последние фазы:" + "\n" + "\n".join(phases)
+                    except Exception:
+                        pass
+
+                    await appinst.bot.send_message(chat_id=cid, text=startup_msg)
                 except Exception as e:
                     logging.warning(f"Не удалось отправить стартовое сообщение: {e}")
             else:
@@ -1578,7 +1715,7 @@ def main():
             pass
         try:
             async def watchdog():
-                tz = ZoneInfo("Asia/Tomsk")
+                tz = _tz_tomsk()
                 while True:
                     await asyncio.sleep(10)
                     try:
@@ -1817,7 +1954,7 @@ def main():
             set_last_chat_id(update.effective_chat.id)
         except Exception:
             pass
-        tz = ZoneInfo("Asia/Tomsk")
+        tz = _tz_tomsk()
         now = datetime.now(tz)
         sched = get_daily_schedule_iso()
         today = [s for s in sched if datetime.fromisoformat(s).date() == now.date()]
@@ -1844,7 +1981,7 @@ def main():
             set_last_chat_id(update.effective_chat.id)
         except Exception:
             pass
-        tz = ZoneInfo("Asia/Tomsk")
+        tz = _tz_tomsk()
         now = datetime.now(tz)
         sched = get_daily_schedule_iso()
         future = []
@@ -1951,7 +2088,7 @@ def main():
     app.add_handler(CommandHandler("runscheduled", cmd_runscheduled))
 
     async def cmd_rebuildschedule(update, context):
-        tz = ZoneInfo("Asia/Tomsk")
+        tz = _tz_tomsk()
         now = datetime.now(tz)
         times = _build_daily_schedule_for_date(now.date(), DAILY_GENERATIONS)
         # preserve future non-today schedules (none usually) but we overwrite today
@@ -1976,7 +2113,7 @@ def main():
     app.add_handler(CommandHandler("rebuildschedule", cmd_rebuildschedule))
 
     async def cmd_setnext(update, context):
-        tz = ZoneInfo("Asia/Tomsk")
+        tz = _tz_tomsk()
         args = context.args or []
         if len(args) < 2:
             await update.message.reply_text("Использование: /setnext <index> <HH:MM | +30m | +2h | YYYY-MM-DD HH:MM>")
