@@ -22,6 +22,14 @@ from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_
 from app.config import DAILY_GENERATIONS, DUP_REGEN_RETRIES
 from app.video import get_video_metadata
 from app.crash_handler import save_generation_state, load_last_crash_info, clear_crash_info, get_last_uncaught_exception, get_recent_phases
+try:
+    import telegram.error as tgerr
+except Exception:
+    tgerr = None
+try:
+    import httpx
+except Exception:
+    httpx = None
 
 def _tz_tomsk():
     try:
@@ -2212,6 +2220,45 @@ def main():
     app.add_handler(CommandHandler("chatid", cmd_chatid))
 
     app.add_handler(CommandHandler("setnext", cmd_setnext))
+
+    async def on_error(update, context):
+        err = getattr(context, 'error', None)
+        logging.exception("Unhandled exception in Telegram handler", exc_info=True)
+        if err is None:
+            return
+        try:
+            try:
+                if tgerr is not None and isinstance(err, (tgerr.NetworkError, tgerr.TimedOut)):
+                    return
+            except Exception:
+                pass
+            if httpx is not None and isinstance(err, (httpx.ReadError, )):
+                return
+            if 'ReadError' in repr(err):
+                return
+        except Exception:
+            pass
+        try:
+            save_generation_state("bot_error", {"error": str(err), "type": err.__class__.__name__, "time": datetime.now(_tz_tomsk()).isoformat()})
+        except Exception:
+            pass
+        try:
+            now_ts = time.time()
+            last_ts = context.application.bot_data.get('last_error_notify_ts', 0)
+            if now_ts - last_ts < 60:
+                return
+            context.application.bot_data['last_error_notify_ts'] = now_ts
+            cid = _resolve_notify_chat_id()
+            if cid:
+                msg = f"⚠️ Telegram error: {err.__class__.__name__}: {err}"
+                try:
+                    await context.bot.send_message(chat_id=cid, text=msg)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    app.add_error_handler(on_error)
 
     print("Бот запущен. Нажмите Ctrl+C для остановки.")
     logging.info("Бот запущен и готов к работе")
