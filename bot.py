@@ -4,6 +4,7 @@ import json
 import time
 import logging
 import threading
+import gc
 from typing import Optional
 from datetime import datetime, timedelta
 try:
@@ -21,7 +22,7 @@ from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COO
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso, set_daily_schedule_iso, get_daily_schedule_iso, set_selected_chat_id, get_selected_chat_id
 from app.config import DAILY_GENERATIONS, DUP_REGEN_RETRIES
 from app.video import get_video_metadata
-from app.crash_handler import save_generation_state, load_last_crash_info, clear_crash_info, get_last_uncaught_exception, get_recent_phases
+from app.crash_handler import save_generation_state, load_last_crash_info, clear_crash_info, get_last_uncaught_exception, get_recent_phases, log_resource_usage, get_memory_info
 try:
     import telegram.error as tgerr
 except Exception:
@@ -169,6 +170,7 @@ HELP_TEXT = (
     "Команды:\n"
     "/start — приветствие\n"
     "/help — помощь\n"
+    "/status — статус генерации и использование памяти\n"
     "/generate — генерация мемов. Форматы: /generate N (N видео), /generate <pin_num> <audio_duration> [count=M]. Примеры: /generate 3; /generate 80 12 count=2\n"
     "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), Twitter (twitter_urls.json), музыка (music_playlists.json)\n"
     "  После генерации доступны кнопки: Опубликовать, Выбрать платформы, Сменить трек, Сгенерировать заново\n"
@@ -283,6 +285,29 @@ def _get_bot_dry_run(context) -> bool:
         return val
     return BOT_DRY_RUN_DEFAULT
 
+def _is_generation_locked(app) -> bool:
+    return app.bot_data.get('generation_locked', False)
+
+def _lock_generation(app) -> bool:
+    if _is_generation_locked(app):
+        return False
+    app.bot_data['generation_locked'] = True
+    app.bot_data['generation_lock_time'] = time.time()
+    logging.info("🔒 Генерация заблокирована")
+    return True
+
+def _unlock_generation(app):
+    was_locked = app.bot_data.get('generation_locked', False)
+    app.bot_data['generation_locked'] = False
+    app.bot_data.pop('generation_lock_time', None)
+    if was_locked:
+        logging.info("🔓 Генерация разблокирована")
+        gc.collect()
+        try:
+            log_resource_usage("after_unlock")
+        except Exception:
+            pass
+
 
 def _format_video_info_from_history(item: dict) -> str:
     """Форматирует информацию о видео из истории для отправки пользователю"""
@@ -341,6 +366,60 @@ async def cmd_start(update, context):
 async def cmd_help(update, context):
     await update.message.reply_text(HELP_TEXT)
 
+async def cmd_status(update, context):
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
+    
+    lines = ["📊 Статус системы\n"]
+    
+    try:
+        mem_info = get_memory_info()
+        lines.append(f"💾 Память:")
+        lines.append(f"  RSS: {mem_info.get('rss_mb', 0)} MB")
+        lines.append(f"  VMS: {mem_info.get('vms_mb', 0)} MB")
+        lines.append(f"  Использование: {mem_info.get('percent', 0)}%")
+        lines.append(f"  Потоки: {mem_info.get('threads', 0)}\n")
+    except Exception as e:
+        lines.append(f"⚠️ Ошибка получения информации о памяти: {e}\n")
+    
+    is_locked = _is_generation_locked(context.application)
+    if is_locked:
+        lock_time = context.application.bot_data.get('generation_lock_time', 0)
+        elapsed = int(time.time() - lock_time)
+        lines.append(f"🔒 Генерация: ЗАБЛОКИРОВАНА")
+        lines.append(f"  Запущена {elapsed} сек. назад\n")
+    else:
+        lines.append(f"🔓 Генерация: СВОБОДНА\n")
+    
+    try:
+        crash_info = load_last_crash_info()
+        if crash_info:
+            lines.append(f"⚠️ Последняя проблема:")
+            lines.append(f"  Этап: {crash_info.get('state', 'неизвестно')}")
+            lines.append(f"  Ошибка: {crash_info.get('error', 'неизвестно')[:100]}")
+            lines.append(f"  Время: {crash_info.get('time', 'неизвестно')}\n")
+    except Exception:
+        pass
+    
+    try:
+        tz = _tz_tomsk()
+        now = datetime.now(tz)
+        sched = get_daily_schedule_iso()
+        today = [s for s in sched if datetime.fromisoformat(s).date() == now.date()]
+        future = [s for s in today if datetime.fromisoformat(s) > now]
+        if future:
+            next_dt = datetime.fromisoformat(min(future))
+            delta_sec = int((next_dt - now).total_seconds())
+            delta_min = delta_sec // 60
+            lines.append(f"⏰ Следующая генерация через {delta_min} мин. ({next_dt.strftime('%H:%M:%S')})")
+    except Exception:
+        pass
+    
+    await update.message.reply_text("\n".join(lines))
+
+
 
 async def cmd_generate(update, context):
     try:
@@ -374,9 +453,27 @@ async def cmd_generate(update, context):
     if not pinterest_urls and not music_playlists and not reddit_sources and not twitter_sources:
         await update.message.reply_text("Нет источников. Добавьте ссылки в pinterest_urls.json, music_playlists.json, reddit_sources.json или twitter_urls.json")
         return
+    if _is_generation_locked(context.application):
+        lock_time = context.application.bot_data.get('generation_lock_time', 0)
+        elapsed = int(time.time() - lock_time)
+        await update.message.reply_text(f"⚠️ Генерация уже выполняется (запущена {elapsed} сек. назад). Пожалуйста, дождитесь завершения.")
+        return
+    
     if count > 1:
         await update.message.reply_text(f"Запускаю генерацию {count} мемов последовательно… Это может занять несколько минут.")
         async def background_batch(chat_id: int, batch_count: int):
+            if not _lock_generation(context.application):
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ Генерация уже выполняется. Пожалуйста, дождитесь завершения.")
+                except Exception:
+                    pass
+                return
+            
+            try:
+                log_resource_usage("batch_start")
+            except Exception:
+                pass
+            
             start_ts = time.monotonic()
             async def gen_one(i: int):
                 attempts = 0
@@ -457,8 +554,26 @@ async def cmd_generate(update, context):
                 await context.bot.send_message(chat_id=chat_id, text=summary)
             except Exception:
                 pass
+            finally:
+                _unlock_generation(context.application)
+                try:
+                    log_resource_usage("batch_end")
+                except Exception:
+                    pass
         asyncio.create_task(background_batch(update.effective_chat.id, count))
         return
+    
+    if not _lock_generation(context.application):
+        lock_time = context.application.bot_data.get('generation_lock_time', 0)
+        elapsed = int(time.time() - lock_time)
+        await update.message.reply_text(f"⚠️ Генерация уже выполняется (запущена {elapsed} сек. назад). Пожалуйста, дождитесь завершения.")
+        return
+    
+    try:
+        log_resource_usage("single_gen_start")
+    except Exception:
+        pass
+    
     context.chat_data["gen_msg_ids"] = []
     context.chat_data.pop("progress_msg_id", None)
     context.chat_data.pop("progress_lines", None)
@@ -478,6 +593,13 @@ async def cmd_generate(update, context):
             twitter_sources=twitter_sources,
         )
     result = await asyncio.to_thread(run_generation)
+    
+    _unlock_generation(context.application)
+    try:
+        log_resource_usage("single_gen_end")
+    except Exception:
+        pass
+    
     if not result or not result.video_path:
         await update.message.reply_text("Не удалось создать видео.")
         return
@@ -1376,8 +1498,24 @@ async def _scheduled_job(context):
     tznow = datetime.now(tz)
     cid = _resolve_notify_chat_id()
     
+    if _is_generation_locked(app):
+        lock_time = app.bot_data.get('generation_lock_time', 0)
+        elapsed = int(time.time() - lock_time)
+        logging.warning(f"Пропуск запланированной генерации - уже выполняется (запущена {elapsed} сек. назад)")
+        if cid:
+            try:
+                await app.bot.send_message(chat_id=cid, text=f"⚠️ Пропуск запланированной генерации - другая генерация уже выполняется ({elapsed} сек.)")
+            except Exception:
+                pass
+        return
+    
+    if not _lock_generation(app):
+        logging.warning("Не удалось заблокировать генерацию для запланированной задачи")
+        return
+    
     try:
         save_generation_state("started", {"time": tznow.isoformat()})
+        log_resource_usage("scheduled_start")
         
         schedule_list = get_daily_schedule_iso()
         if schedule_list:
@@ -1399,6 +1537,7 @@ async def _scheduled_job(context):
                 await app.bot.send_message(chat_id=cid, text=f"❌ Ошибка инициализации генерации:\n{e}")
             except Exception:
                 pass
+        _unlock_generation(app)
         return
     
     try:
@@ -1410,14 +1549,19 @@ async def _scheduled_job(context):
         def run_generation():
             try:
                 logging.info(f"Генерация #{idx}, попытка {attempt}")
-                save_generation_state("generating", {"index": idx, "attempt": attempt, "time": datetime.now(tz).isoformat()})
+                mem_before = log_resource_usage(f"gen_{idx}_{attempt}_start")
+                save_generation_state("generating", {"index": idx, "attempt": attempt, "time": datetime.now(tz).isoformat(), "memory": mem_before})
                 seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 9973)
                 result = generate_meme_video(pinterest_urls, music_playlists, pin_num=10000, audio_duration=10, seed=seed, variant_group=idx % 5, reddit_sources=reddit_sources, twitter_sources=twitter_sources)
+                mem_after = log_resource_usage(f"gen_{idx}_{attempt}_end")
                 logging.info(f"Генерация #{idx}, попытка {attempt} завершена успешно")
+                gc.collect()
                 return result
             except Exception as e:
+                mem_error = get_memory_info()
                 logging.error(f"Критическая ошибка в генерации #{idx}, попытка {attempt}: {e}", exc_info=True)
-                save_generation_state("generation_error", {"index": idx, "attempt": attempt, "error": str(e), "time": datetime.now(tz).isoformat()})
+                save_generation_state("generation_error", {"index": idx, "attempt": attempt, "error": str(e), "time": datetime.now(tz).isoformat(), "memory": mem_error})
+                gc.collect()
                 return None
         return await asyncio.to_thread(run_generation)
     
@@ -1584,6 +1728,12 @@ async def _scheduled_job(context):
                 await app.bot.send_message(chat_id=cid, text=f"⚠️ Ошибка планирования следующей генерации:\n{e}")
             except Exception:
                 pass
+    finally:
+        _unlock_generation(app)
+        try:
+            log_resource_usage("scheduled_end")
+        except Exception:
+            pass
 
 
 def _build_daily_schedule_for_date(date_obj, count: int) -> list[datetime]:
@@ -1764,6 +1914,7 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("generate", cmd_generate))
     app.add_handler(CommandHandler("deploy", cmd_deploy))
     app.add_handler(CommandHandler("history", cmd_history))

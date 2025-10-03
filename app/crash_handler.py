@@ -1,6 +1,8 @@
 import os
 import json
 import logging
+import psutil
+import threading
 from datetime import datetime
 from typing import Optional
 
@@ -78,3 +80,27 @@ def get_recent_phases(max_lines: int = 20) -> list[str]:
         return lines
     except Exception:
         return []
+
+def get_memory_info() -> dict:
+    try:
+        process = psutil.Process(os.getpid())
+        mem = process.memory_info()
+        return {
+            'rss_mb': round(mem.rss / 1024 / 1024, 2),
+            'vms_mb': round(mem.vms / 1024 / 1024, 2),
+            'percent': round(process.memory_percent(), 2),
+            'threads': process.num_threads()
+        }
+    except Exception as e:
+        logging.error(f"Ошибка получения информации о памяти: {e}")
+        return {}
+
+def log_resource_usage(context: str = ""):
+    try:
+        mem_info = get_memory_info()
+        msg = f"[{context}] Память: {mem_info.get('rss_mb', 0)}MB RSS, {mem_info.get('vms_mb', 0)}MB VMS, {mem_info.get('percent', 0)}%, потоки: {mem_info.get('threads', 0)}"
+        logging.info(msg)
+        return mem_info
+    except Exception as e:
+        logging.error(f"Ошибка логирования ресурсов: {e}")
+        return {}
