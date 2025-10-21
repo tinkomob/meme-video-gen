@@ -14,7 +14,7 @@ from .config import YT_COOKIES_FILE, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
 from .audio import download_random_song_from_playlist, extract_random_audio_clip, get_song_title
-from .video import convert_to_tiktok_format, generate_thumbnail
+from .video import convert_to_tiktok_format, generate_thumbnail, get_video_metadata
 from .metadata import generate_metadata_from_source
 from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload
 from .uploaders import tiktok_upload, x_upload
@@ -47,6 +47,62 @@ def cleanup_old_temp_dirs():
         except Exception:
             pass
     return removed
+
+def cleanup_old_generated_files(max_age_days: int = 7, dry_run: bool = False):
+    base = Path('.')
+    now = datetime.datetime.utcnow()
+    max_age = datetime.timedelta(days=max_age_days)
+    
+    patterns = {
+        'videos': 'tiktok_video_*.mp4',
+        'thumbnails': 'thumbnail_*.jpg'
+    }
+    
+    stats = {
+        'videos_removed': 0,
+        'videos_size': 0,
+        'thumbnails_removed': 0,
+        'thumbnails_size': 0,
+        'videos_kept': 0,
+        'thumbnails_kept': 0
+    }
+    
+    try:
+        for category, pattern in patterns.items():
+            for item in base.glob(pattern):
+                try:
+                    if not item.is_file():
+                        continue
+                    
+                    mtime = datetime.datetime.utcfromtimestamp(item.stat().st_mtime)
+                    age = now - mtime
+                    file_size = item.stat().st_size
+                    
+                    if age > max_age:
+                        if dry_run:
+                            print(f"[DRY RUN] Would delete: {item.name} (age: {age.days} days, size: {file_size} bytes)", flush=True)
+                        else:
+                            try:
+                                item.unlink()
+                                if category == 'videos':
+                                    stats['videos_removed'] += 1
+                                    stats['videos_size'] += file_size
+                                else:
+                                    stats['thumbnails_removed'] += 1
+                                    stats['thumbnails_size'] += file_size
+                            except Exception as e:
+                                logging.error(f"Failed to delete {item.name}: {e}")
+                    else:
+                        if category == 'videos':
+                            stats['videos_kept'] += 1
+                        else:
+                            stats['thumbnails_kept'] += 1
+                except Exception as e:
+                    logging.error(f"Error processing file {item}: {e}")
+    except Exception as e:
+        logging.error(f"Error during cleanup: {e}")
+    
+    return stats
 
 def generate_meme_video(
     pinterest_urls: list[str],
@@ -206,27 +262,59 @@ def generate_meme_video(
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
     
+    audio_attempts = 0
+    max_audio_attempts = 3
+    audio_success = False
+    last_audio_error = None
+    
     if chosen_music:
-        try:
-            set_phase('audio_download')
-            notify("🎵 Скачиваю трек из плейлиста…")
-            audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
-            print(f"Downloaded audio path: {audio_path}", flush=True)
-            if audio_path:
-                original_audio_path = audio_path
-                audio_title = get_song_title(audio_path)
-                notify("✂️ Вырезаю аудио-клип нужной длительности…")
-                set_phase('audio_clip')
-                audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
-                print(f"Extracted audio clip path: {audio_clip_path}", flush=True)
-                if audio_path != audio_clip_path and os.path.exists(audio_path):
-                    try:
-                        os.remove(audio_path)
-                    except Exception:
-                        pass
-        except Exception as e:
-            logging.error(f"Ошибка при обработке аудио: {e}", exc_info=True)
-            notify(f"⚠️ Ошибка при обработке аудио, продолжаю без звука: {e}")
+        while audio_attempts < max_audio_attempts and not audio_success:
+            audio_attempts += 1
+            try:
+                set_phase('audio_download')
+                if audio_attempts == 1:
+                    notify("🎵 Скачиваю трек из плейлиста…")
+                else:
+                    notify(f"🔄 Повторная попытка загрузки аудио ({audio_attempts}/{max_audio_attempts})…")
+                
+                audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
+                print(f"Downloaded audio path: {audio_path}", flush=True)
+                
+                if audio_path:
+                    original_audio_path = audio_path
+                    audio_title = get_song_title(audio_path)
+                    notify("✂️ Вырезаю аудио-клип нужной длительности…")
+                    set_phase('audio_clip')
+                    audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
+                    print(f"Extracted audio clip path: {audio_clip_path}", flush=True)
+                    
+                    if audio_clip_path and os.path.exists(audio_clip_path):
+                        audio_success = True
+                        notify(f"✅ Аудио успешно добавлено: {audio_title or 'трек'}")
+                    
+                    if audio_path != audio_clip_path and os.path.exists(audio_path):
+                        try:
+                            os.remove(audio_path)
+                        except Exception:
+                            pass
+                    
+                    if audio_success:
+                        break
+            except Exception as e:
+                last_audio_error = str(e)
+                logging.error(f"Ошибка при обработке аудио (попытка {audio_attempts}/{max_audio_attempts}): {e}", exc_info=True)
+                if audio_attempts < max_audio_attempts:
+                    notify(f"⚠️ Ошибка: {e}")
+                    import time
+                    time.sleep(2)
+        
+        if not audio_success:
+            notify(f"❌ Не удалось загрузить аудио после {max_audio_attempts} попыток")
+            notify(f"⚠️ Последняя ошибка: {last_audio_error}")
+            notify("⚠️ Видео будет создано БЕЗ ЗВУКА")
+            logging.error(f"Финальная ошибка при загрузке аудио: {last_audio_error}")
+    else:
+        notify("⚠️ Нет плейлистов для музыки, видео будет без звука")
     unique_suffix = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
     output_path = f"tiktok_video_{unique_suffix}.mp4"
     
@@ -240,6 +328,25 @@ def generate_meme_video(
             print("Video conversion failed", flush=True)
             notify("❌ Ошибка при конвертации видео")
             return GenerationResult(None, None, chosen_pinterest, None, audio_title)
+        
+        try:
+            metadata = get_video_metadata(result_path)
+            if metadata:
+                has_audio = metadata.get('has_audio', False)
+                duration = metadata.get('duration', 0)
+                print(f"Video metadata: has_audio={has_audio}, duration={duration}s", flush=True)
+                
+                if audio_clip_path and not has_audio:
+                    notify("⚠️ ВНИМАНИЕ: Видео создано, но аудио НЕ ДОБАВЛЕНО")
+                    logging.warning(f"Audio was expected but not found in final video. audio_clip_path={audio_clip_path}")
+                elif has_audio and audio_title:
+                    notify(f"✅ Видео с аудио готово ({duration:.1f}с)")
+                elif has_audio:
+                    notify(f"✅ Видео с аудио готово ({duration:.1f}с)")
+                else:
+                    notify(f"ℹ️ Видео без аудио готово ({duration:.1f}с)")
+        except Exception as meta_err:
+            logging.warning(f"Не удалось проверить метаданные видео: {meta_err}")
     except Exception as e:
         logging.error(f"Критическая ошибка при конвертации видео: {e}", exc_info=True)
         notify(f"❌ Критическая ошибка при конвертации видео: {e}")
@@ -503,22 +610,46 @@ def replace_audio_in_video(
     audio_dir = f"{DEFAULT_AUDIO_DIR}_{unique_id}"
     Path(audio_dir).mkdir(parents=True, exist_ok=True)
     
+    audio_attempts = 0
+    max_audio_attempts = 3
+    audio_success = False
+    last_audio_error = None
+    audio_path = None
+    audio_clip_path = None
+    
     try:
-        chosen_music = random.choice(music_playlists)
-        notify("🎵 Скачиваю новый трек из плейлиста…")
-        set_phase('audio_download')
+        while audio_attempts < max_audio_attempts and not audio_success:
+            audio_attempts += 1
+            try:
+                chosen_music = random.choice(music_playlists)
+                
+                if audio_attempts == 1:
+                    notify("🎵 Скачиваю новый трек из плейлиста…")
+                else:
+                    notify(f"🔄 Повторная попытка загрузки аудио ({audio_attempts}/{max_audio_attempts})…")
+                
+                set_phase('audio_download')
+                
+                audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
+                
+                notify("✂️ Вырезаю аудио-клип нужной длительности…")
+                set_phase('audio_clip')
+                audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
+                
+                if audio_clip_path and os.path.exists(audio_clip_path):
+                    audio_success = True
+                    break
+            except Exception as e:
+                last_audio_error = str(e)
+                logging.error(f"Ошибка при обработке аудио (попытка {audio_attempts}/{max_audio_attempts}): {e}", exc_info=True)
+                if audio_attempts < max_audio_attempts:
+                    notify(f"⚠️ Ошибка: {e}")
+                    import time
+                    time.sleep(2)
         
-        audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
-        if not audio_path:
-            notify("❌ Не удалось скачать аудио")
-            return None
-        
-        notify("✂️ Вырезаю аудио-клип нужной длительности…")
-        set_phase('audio_clip')
-        audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=audio_duration)
-        
-        if not audio_clip_path:
-            notify("❌ Не удалось вырезать аудио-клип")
+        if not audio_success:
+            notify(f"❌ Не удалось загрузить аудио после {max_audio_attempts} попыток")
+            notify(f"⚠️ Последняя ошибка: {last_audio_error}")
             return None
         
         # Создаем новое видео с замененным аудио
@@ -553,7 +684,7 @@ def replace_audio_in_video(
             return None
         
         # Получаем название трека
-        audio_title = get_song_title(audio_path)
+        audio_title = get_song_title(audio_path) if audio_path else None
         
         # Создаем новую миниатюру
         thumbnail_path = f"thumbnail_{unique_suffix}.jpg"

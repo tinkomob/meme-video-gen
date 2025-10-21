@@ -163,27 +163,39 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
         final_clip = CompositeVideoClip([background, clip_resized])
         if audio_path and os.path.exists(audio_path):
             print(f"Adding audio from: {audio_path}", flush=True)
-            audio_clip = AudioFileClip(audio_path)
-            if getattr(audio_clip, 'duration', 0) > 0:
-                max_d = getattr(clip_resized, 'duration', clip_duration)
-                if audio_clip.duration > max_d:
-                    audio_clip = audio_clip.subclip(0, max_d)
+            try:
+                audio_clip = AudioFileClip(audio_path)
+                audio_duration_val = getattr(audio_clip, 'duration', 0)
+                if audio_duration_val > 0:
+                    max_d = getattr(clip_resized, 'duration', clip_duration)
+                    if audio_clip.duration > max_d:
+                        audio_clip = audio_clip.subclip(0, max_d)
+                    else:
+                        audio_clip = audio_clip.subclip(0, min(audio_clip.duration, max_d))
+                    try:
+                        clip_with_audio = clip_resized.set_audio(audio_clip)  # type: ignore[attr-defined]
+                        final_clip = CompositeVideoClip([background, clip_with_audio])
+                        print(f"Audio added to video successfully (duration: {audio_duration_val:.1f}s)", flush=True)
+                    except Exception as audio_err:
+                        print(f"Failed to attach audio to video: {audio_err}", flush=True)
+                        clip_with_audio = clip_resized
+                        final_clip = CompositeVideoClip([background, clip_with_audio])
+                        print("Video created WITHOUT audio due to attachment error", flush=True)
                 else:
-                    audio_clip = audio_clip.subclip(0, min(audio_clip.duration, max_d))
-                # attempt to attach audio; if not supported, ignore
-                try:
-                    clip_with_audio = clip_resized.set_audio(audio_clip)  # type: ignore[attr-defined]
-                except Exception:
-                    clip_with_audio = clip_resized
-                final_clip = CompositeVideoClip([background, clip_with_audio])
-                print("Audio added to video successfully", flush=True)
-            else:
-                try:
-                    audio_clip.close()
-                except Exception:
-                    pass
+                    print(f"Audio file has zero duration, skipping audio", flush=True)
+                    try:
+                        audio_clip.close()
+                    except Exception:
+                        pass
+            except Exception as audio_load_err:
+                print(f"Failed to load audio file: {audio_load_err}", flush=True)
+                print("Video will be created WITHOUT audio", flush=True)
         else:
-            print(f"No audio to add - audio_path: {audio_path}, exists: {audio_path and os.path.exists(audio_path)}", flush=True)
+            if audio_path:
+                print(f"Audio file does not exist: {audio_path}", flush=True)
+            else:
+                print(f"No audio path provided", flush=True)
+            print("Video will be created WITHOUT audio", flush=True)
         final_clip.write_videofile(output_path, codec='libx264', audio_codec='aac', fps=24)
         return output_path
     except Exception as e:

@@ -15,7 +15,8 @@ from io import BytesIO
 
 from dotenv import load_dotenv
 from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
-from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs, replace_audio_in_video
+from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs, cleanup_old_generated_files, replace_audio_in_video
+from app.logger import setup_error_logging
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
 from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
@@ -52,6 +53,8 @@ except Exception:
     InlineKeyboardMarkup = None
 
 load_dotenv()
+
+setup_error_logging('errors.log')
 
 # Suppress spammy 'Empty response received.' lines coming from third-party libs (moviepy/pytube/etc.) by collapsing repeats.
 try:
@@ -189,7 +192,8 @@ HELP_TEXT = (
     "/runscheduled — немедленно выполнить ближайшую запланированную генерацию\n"
     "/setnext — изменить время запланированной генерации: /setnext <index> <время|сдвиг> (пример: /setnext 2 22:10, /setnext 1 +30m)\n"
     "/chatid — показать и сохранить текущий chat id\n"
-    "/cleanup — очистить старые временные каталоги pins_*/ audio_*\n"
+    "/cleanup — очистить старые файлы (опционально: days=N, dry для тестового режима). Пример: /cleanup days=14 dry\n"
+    "  Удаляет временные директории, tiktok_video_*.mp4 и thumbnail_*.jpg старше N дней (по умолчанию 7)\n"
     "/rebuildschedule — пересоздать расписание генераций на сегодня\n"
     "\n"
     "Кнопка 'Сменить трек' заменяет аудиотрек в уже созданном видео на случайный из плейлистов (макс. 12 сек).\n"
@@ -1868,9 +1872,15 @@ def main():
         except Exception as e:
             logging.error(f"Ошибка при инициализации планировщика: {e}")
         try:
-            cleanup_old_temp_dirs()
-        except Exception:
-            pass
+            temp_removed = cleanup_old_temp_dirs()
+            logging.info(f"Startup cleanup: removed {temp_removed} temporary directories")
+        except Exception as e:
+            logging.error(f"Error cleaning temp dirs on startup: {e}")
+        try:
+            stats = cleanup_old_generated_files(max_age_days=7, dry_run=False)
+            logging.info(f"Startup cleanup: removed {stats['videos_removed']} videos ({stats['videos_size'] / (1024*1024):.1f} MB) and {stats['thumbnails_removed']} thumbnails ({stats['thumbnails_size'] / (1024*1024):.1f} MB)")
+        except Exception as e:
+            logging.error(f"Error cleaning old generated files on startup: {e}")
         try:
             async def watchdog():
                 tz = _tz_tomsk()
@@ -1932,10 +1942,36 @@ def main():
         except Exception:
             pass
         try:
-            from app.service import cleanup_old_temp_dirs
-            removed = cleanup_old_temp_dirs()
-            await update.message.reply_text(f"Очистка завершена. Удалено каталогов: {removed}")
+            temp_removed = cleanup_old_temp_dirs()
+            
+            args = context.args or []
+            dry_run = 'dry' in args or 'dryrun' in args
+            days = 7
+            for arg in args:
+                if arg.startswith('days='):
+                    try:
+                        days = int(arg.split('=')[1])
+                    except:
+                        pass
+            
+            stats = cleanup_old_generated_files(max_age_days=days, dry_run=dry_run)
+            
+            lines = ["🧹 Очистка завершена\n"]
+            lines.append(f"📁 Временные директории: {temp_removed}")
+            lines.append(f"\n🎬 Видео (старше {days} дней):")
+            lines.append(f"  Удалено: {stats['videos_removed']} ({stats['videos_size'] / (1024*1024):.1f} МБ)")
+            lines.append(f"  Оставлено: {stats['videos_kept']}")
+            lines.append(f"\n🖼 Миниатюры (старше {days} дней):")
+            lines.append(f"  Удалено: {stats['thumbnails_removed']} ({stats['thumbnails_size'] / (1024*1024):.1f} МБ)")
+            lines.append(f"  Оставлено: {stats['thumbnails_kept']}")
+            
+            if dry_run:
+                lines.append("\n⚠️ Режим DRY RUN - файлы не удалены")
+                lines.append("Используйте /cleanup без 'dry' для реального удаления")
+            
+            await update.message.reply_text("\n".join(lines))
         except Exception as e:
+            logging.error(f"Ошибка при выполнении команды /cleanup: {e}", exc_info=True)
             await update.message.reply_text(f"Ошибка очистки: {e}")
     app.add_handler(CommandHandler("cleanup", cmd_cleanup))
     app.add_handler(CallbackQueryHandler(on_callback_publish, pattern=r"^publish:\d+"))

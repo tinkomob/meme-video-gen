@@ -138,9 +138,16 @@ Thumbs.db
 
 # Logs
 *.log
+errors.log*
 
 # History
 download_history.json
+
+# Generated content (cleaned automatically)
+tiktok_video_*.mp4
+thumbnail_*.jpg
+pins_*/
+audio_*/
 
 # OAuth credentials
 client_secrets.json

@@ -85,7 +85,9 @@ def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'aud
                 ids.append(vid)
         print(f"Valid video IDs: {len(ids)}", flush=True)
         if not ids:
-            return None
+            error_msg = "Не найдены видео в плейлисте"
+            print(error_msg, flush=True)
+            raise ValueError(error_msg)
         video_id = random.choice(ids)
         video_url = video_id if video_id.startswith('http') else f'https://www.youtube.com/watch?v={video_id}'
         print(f"Selected video: {video_url}", flush=True)
@@ -99,35 +101,63 @@ def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'aud
             }],
         })
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
-            ydl.download([video_url])
+            result = ydl.download([video_url])
+            if result != 0:
+                error_msg = f"yt-dlp вернул код ошибки: {result}"
+                print(error_msg, flush=True)
+                raise RuntimeError(error_msg)
         expected_path = os.path.join(output_dir, f"{video_id}.{audio_format}")
         print(f"Expected audio file: {expected_path}", flush=True)
         if os.path.exists(expected_path):
-            print(f"Audio file created successfully: {os.path.getsize(expected_path)} bytes", flush=True)
+            file_size = os.path.getsize(expected_path)
+            if file_size == 0:
+                error_msg = "Загружен пустой аудио-файл"
+                print(error_msg, flush=True)
+                raise ValueError(error_msg)
+            print(f"Audio file created successfully: {file_size} bytes", flush=True)
             return expected_path
         for root, _, files in os.walk(output_dir):
             for f in files:
                 if f.startswith(video_id) and f.lower().endswith(f'.{audio_format}'):
                     found_path = os.path.join(root, f)
-                    print(f"Found audio file: {found_path}", flush=True)
+                    file_size = os.path.getsize(found_path)
+                    if file_size == 0:
+                        error_msg = "Найден пустой аудио-файл"
+                        print(error_msg, flush=True)
+                        raise ValueError(error_msg)
+                    print(f"Found audio file: {found_path} ({file_size} bytes)", flush=True)
                     return found_path
-        print("No audio file found", flush=True)
-        return None
+        error_msg = "Аудио-файл не был создан после загрузки"
+        print(error_msg, flush=True)
+        raise FileNotFoundError(error_msg)
     except Exception as e:
-        print(f"Error downloading audio: {e}", flush=True)
-        return None
+        error_detail = str(e)
+        if 'HTTP Error 403' in error_detail:
+            error_msg = "Ошибка доступа к YouTube (403). Возможно, нужны cookies или YouTube заблокировал запрос."
+        elif 'Video unavailable' in error_detail or 'Private video' in error_detail:
+            error_msg = "Видео недоступно или приватное"
+        elif 'Sign in to confirm' in error_detail:
+            error_msg = "YouTube требует авторизацию. Необходимы cookies (youtube_cookies.txt)"
+        elif 'No video formats' in error_detail:
+            error_msg = "Не найдены доступные форматы аудио"
+        else:
+            error_msg = f"Ошибка при загрузке аудио: {error_detail}"
+        print(error_msg, flush=True)
+        raise RuntimeError(error_msg) from e
 
 def extract_random_audio_clip(audio_path: str, clip_duration: int = 10, output_path: str | None = None):
     print(f"Extracting audio clip from: {audio_path}", flush=True)
     if not os.path.exists(audio_path):
-        print(f"Audio file does not exist: {audio_path}", flush=True)
-        return None
+        error_msg = f"Аудио-файл не существует: {audio_path}"
+        print(error_msg, flush=True)
+        raise FileNotFoundError(error_msg)
     
     file_size = os.path.getsize(audio_path)
     print(f"Audio file size: {file_size} bytes", flush=True)
     if file_size == 0:
-        print("Audio file is empty", flush=True)
-        return None
+        error_msg = "Аудио-файл пустой (0 байт)"
+        print(error_msg, flush=True)
+        raise ValueError(error_msg)
     
     try:
         from moviepy.editor import AudioFileClip
@@ -137,9 +167,10 @@ def extract_random_audio_clip(audio_path: str, clip_duration: int = 10, output_p
         total = clip.duration
         
         if total <= 0:
-            print("Audio file has zero or negative duration", flush=True)
+            error_msg = "Аудио-файл имеет нулевую или отрицательную длительность"
+            print(error_msg, flush=True)
             clip.close()
-            return None
+            raise ValueError(error_msg)
         if total < clip_duration:
             start, end = 0, total
             print(f"Audio duration {total:.1f}s is shorter than requested {clip_duration}s", flush=True)
@@ -152,13 +183,26 @@ def extract_random_audio_clip(audio_path: str, clip_duration: int = 10, output_p
         if not output_path:
             output_path = audio_path.replace('.mp3', '_clip.mp3').replace('.wav', '_clip.wav')
         sub.write_audiofile(output_path, write_logfile=False, logger=None)
-        print(f"Audio clip saved to: {output_path} ({sub.duration:.1f}s)", flush=True)
+        
+        if not os.path.exists(output_path):
+            error_msg = "Не удалось создать аудио-клип"
+            print(error_msg, flush=True)
+            raise RuntimeError(error_msg)
+        
+        clip_size = os.path.getsize(output_path)
+        if clip_size == 0:
+            error_msg = "Созданный аудио-клип пустой"
+            print(error_msg, flush=True)
+            raise ValueError(error_msg)
+        
+        print(f"Audio clip saved to: {output_path} ({sub.duration:.1f}s, {clip_size} bytes)", flush=True)
         clip.close()
         sub.close()
         return output_path
     except Exception as e:
-        print(f"Error extracting audio clip: {e}", flush=True)
-        return None
+        error_msg = f"Ошибка при вырезании аудио-клипа: {str(e)}"
+        print(error_msg, flush=True)
+        raise RuntimeError(error_msg) from e
 
 def get_song_title(audio_path: str):
     try:
