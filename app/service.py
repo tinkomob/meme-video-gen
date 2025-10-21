@@ -262,7 +262,11 @@ def generate_meme_video(
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
     
-    cookies_available = os.path.exists('youtube_cookies.txt') or bool(os.getenv('YT_COOKIES_FILE'))
+    cookies_path = os.getenv('YT_COOKIES_FILE') or 'youtube_cookies.txt'
+    try:
+        cookies_available = os.path.isfile(cookies_path)
+    except Exception:
+        cookies_available = False
     if not cookies_available:
         notify("⚠️ ВНИМАНИЕ: youtube_cookies.txt не найден!")
         notify("YouTube может заблокировать загрузку. Загрузите cookies через /uploadytcookies")

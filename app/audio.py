@@ -7,6 +7,10 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
     opts: dict[str, Any] = {
         'quiet': True,
         'no_warnings': True,
+        'retries': 3,
+        'fragment_retries': 3,
+        'extractor_retries': 2,
+        'retry_sleep': '3,6,10',
     }
     if base_opts:
         opts.update(base_opts)
@@ -39,11 +43,22 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
         opts['user_agent'] = ua
     else:
         opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    opts['http_headers'] = {
+        'User-Agent': opts['user_agent'],
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.9,ru;q=0.8',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Dest': 'document',
+        'Upgrade-Insecure-Requests': '1',
+        'Referer': 'https://www.youtube.com/',
+    }
     
     opts['extractor_args'] = {
         'youtube': {
             'player_client': ['android', 'web'],
             'player_skip': ['webpage', 'configs'],
+            'player_params': ['cbr=Chrome&cbrver=120.0.0.0'],
+            'po_token': ['1'],
         }
     }
     
