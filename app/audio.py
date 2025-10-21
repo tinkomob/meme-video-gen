@@ -15,10 +15,15 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
         cookies_file = 'youtube_cookies.txt'
     if cookies_file:
         if os.path.isfile(cookies_file):
+            file_size = os.path.getsize(cookies_file)
+            print(f"Using YouTube cookies file: {cookies_file} ({file_size} bytes)", flush=True)
             opts['cookiefile'] = cookies_file
         elif os.path.exists(cookies_file) and not os.path.isfile(cookies_file):
             print(f"youtube cookies path exists but is not a file: {cookies_file}", flush=True)
+        else:
+            print(f"YouTube cookies file not found: {cookies_file}", flush=True)
     else:
+        print("No YouTube cookies file configured, trying browser extraction", flush=True)
         browser = os.getenv('YT_COOKIES_FROM_BROWSER') or os.getenv('YTDLP_COOKIES_FROM_BROWSER')
         profile = os.getenv('YT_COOKIES_PROFILE') or os.getenv('YTDLP_COOKIES_PROFILE')
         if browser:
@@ -32,6 +37,16 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
     ua = os.getenv('YT_USER_AGENT')
     if ua:
         opts['user_agent'] = ua
+    else:
+        opts['user_agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+    
+    opts['extractor_args'] = {
+        'youtube': {
+            'player_client': ['android', 'web'],
+            'player_skip': ['webpage', 'configs'],
+        }
+    }
+    
     impersonate = os.getenv('YT_IMPERSONATE')
     if impersonate:
         alias = impersonate.strip()

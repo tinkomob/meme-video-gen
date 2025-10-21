@@ -262,6 +262,11 @@ def generate_meme_video(
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
     
+    cookies_available = os.path.exists('youtube_cookies.txt') or bool(os.getenv('YT_COOKIES_FILE'))
+    if not cookies_available:
+        notify("⚠️ ВНИМАНИЕ: youtube_cookies.txt не найден!")
+        notify("YouTube может заблокировать загрузку. Загрузите cookies через /uploadytcookies")
+    
     audio_attempts = 0
     max_audio_attempts = 3
     audio_success = False
@@ -302,15 +307,32 @@ def generate_meme_video(
                         break
             except Exception as e:
                 last_audio_error = str(e)
+                error_str = str(e).lower()
                 logging.error(f"Ошибка при обработке аудио (попытка {audio_attempts}/{max_audio_attempts}): {e}", exc_info=True)
-                if audio_attempts < max_audio_attempts:
+                
+                if '403' in error_str or 'forbidden' in error_str:
+                    if not cookies_available:
+                        notify("❌ YouTube блокирует загрузку (403)")
+                        notify("📋 РЕШЕНИЕ: Загрузите youtube_cookies.txt через /uploadytcookies")
+                        notify("Инструкция: используйте расширение 'Get cookies.txt LOCALLY' для Chrome/Firefox")
+                        break
+                    else:
+                        notify(f"⚠️ Ошибка 403 даже с cookies (попытка {audio_attempts}/{max_audio_attempts})")
+                        if audio_attempts < max_audio_attempts:
+                            import time
+                            time.sleep(3)
+                elif audio_attempts < max_audio_attempts:
                     notify(f"⚠️ Ошибка: {e}")
                     import time
                     time.sleep(2)
         
         if not audio_success:
             notify(f"❌ Не удалось загрузить аудио после {max_audio_attempts} попыток")
-            notify(f"⚠️ Последняя ошибка: {last_audio_error}")
+            if '403' in str(last_audio_error).lower():
+                notify("⚠️ Последняя ошибка: YouTube блокирует доступ (403)")
+                notify("📋 Решение: /uploadytcookies для загрузки актуальных cookies")
+            else:
+                notify(f"⚠️ Последняя ошибка: {last_audio_error}")
             notify("⚠️ Видео будет создано БЕЗ ЗВУКА")
             logging.error(f"Финальная ошибка при загрузке аудио: {last_audio_error}")
     else:
