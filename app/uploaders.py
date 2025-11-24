@@ -307,14 +307,6 @@ def instagram_upload(video_path: str, caption: str, thumbnail: str | None = None
     except Exception as e:
         return {'error': 'Unexpected error', 'details': f'Instagram upload failed: {e}'}
 
-def tiktok_upload(*args, **kwargs):
-    """TikTok загрузка отключена по требованию. Оставлено для совместимости.
-
-    Любой вызов просто вернёт None, ничего не делая.
-    """
-    print("TikTok upload is disabled in this build.")
-    return None
-
 def x_upload(video_path: str, text: str = ''):
     try:
         text = _remove_shorts_hashtag(text)

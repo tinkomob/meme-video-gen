@@ -89,11 +89,6 @@ COPY requirements.txt .
 # Install Python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Pre-install playwright chromium browser for signature generation
-ENV PLAYWRIGHT_SKIP_VALIDATE_HOST_REQUIREMENTS=1
-RUN npm i -g playwright-chromium@1.10.0 && \
-    npx playwright install chromium
-
 # Copy the rest of the application code
 COPY . .
 

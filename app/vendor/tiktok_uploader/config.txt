@@ -1,5 +1,0 @@
-COOKIES_DIR="C:\Users\user\Desktop\meme-video-gen\app\vendor\tiktok_uploader\CookiesDir"
-VIDEOS_DIR="C:\Users\user\Desktop\meme-video-gen\app\vendor\tiktok_uploader\VideosDirPath"
-POST_PROCESSING_VIDEO_PATH="C:\Users\user\Desktop\meme-video-gen\app\vendor\tiktok_uploader\VideosDirPath"
-LANG="en"
-TIKTOK_BASE_URL="https://www.tiktok.com/upload?lang="
