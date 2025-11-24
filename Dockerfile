@@ -81,10 +81,7 @@ RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --d
     rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64 /tmp/chromedriver_version.txt && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Node.js (required for TiktokAutoUploader)
-RUN curl -fsSL https://deb.nodesource.com/setup_18.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
+    # Node.js ранее использовался только для TikTok signer; сейчас не обязателен.
 
 # Copy the requirements file into the container
 COPY requirements.txt .
@@ -107,15 +104,7 @@ COPY . .
 # Example: uncomment to bake specific variables (avoid for secrets in public builds)
 # ENV TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
 
-# Install Node.js dependencies for TikTok signer at build-time
-RUN if [ -d "app/vendor/tiktok_uploader/tiktok-signature" ]; then \
-            cd app/vendor/tiktok_uploader/tiktok-signature && \
-            npm install --no-audit --no-fund; \
-        fi
-
-# Set environment for TiktokAutoUploader (requests-based, no browser needed)
-ENV TIKTOK_HEADLESS=true \
-    PYTHONUNBUFFERED=1 \
+ENV PYTHONUNBUFFERED=1 \
     NODE_ENV=production
 
 # Expose port 8000 for the web server

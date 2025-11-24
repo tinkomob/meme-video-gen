@@ -26,7 +26,7 @@ python bot.py
 - /help — помощь
 - /generate [pin_num] [audio_duration] — сгенерировать ролик
   - Примеры: `/generate`, `/generate 80`, `/generate 120 12`
-- /deploy [socials=yt,instagram,tiktok,x] [privacy=public|unlisted|private] — опубликовать последний ролик
+- /deploy [socials=yt,instagram,x] [privacy=public|unlisted|private] — опубликовать последний ролик
   - Пример: `/deploy socials=yt,instagram privacy=unlisted`
 - /history — последние публикации (локальная история)
 
@@ -42,9 +42,6 @@ INSTAGRAM_PROXY=http://proxy:port       # Опционально
 
 ### YouTube
 Требуется настройка OAuth через `client_secrets.json`.
-
-### TikTok
-Поместите `cookies.txt` с cookie TikTok в корневую папку.
 
 ### X (Twitter)
 ```bash
@@ -72,7 +69,5 @@ Get Bearer Token: [Developer Portal](https://developer.twitter.com/en/portal/das
 - Нужен ffmpeg в PATH для moviepy и yt-dlp постобработки
 - Для Instagram: установите `pyotp` для поддержки 2FA (уже в requirements.txt)
 - Для YouTube: client_secrets.json, token.pickle будет создан автоматически при OAuth
-- Для TikTok: cookies.txt, опции в app/config.py
-
 ## Примечание
 Старый FastAPI веб-интерфейс удалён из основного сценария. Используйте Telegram-бота.

@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Optional
 from .config import DEFAULT_PINS_DIR, DEFAULT_AUDIO_DIR, DEFAULT_OUTPUT_VIDEO, DEFAULT_THUMBNAIL
-from .config import CLIENT_SECRETS, TOKEN_PICKLE, TIKTOK_COOKIES_FILE
+from .config import CLIENT_SECRETS, TOKEN_PICKLE
 from .config import YT_COOKIES_FILE, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES, TEMP_DIR_MAX_AGE_MINUTES
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
@@ -17,7 +17,7 @@ from .audio import download_random_song_from_playlist, extract_random_audio_clip
 from .video import convert_to_tiktok_format, generate_thumbnail, get_video_metadata
 from .metadata import generate_metadata_from_source
 from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload
-from .uploaders import tiktok_upload, x_upload
+from .uploaders import x_upload
 from .debug import set_phase
 
 class GenerationResult:
@@ -447,9 +447,9 @@ def deploy_to_socials(
         except Exception:
             return None
     
-    # Default to all socials if none specified
+    # Default to all socials if none specified (TikTok удалён)
     if socials is None:
-        socials = ['youtube', 'instagram', 'tiktok', 'x']
+        socials = ['youtube', 'instagram', 'x']
     
     # Normalize social names to lowercase
     socials = [s.lower() for s in socials]
@@ -526,53 +526,8 @@ def deploy_to_socials(
             except Exception:
                 notify("❌ Instagram: непредвиденная ошибка при обработке ответа")
 
+    # TikTok загрузка полностью отключена
     tiktok_link = None
-    if 'tiktok' in socials:
-        if dry_run:
-            tiktok_link = f"https://www.tiktok.com/dry-run/{generated['title'].replace(' ', '-').lower()}"
-            print(f"DRY RUN: Would upload to TikTok with description: {generated.get('description', '')[:50]}...", flush=True)
-        else:
-            if not os.path.exists(TIKTOK_COOKIES_FILE):
-                notify(
-                    "⚠️ TikTok: не найден cookies.txt. Загрузите cookies.txt как документ командой /uploadcookies"
-                )
-                notify("⏭️ TikTok — пропущено из‑за отсутствия cookies.txt")
-            else:
-                desc = generated.get('description', '')
-                song_title = None
-                if audio_path:
-                    song_title = get_song_title(audio_path)
-                if not song_title:
-                    song_title = _song_from_title_fallback(generated.get('title'))
-                if song_title:
-                    desc = f"♪ {song_title} ♪\n\n{desc}"
-                try:
-                    resp = tiktok_upload(video_path, description=desc, cover=thumbnail_path)
-                    if resp:
-                        if isinstance(resp, dict):
-                            if 'url' in resp:
-                                tiktok_link = resp['url']
-                                print(f"TikTok upload successful: {tiktok_link}")
-                            elif resp.get('success'):
-                                tiktok_link = resp.get('url', f'https://www.tiktok.com/@user/video/{generated["title"].replace(" ", "-")[:20]}')
-                                print(f"TikTok upload likely successful (WebDriver error handled): {tiktok_link}")
-                            else:
-                                print(f"TikTok upload response: {resp}")
-                                err = resp.get('error') if isinstance(resp, dict) else None
-                                det = resp.get('details') if isinstance(resp, dict) else None
-                                if err or det:
-                                    notify(f"❌ TikTok: {err or 'ошибка'}{(': ' + det) if det else ''}")
-                                else:
-                                    notify("❌ TikTok: загрузка не удалась")
-                        else:
-                            print(f"TikTok upload returned non-dict response: {type(resp)}")
-                            notify("❌ TikTok: неожиданный ответ от сервиса")
-                    else:
-                        print("TikTok upload returned None")
-                        notify("❌ TikTok: загрузка не удалась")
-                except Exception as e:
-                    print(f"TikTok upload exception: {e}", flush=True)
-                    notify(f"❌ TikTok: исключение при загрузке — {e}")
 
     x_link = None
     if 'x' in socials or 'twitter' in socials:
@@ -613,6 +568,19 @@ def deploy_to_socials(
             except Exception as e:
                 print(f"X upload exception: {e}", flush=True)
                 notify(f"❌ X: исключение при загрузке — {e}")
+    # После завершения всех загрузок можно безопасно удалить локальные файлы
+    try:
+        if not dry_run:
+            for path in [video_path, thumbnail_path]:
+                try:
+                    if path and os.path.exists(path):
+                        os.remove(path)
+                except Exception:
+                    # Ошибки удаления не должны ломать основной флоу
+                    pass
+    except Exception:
+        # Любые неожиданные ошибки при очистке логируем, но не пробрасываем выше
+        logging.error("Ошибка при удалении опубликованных файлов", exc_info=True)
 
     return {'youtube': yt_link, 'instagram': insta_link, 'tiktok': tiktok_link, 'x': x_link}
 

@@ -19,7 +19,7 @@ from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp
 from app.logger import setup_error_logging
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
-from app.config import TIKTOK_COOKIES_FILE, CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
+from app.config import CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso, set_daily_schedule_iso, get_daily_schedule_iso, set_selected_chat_id, get_selected_chat_id
 from app.config import DAILY_GENERATIONS, DUP_REGEN_RETRIES
 from app.video import get_video_metadata
@@ -166,7 +166,7 @@ DEFAULT_PINTEREST_JSON = "pinterest_urls.json"
 DEFAULT_PLAYLISTS_JSON = "music_playlists.json"
 DEFAULT_REDDIT_JSON = "reddit_sources.json"
 DEFAULT_TWITTER_JSON = "twitter_urls.json"
-ALL_SOCIALS = ["youtube", "instagram", "tiktok", "x"]
+ALL_SOCIALS = ["youtube", "instagram", "x"]
 
 
 HELP_TEXT = (
@@ -182,7 +182,6 @@ HELP_TEXT = (
     "/checkfiles — проверить cookies.txt, youtube_cookies.txt, client_secrets.json, token.pickle и instagram_session.json\n"
     "/pinterestcheck — проверить состояние Pinterest и режим резервного источника контента\n"
     "/history — последние публикации\n"
-    "/uploadcookies — загрузить cookies.txt (TikTok) как документ\n"
     "/uploadytcookies — загрузить youtube_cookies.txt (YouTube) как документ\n"
     "/uploadinstasession — загрузить instagram_session.json (Instagram) как документ\n"
     "/uploadclient — загрузить client_secrets.json как документ\n"
@@ -810,7 +809,6 @@ def _platforms_keyboard(item_id: str, selection: set[str]):
             InlineKeyboardButton(label("instagram"), callback_data=f"toggle:instagram:{item_id}"),
         ],
         [
-            InlineKeyboardButton(label("tiktok"), callback_data=f"toggle:tiktok:{item_id}"),
             InlineKeyboardButton(label("x"), callback_data=f"toggle:x:{item_id}"),
         ],
         [
@@ -1185,20 +1183,6 @@ async def cmd_history(update, context):
     await update.message.reply_text("\n".join(lines))
 
 
-async def cmd_uploadcookies(update, context):
-    doc = getattr(update.message, "document", None)
-    if not doc:
-        context.chat_data["await_upload"] = "cookies"
-        await update.message.reply_text("Пришлите файл cookies.txt как документ следующим сообщением (ожидаю cookies)")
-        return
-    try:
-        file = await context.bot.get_file(doc.file_id)
-        data = await file.download_as_bytearray()
-        ok = replace_file_from_bytes(TIKTOK_COOKIES_FILE, bytes(data))
-        await update.message.reply_text("cookies.txt обновлён" if ok else "Не удалось сохранить cookies.txt")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
-
 async def cmd_uploadytcookies(update, context):
     doc = getattr(update.message, "document", None)
     if not doc:
@@ -1270,7 +1254,6 @@ async def cmd_checkfiles(update, context):
     except Exception:
         pass
     paths = {
-        "TikTok cookies.txt": TIKTOK_COOKIES_FILE,
         "YouTube youtube_cookies.txt": YT_COOKIES_FILE,
         "YouTube client_secrets.json": CLIENT_SECRETS,
         "YouTube token.pickle": TOKEN_PICKLE,
@@ -1289,8 +1272,6 @@ async def cmd_checkfiles(update, context):
         except Exception as e:
             lines.append(f"- {label}: ошибка проверки ({e})")
     lines.append("")
-    if not os.path.exists(TIKTOK_COOKIES_FILE):
-        lines.append("Загрузите cookies.txt командой /uploadcookies (пришлите файл как документ)")
     if not os.path.exists(YT_COOKIES_FILE):
         lines.append("Для YouTube загрузите youtube_cookies.txt командой /uploadytcookies")
     missing_youtube = []
@@ -1363,9 +1344,7 @@ async def on_document_received(update, context):
     purpose = context.chat_data.pop("await_upload", None)
     fname = (getattr(doc, "file_name", "") or "").lower()
     target = None
-    if purpose == "cookies" or fname == "cookies.txt" or fname.endswith("/cookies.txt"):
-        target = TIKTOK_COOKIES_FILE
-    elif purpose == "ytcookies" or fname == "youtube_cookies.txt" or fname.endswith("/youtube_cookies.txt"):
+    if purpose == "ytcookies" or fname == "youtube_cookies.txt" or fname.endswith("/youtube_cookies.txt"):
         target = YT_COOKIES_FILE
     elif purpose == "client" or fname == "client_secrets.json" or fname.endswith("/client_secrets.json"):
         target = CLIENT_SECRETS
@@ -1374,9 +1353,7 @@ async def on_document_received(update, context):
     elif purpose == "instasession" or fname == "instagram_session.json" or fname.endswith("/instagram_session.json"):
         target = "instagram_session.json"
     else:
-        if fname.endswith("cookies.txt"):
-            target = TIKTOK_COOKIES_FILE
-        elif fname.endswith("youtube_cookies.txt"):
+        if fname.endswith("youtube_cookies.txt"):
             target = YT_COOKIES_FILE
         elif fname.endswith("client_secrets.json"):
             target = CLIENT_SECRETS

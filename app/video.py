@@ -117,8 +117,12 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
             if not is_youtube and clip.duration > random_duration:
                 clip = clip.subclip(0, random_duration)
             print(f"Processing video: {input_path} (duration: {base_clip.duration}s)", flush=True)
+        # Ограничиваем длительность, чтобы ролики подходили под Instagram Reels
+        # и оставались короткими шортами.
         if clip.duration > 60:
             clip = clip.subclip(0, 60)
+
+        # Универсальное вертикальное разрешение для TikTok/Instagram Reels
         tiktok_res = (1080, 1920)
         # universal resize and center (moviepy clips usually support .resize())
         try:
@@ -196,7 +200,17 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
             else:
                 print(f"No audio path provided", flush=True)
             print("Video will be created WITHOUT audio", flush=True)
-        final_clip.write_videofile(output_path, codec='libx264', audio_codec='aac', fps=24)
+        # Настройки кодека подобраны так, чтобы результат подходил
+        # как для TikTok, так и для Instagram (H.264 + AAC в MP4).
+        final_clip.write_videofile(
+            output_path,
+            codec='libx264',
+            audio_codec='aac',
+            fps=30,
+            preset='medium',
+            bitrate='8M',
+            audio_bitrate='192k',
+        )
         return output_path
     except Exception as e:
         print(f"Error during video conversion: {e}", flush=True)
