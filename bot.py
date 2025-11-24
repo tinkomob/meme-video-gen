@@ -1905,7 +1905,6 @@ def main():
     app.add_handler(CommandHandler("generate", cmd_generate))
     app.add_handler(CommandHandler("deploy", cmd_deploy))
     app.add_handler(CommandHandler("history", cmd_history))
-    app.add_handler(CommandHandler("uploadcookies", cmd_uploadcookies))
     app.add_handler(CommandHandler("uploadytcookies", cmd_uploadytcookies))
     app.add_handler(CommandHandler("uploadinstasession", cmd_uploadinstasession))
     app.add_handler(CommandHandler("uploadclient", cmd_uploadclient))
