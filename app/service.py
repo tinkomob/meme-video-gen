@@ -515,7 +515,9 @@ def deploy_to_socials(
                         if 'error' in insta:
                             err = insta.get('error') or 'Ошибка'
                             det = insta.get('details') or ''
-                            notify(f"❌ Instagram: {err}{(': ' + det) if det else ''}")
+                            # Don't notify about "Invalid format" errors
+                            if err != 'Invalid format':
+                                notify(f"❌ Instagram: {err}{(': ' + det) if det else ''}")
                         code = insta.get('code')
                         if not code and 'url' in insta and isinstance(insta['url'], str):
                             insta_link = insta['url']
