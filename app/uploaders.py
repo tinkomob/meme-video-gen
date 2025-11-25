@@ -58,13 +58,16 @@ def test_instagram_login():
         
         # Fresh login
         try:
-            if totp_secret:
+            if totp_secret and totp_secret.strip():
                 try:
                     import pyotp
-                    totp = pyotp.TOTP(totp_secret)
+                    totp = pyotp.TOTP(totp_secret.strip())
                     code = totp.now()
                     cl.verification_code = code
                 except ImportError:
+                    pass
+                except Exception as totp_error:
+                    print(f'TOTP generation failed: {totp_error}')
                     pass
             
             login_result = cl.login(username, password)
@@ -218,15 +221,17 @@ def instagram_upload(video_path: str, caption: str, thumbnail: str | None = None
                 print('Logging into Instagram...')
                 
                 # Setup 2FA handler if TOTP secret is provided
-                if totp_secret:
+                if totp_secret and totp_secret.strip():
                     try:
                         import pyotp
-                        totp = pyotp.TOTP(totp_secret)
+                        totp = pyotp.TOTP(totp_secret.strip())
                         code = totp.now()
                         print(f'Generated TOTP code: {code}')
                         cl.verification_code = code
                     except ImportError:
                         print('pyotp not installed, TOTP codes won\'t work. Install with: pip install pyotp')
+                    except Exception as totp_error:
+                        print(f'TOTP generation failed: {totp_error}. Check that INSTAGRAM_TOTP_SECRET is a valid base32 string.')
                 
                 # Attempt login
                 login_result = cl.login(username, password)
