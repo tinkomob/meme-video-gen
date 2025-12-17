@@ -63,15 +63,15 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
     }
     
     impersonate = os.getenv('YT_IMPERSONATE')
-    if impersonate:
-        alias = impersonate.strip()
+    if impersonate and False:  # Disabled by default due to curl-cffi issues on Windows
+        # Impersonate support is available but disabled to avoid platform-specific issues
         try:
             from yt_dlp.networking.impersonate import ImpersonateTarget
             target = ImpersonateTarget.from_str(alias)
             try:
                 from yt_dlp.networking._curlcffi import CurlCFFIRH
                 supported = list(getattr(CurlCFFIRH, 'supported_targets', ()) or [])
-            except Exception:
+            except ImportError:
                 supported = []
             if supported:
                 def pick(t):
@@ -87,10 +87,97 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
                             break
                 if resolved:
                     target = resolved
-            opts['impersonate'] = target
-        except Exception:
-            pass
+                    opts['impersonate'] = target
+        except Exception as e:
+            print(f"Note: Impersonate mode unavailable: {e}", flush=True)
     return opts
+
+def download_random_song_from_playlist_fallback(playlist_url: str, output_dir: str = 'audio', audio_format: str = 'mp3'):
+    """Fallback download function without impersonate mode"""
+    print(f"Fallback: Downloading from playlist without impersonate: {playlist_url}", flush=True)
+    import yt_dlp
+    try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        # Build opts without impersonate
+        list_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'retries': 5,
+            'fragment_retries': 5,
+            'extractor_retries': 3,
+            'retry_sleep': '3,6,10',
+            'skip_download': True,
+            'extract_flat': 'in_playlist',
+            'ignoreerrors': True,
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        cookies_file = os.getenv('YT_COOKIES_FILE') or os.getenv('YTDLP_COOKIES_FILE')
+        if not cookies_file and os.path.isfile('youtube_cookies.txt'):
+            cookies_file = 'youtube_cookies.txt'
+        if cookies_file and os.path.isfile(cookies_file):
+            list_opts['cookiefile'] = cookies_file
+            print(f"Using cookies file: {cookies_file}", flush=True)
+        
+        with yt_dlp.YoutubeDL(list_opts) as ydl:  # type: ignore[arg-type]
+            info = ydl.extract_info(playlist_url, download=False)
+        entries = (info or {}).get('entries') or []
+        print(f"Fallback: Found {len(entries)} entries", flush=True)
+        ids = []
+        for e in entries:
+            if not e:
+                continue
+            vid = e.get('id') or e.get('url')
+            if vid and len(vid) >= 6:
+                ids.append(vid)
+        if not ids:
+            raise ValueError("No video IDs found in playlist (fallback)")
+        video_id = random.choice(ids)
+        video_url = video_id if video_id.startswith('http') else f'https://www.youtube.com/watch?v={video_id}'
+        print(f"Fallback: Selected video: {video_url}", flush=True)
+        
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'retries': 5,
+            'fragment_retries': 5,
+            'extractor_retries': 3,
+            'retry_sleep': '3,6,10',
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': audio_format,
+                'preferredquality': '192',
+            }],
+            'user_agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        }
+        if cookies_file and os.path.isfile(cookies_file):
+            ydl_opts['cookiefile'] = cookies_file
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
+            result = ydl.download([video_url])
+            if result != 0:
+                raise RuntimeError(f"yt-dlp returned error code: {result}")
+        
+        expected_path = os.path.join(output_dir, f"{video_id}.{audio_format}")
+        if os.path.exists(expected_path):
+            file_size = os.path.getsize(expected_path)
+            if file_size > 0:
+                print(f"Fallback: Audio file created: {file_size} bytes", flush=True)
+                return expected_path
+        
+        # Search for file
+        for root, _, files in os.walk(output_dir):
+            for f in files:
+                if f.startswith(video_id) and f.lower().endswith(f'.{audio_format}'):
+                    found_path = os.path.join(root, f)
+                    if os.path.getsize(found_path) > 0:
+                        print(f"Fallback: Found audio file: {found_path}", flush=True)
+                        return found_path
+        raise FileNotFoundError("Audio file not created after download (fallback)")
+    except Exception as e:
+        print(f"Fallback failed: {e}", flush=True)
+        raise
 
 def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'audio', audio_format: str = 'mp3'):
     print(f"Downloading from playlist: {playlist_url}", flush=True)
@@ -162,7 +249,16 @@ def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'aud
         raise FileNotFoundError(error_msg)
     except Exception as e:
         error_detail = str(e)
-        if 'HTTP Error 403' in error_detail:
+        # Handle impersonate-specific errors
+        if 'Impersonate target' in error_detail and 'not available' in error_detail:
+            error_msg = "Ошибка режима impersonate. Попытка скачивания без impersonate..."
+            print(error_msg, flush=True)
+            # Retry without impersonate
+            try:
+                return download_random_song_from_playlist_fallback(playlist_url, output_dir, audio_format)
+            except Exception as retry_error:
+                raise RuntimeError(f"Ошибка при загрузке аудио (даже с fallback): {retry_error}") from retry_error
+        elif 'HTTP Error 403' in error_detail:
             error_msg = "Ошибка доступа к YouTube (403). Возможно, нужны cookies или YouTube заблокировал запрос."
         elif 'Video unavailable' in error_detail or 'Private video' in error_detail:
             error_msg = "Видео недоступно или приватное"
