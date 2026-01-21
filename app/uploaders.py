@@ -75,20 +75,15 @@ def youtube_upload_short(youtube, file_path: str, title: str, description: str =
         print(f'YouTube upload failed: {e}')
         return None
 
-def telegram_post_upload(video_path: str, song_info: str, source_chat_id: int):
+def telegram_post_upload(video_path: str, song_info: str):
     """
-    Send video to Telegram by first uploading to source chat, then forwarding to posts channel.
+    Send video to Telegram posts channel with song info.
     song_info should be formatted as "author - title"
-    source_chat_id is the chat where the message will be initially posted
     """
     try:
         if not POSTS_CHATID:
             print('POSTS_CHATID not found in environment variables')
             return {'error': 'Missing chat ID', 'details': 'POSTS_CHATID required'}
-        
-        if not source_chat_id:
-            print('source_chat_id not provided')
-            return {'error': 'Missing source chat ID', 'details': 'source_chat_id required'}
         
         if not TELEGRAM_BOT_TOKEN:
             print('TELEGRAM_BOT_TOKEN not found in environment variables')
@@ -98,90 +93,48 @@ def telegram_post_upload(video_path: str, song_info: str, source_chat_id: int):
         caption = f"song is {song_info}"
         
         print(f'Posting video to Telegram: {video_path}')
-        print(f'Source Chat ID: {source_chat_id}')
-        print(f'Posts Chat ID: {POSTS_CHATID}')
+        print(f'Chat ID: {POSTS_CHATID}')
         print(f'Song info: {song_info}')
         
-        # Step 1: Send video to source chat
-        send_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
+        # Send video via Telegram Bot API
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
         
         with open(video_path, 'rb') as video_file:
             files = {'video': video_file}
             data = {
-                'chat_id': source_chat_id,
+                'chat_id': POSTS_CHATID,
                 'caption': caption,
                 'parse_mode': 'HTML',
             }
             
-            send_response = requests.post(send_url, files=files, data=data, timeout=300)
+            response = requests.post(url, files=files, data=data, timeout=300)
         
-        # Check send response
-        if send_response.status_code != 200:
-            error_msg = f'API returned status {send_response.status_code}'
-            print(f'Telegram send failed: {error_msg}')
+        # Check response
+        if response.status_code == 200:
+            response_data = response.json()
+            print(f'Telegram post response: {response_data}')
+            
+            if response_data.get('ok'):
+                message_id = response_data.get('result', {}).get('message_id')
+                return {
+                    'success': True,
+                    'details': 'Video posted successfully',
+                    'message_id': message_id
+                }
+            else:
+                error_msg = response_data.get('description', 'Unknown error')
+                print(f'Telegram post failed: {error_msg}')
+                return {
+                    'error': 'Post failed',
+                    'details': error_msg
+                }
+        else:
+            error_msg = f'API returned status {response.status_code}'
+            print(f'Telegram post failed: {error_msg}')
             return {
-                'error': 'Send failed',
+                'error': 'Post failed',
                 'details': error_msg
             }
-        
-        send_data = send_response.json()
-        print(f'Telegram send response: {send_data}')
-        
-        if not send_data.get('ok'):
-            error_msg = send_data.get('description', 'Unknown error')
-            print(f'Telegram send failed: {error_msg}')
-            return {
-                'error': 'Send failed',
-                'details': error_msg
-            }
-        
-        source_message_id = send_data.get('result', {}).get('message_id')
-        if not source_message_id:
-            print('Telegram send: no message_id returned')
-            return {
-                'error': 'Send failed',
-                'details': 'No message_id returned'
-            }
-        
-        # Step 2: Forward message from source chat to posts chat
-        forward_url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/forwardMessage"
-        
-        forward_data = {
-            'chat_id': POSTS_CHATID,
-            'from_chat_id': source_chat_id,
-            'message_id': source_message_id,
-        }
-        
-        forward_response = requests.post(forward_url, data=forward_data, timeout=300)
-        
-        # Check forward response
-        if forward_response.status_code != 200:
-            error_msg = f'API returned status {forward_response.status_code}'
-            print(f'Telegram forward failed: {error_msg}')
-            return {
-                'error': 'Forward failed',
-                'details': error_msg
-            }
-        
-        forward_data_resp = forward_response.json()
-        print(f'Telegram forward response: {forward_data_resp}')
-        
-        if not forward_data_resp.get('ok'):
-            error_msg = forward_data_resp.get('description', 'Unknown error')
-            print(f'Telegram forward failed: {error_msg}')
-            return {
-                'error': 'Forward failed',
-                'details': error_msg
-            }
-        
-        forwarded_message_id = forward_data_resp.get('result', {}).get('message_id')
-        
-        return {
-            'success': True,
-            'details': 'Video posted and forwarded successfully',
-            'message_id': forwarded_message_id,
-            'source_message_id': source_message_id
-        }
     
     except requests.exceptions.Timeout:
         return {'error': 'Upload timeout', 'details': 'Request timed out after 5 minutes'}
