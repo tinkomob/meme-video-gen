@@ -687,6 +687,7 @@ async def cmd_deploy(update, context):
             socials=socials,
             dry_run=_get_bot_dry_run(context) if dry_run_opt is None else dry_run_opt,
             progress=progress,
+            source_chat_id=update.effective_chat.id,
         )
 
     links = await asyncio.to_thread(run_deploy)
@@ -767,6 +768,7 @@ async def on_callback_publish(update, context):
             socials=None,
             dry_run=_get_bot_dry_run(context),
             progress=progress,
+            source_chat_id=update.effective_chat.id,
         )
 
     links = await asyncio.to_thread(run_deploy)
@@ -901,6 +903,7 @@ async def on_callback_publish_selected(update, context):
             socials=socials,
             dry_run=_get_bot_dry_run(context),
             progress=progress,
+            source_chat_id=update.effective_chat.id,
         )
     links = await asyncio.to_thread(run_deploy)
     if isinstance(links, dict):
@@ -953,6 +956,7 @@ async def on_callback_publish_all(update, context):
             socials=None,
             dry_run=_get_bot_dry_run(context),
             progress=progress,
+            source_chat_id=update.effective_chat.id,
         )
     links = await asyncio.to_thread(run_deploy)
     if isinstance(links, dict):

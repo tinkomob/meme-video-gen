@@ -433,6 +433,7 @@ def deploy_to_socials(
     socials: list[str] | None = None,
     dry_run: bool = False,
     progress: Optional[Callable[[str], None]] = None,
+    source_chat_id: int | None = None,
 ):
     notify = (lambda msg: progress(msg) if callable(progress) else None)
     generated = generate_metadata_from_source(source_url, None, audio_path)
@@ -503,7 +504,7 @@ def deploy_to_socials(
             if not song_title:
                 song_title = 'Unknown - Unknown'
             
-            insta = telegram_post_upload(video_path, song_title)
+            insta = telegram_post_upload(video_path, song_title, source_chat_id or 0)
             try:
                 if insta:
                     if isinstance(insta, dict):
