@@ -179,11 +179,10 @@ HELP_TEXT = (
     "  После генерации доступны кнопки: Опубликовать, Выбрать платформы, Сменить трек, Сгенерировать заново\n"
     "/deploy — опубликовать последнее видео (опционально: соцсети, приватность, dry)\n"
     "/dryrun — показать/изменить режим публикации (on/off)\n"
-    "/checkfiles — проверить cookies.txt, youtube_cookies.txt, client_secrets.json, token.pickle и instagram_session.json\n"
+    "/checkfiles — проверить cookies.txt, youtube_cookies.txt, client_secrets.json и token.pickle\n"
     "/pinterestcheck — проверить состояние Pinterest и режим резервного источника контента\n"
     "/history — последние публикации\n"
     "/uploadytcookies — загрузить youtube_cookies.txt (YouTube) как документ\n"
-    "/uploadinstasession — загрузить instagram_session.json (Instagram) как документ\n"
     "/uploadclient — загрузить client_secrets.json как документ\n"
     "/uploadtoken — загрузить token.pickle как документ\n"
     "/clearhistory — очистить video_history.json\n"
@@ -1198,19 +1197,6 @@ async def cmd_uploadytcookies(update, context):
         await update.message.reply_text(f"Ошибка: {e}")
 
 
-async def cmd_uploadinstasession(update, context):
-    doc = getattr(update.message, "document", None)
-    if not doc:
-        context.chat_data["await_upload"] = "instasession"
-        await update.message.reply_text("Пришлите instagram_session.json как документ следующим сообщением (ожидаю Instagram session)")
-        return
-    try:
-        file = await context.bot.get_file(doc.file_id)
-        data = await file.download_as_bytearray()
-        ok = replace_file_from_bytes("instagram_session.json", bytes(data))
-        await update.message.reply_text("instagram_session.json обновлён" if ok else "Не удалось сохранить instagram_session.json")
-    except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
 
 
 async def cmd_uploadclient(update, context):
@@ -1257,7 +1243,6 @@ async def cmd_checkfiles(update, context):
         "YouTube youtube_cookies.txt": YT_COOKIES_FILE,
         "YouTube client_secrets.json": CLIENT_SECRETS,
         "YouTube token.pickle": TOKEN_PICKLE,
-        "Instagram instagram_session.json": "instagram_session.json",
     }
     lines = ["Проверка обязательных файлов:"]
     for label, p in paths.items():
@@ -1285,8 +1270,6 @@ async def cmd_checkfiles(update, context):
             + ", ".join(missing_youtube)
             + ". Команды: /uploadclient и /uploadtoken"
         )
-    if not os.path.exists("instagram_session.json"):
-        lines.append("Для Instagram загрузите instagram_session.json командой /uploadinstasession")
     await update.message.reply_text("\n".join(lines))
 
 
@@ -1350,8 +1333,7 @@ async def on_document_received(update, context):
         target = CLIENT_SECRETS
     elif purpose == "token" or fname == "token.pickle" or fname.endswith("/token.pickle"):
         target = TOKEN_PICKLE
-    elif purpose == "instasession" or fname == "instagram_session.json" or fname.endswith("/instagram_session.json"):
-        target = "instagram_session.json"
+
     else:
         if fname.endswith("youtube_cookies.txt"):
             target = YT_COOKIES_FILE
@@ -1359,10 +1341,8 @@ async def on_document_received(update, context):
             target = CLIENT_SECRETS
         elif fname.endswith("token.pickle"):
             target = TOKEN_PICKLE
-        elif fname.endswith("instagram_session.json"):
-            target = "instagram_session.json"
     if not target:
-        await update.message.reply_text("Неизвестный файл. Ожидаю cookies.txt, youtube_cookies.txt, client_secrets.json, token.pickle или instagram_session.json")
+        await update.message.reply_text("Неизвестный файл. Ожидаю cookies.txt, youtube_cookies.txt, client_secrets.json или token.pickle")
         return
     try:
         file = await context.bot.get_file(doc.file_id)
@@ -1906,7 +1886,6 @@ def main():
     app.add_handler(CommandHandler("deploy", cmd_deploy))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("uploadytcookies", cmd_uploadytcookies))
-    app.add_handler(CommandHandler("uploadinstasession", cmd_uploadinstasession))
     app.add_handler(CommandHandler("uploadclient", cmd_uploadclient))
     app.add_handler(CommandHandler("uploadtoken", cmd_uploadtoken))
     app.add_handler(CommandHandler("clearhistory", cmd_clearhistory))

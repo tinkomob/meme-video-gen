@@ -9,7 +9,7 @@ import shutil
 from pathlib import Path
 from typing import Callable, Optional
 from .config import DEFAULT_PINS_DIR, DEFAULT_AUDIO_DIR, DEFAULT_OUTPUT_VIDEO, DEFAULT_THUMBNAIL
-from .config import CLIENT_SECRETS, TOKEN_PICKLE
+from .config import CLIENT_SECRETS, TOKEN_PICKLE, INSTAGRAM_USERNAME
 from .config import YT_COOKIES_FILE, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES, TEMP_DIR_MAX_AGE_MINUTES
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
@@ -508,21 +508,17 @@ def deploy_to_socials(
             insta = instagram_upload(video_path, caption, thumbnail=thumbnail_path)
             try:
                 if insta:
-                    code = None
-                    if hasattr(insta, 'code'):
-                        code = getattr(insta, 'code')
-                    elif isinstance(insta, dict):
+                    if isinstance(insta, dict):
                         if 'error' in insta:
                             err = insta.get('error') or 'Ошибка'
                             det = insta.get('details') or ''
                             # Don't notify about "Invalid format" errors
                             if err != 'Invalid format':
                                 notify(f"❌ Instagram: {err}{(': ' + det) if det else ''}")
-                        code = insta.get('code')
-                        if not code and 'url' in insta and isinstance(insta['url'], str):
-                            insta_link = insta['url']
-                    if code and not insta_link:
-                        insta_link = f"https://www.instagram.com/reel/{code}/"
+                        elif 'success' in insta and insta['success']:
+                            # Async upload - no immediate URL available
+                            notify("✅ Instagram: видео поставлено в очередь на загрузку")
+                            insta_link = f"https://www.instagram.com/{INSTAGRAM_USERNAME}/"
                 else:
                     notify("❌ Instagram: загрузка не удалась")
             except Exception:

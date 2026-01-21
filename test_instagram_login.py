@@ -1,53 +1,38 @@
 #!/usr/bin/env python3
 
 """
-Простой скрипт для тестирования входа в Instagram
+Тестирование конфигурации Instagram API (upload-post.com)
 """
 
 import os
 from dotenv import load_dotenv
-from app.uploaders import test_instagram_login
 
 def main():
     load_dotenv()
     
-    print("Testing Instagram login...")
+    print("Testing Instagram API configuration...")
     print("=" * 50)
     
     # Check environment variables
     username = os.getenv('INSTAGRAM_USERNAME')
-    password = os.getenv('INSTAGRAM_PASSWORD')
-    totp_secret = os.getenv('INSTAGRAM_TOTP_SECRET')
-    proxy_url = os.getenv('INSTAGRAM_PROXY')
+    api_key = os.getenv('UPLOAD_POST_API_KEY')
     
-    print(f"Username: {'✓' if username else '✗'}")
-    print(f"Password: {'✓' if password else '✗'}")
-    print(f"TOTP Secret: {'✓' if totp_secret else '✗'}")
-    print(f"Proxy: {'✓' if proxy_url else '✗'}")
+    print(f"INSTAGRAM_USERNAME: {'✓ ' + username if username else '✗ NOT SET'}")
+    print(f"UPLOAD_POST_API_KEY: {'✓ ' + api_key[:20] + '...' if api_key and len(api_key) > 20 else '✗ NOT SET' if not api_key else '✓ ' + api_key}")
     print("-" * 50)
     
-    if not username or not password:
+    if not username or not api_key:
         print("❌ Missing required credentials!")
-        print("Please set INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD in .env file")
+        print("Please set the following in .env file:")
+        if not username:
+            print("  - INSTAGRAM_USERNAME=your_instagram_username")
+        if not api_key:
+            print("  - UPLOAD_POST_API_KEY=your_api_key_from_upload_post_com")
         return
     
-    # Test login
-    result = test_instagram_login()
-    
-    if result.get('success'):
-        print(f"✅ Login successful!")
-        print(f"User: {result.get('user', 'Unknown')}")
-        print(f"Details: {result.get('details', 'No details')}")
-    else:
-        print(f"❌ Login failed!")
-        print(f"Error: {result.get('error', 'Unknown error')}")
-        print(f"Details: {result.get('details', 'No details')}")
-        
-        # Provide suggestions based on error type
-        error_type = result.get('error', '').lower()
-        if 'challenge' in error_type:
-            print("\n💡 Suggestions:")
-            print("- Try logging in through Instagram app/website first")
+    print("✅ Configuration looks good!")
+    print("\nTo test actual upload, use /deploy command in the bot with 'instagram' in socials parameter.")
+    print("Example: /deploy socials=instagram privacy=public")
             print("- Complete any verification steps")
             print("- Wait some time before trying again")
         elif '2fa' in error_type or 'two_factor' in error_type:

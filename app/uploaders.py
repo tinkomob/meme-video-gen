@@ -4,95 +4,9 @@ import tempfile
 import shutil
 import inspect
 import glob
-from .config import CLIENT_SECRETS, TOKEN_PICKLE
+import requests
+from .config import CLIENT_SECRETS, TOKEN_PICKLE, UPLOAD_POST_API_KEY, INSTAGRAM_USERNAME
 import re
-
-def test_instagram_login():
-    """
-    Проверяет возможность входа в Instagram без загрузки видео
-    """
-    try:
-        import os
-        from instagrapi import Client
-        
-        username = os.getenv('INSTAGRAM_USERNAME')
-        password = os.getenv('INSTAGRAM_PASSWORD')
-        totp_secret = os.getenv('INSTAGRAM_TOTP_SECRET')
-        proxy_url = os.getenv('INSTAGRAM_PROXY')
-        
-        if not username or not password:
-            return {'error': 'Missing credentials', 'details': 'INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD required'}
-        
-        cl = Client()
-        cl.delay_range = [1, 3]
-        
-        # Set consistent device settings
-        cl.set_device({
-            'app_version': '269.0.0.18.75',
-            'android_version': 30,
-            'android_release': '11',
-            'dpi': '480dpi',
-            'resolution': '1080x2400',
-            'manufacturer': 'samsung',
-            'device': 'SM-G991B',
-            'model': 'Galaxy S21',
-            'cpu': 'exynos2100',
-            'version_code': '314665256'
-        })
-        
-        if proxy_url:
-            cl.set_proxy(proxy_url)
-        
-        session_file = 'instagram_session.json'
-        login_required = True
-        
-        # Try existing session
-        if Path(session_file).exists():
-            try:
-                cl.load_settings(session_file)
-                user_info = cl.account_info()
-                if user_info and user_info.pk:
-                    return {'success': True, 'details': f'Existing session valid for @{user_info.username}', 'user': user_info.username}
-            except Exception:
-                pass
-        
-        # Fresh login
-        try:
-            if totp_secret and totp_secret.strip():
-                try:
-                    import pyotp
-                    totp = pyotp.TOTP(totp_secret.strip())
-                    code = totp.now()
-                    cl.verification_code = code
-                except ImportError:
-                    pass
-                except Exception as totp_error:
-                    print(f'TOTP generation failed: {totp_error}')
-                    pass
-            
-            login_result = cl.login(username, password)
-            if not login_result:
-                return {'error': 'Login failed', 'details': 'Invalid credentials'}
-            
-            cl.dump_settings(session_file)
-            user_info = cl.account_info()
-            return {'success': True, 'details': f'Fresh login successful for @{user_info.username}', 'user': user_info.username}
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            if 'challenge' in error_msg:
-                return {'error': 'Challenge required', 'details': 'Instagram requires verification'}
-            elif 'two_factor' in error_msg:
-                return {'error': '2FA required', 'details': 'Set INSTAGRAM_TOTP_SECRET'}
-            elif 'rate' in error_msg:
-                return {'error': 'Rate limited', 'details': 'Too many attempts'}
-            else:
-                return {'error': 'Login error', 'details': str(e)}
-                
-    except ImportError:
-        return {'error': 'Missing dependency', 'details': 'instagrapi not installed'}
-    except Exception as e:
-        return {'error': 'Unexpected error', 'details': str(e)}
 
 def youtube_authenticate(credentials_path: str = CLIENT_SECRETS, token_path: str = TOKEN_PICKLE):
     try:
@@ -162,153 +76,92 @@ def youtube_upload_short(youtube, file_path: str, title: str, description: str =
         return None
 
 def instagram_upload(video_path: str, caption: str, thumbnail: str | None = None):
+    """
+    Upload video to Instagram using upload-post.com API
+    """
     try:
-        import os
-        import uuid
-        from instagrapi import Client
+        if not UPLOAD_POST_API_KEY:
+            print('UPLOAD_POST_API_KEY not found in environment variables')
+            return {'error': 'Missing API key', 'details': 'UPLOAD_POST_API_KEY required'}
         
-        username = os.getenv('INSTAGRAM_USERNAME')
-        password = os.getenv('INSTAGRAM_PASSWORD')
-        totp_secret = os.getenv('INSTAGRAM_TOTP_SECRET')
-        proxy_url = os.getenv('INSTAGRAM_PROXY')
+        if not INSTAGRAM_USERNAME:
+            print('INSTAGRAM_USERNAME not found in environment variables')
+            return {'error': 'Missing username', 'details': 'INSTAGRAM_USERNAME required'}
         
-        if not username or not password:
-            print('Instagram credentials not found in environment variables')
-            return {'error': 'Missing credentials', 'details': 'INSTAGRAM_USERNAME and INSTAGRAM_PASSWORD required'}
+        # Extract song name from caption if present
+        song_name = 'Unknown'
+        if '♪' in caption:
+            # Extract text between ♪ symbols
+            parts = caption.split('♪')
+            if len(parts) >= 2:
+                song_name = parts[1].strip()
         
-        cl = Client()
-        cl.delay_range = [1, 3]
-        
-        # Set consistent device settings to avoid detection
-        cl.set_device({
-            'app_version': '269.0.0.18.75',
-            'android_version': 30,
-            'android_release': '11',
-            'dpi': '480dpi',
-            'resolution': '1080x2400',
-            'manufacturer': 'samsung',
-            'device': 'SM-G991B',
-            'model': 'Galaxy S21',
-            'cpu': 'exynos2100',
-            'version_code': '314665256'
-        })
-        
-        # Set proxy if provided
-        if proxy_url:
-            cl.set_proxy(proxy_url)
-            print(f'Using proxy: {proxy_url}')
-        
-        session_file = 'instagram_session.json'
-        login_required = True
-        
-        # Try to load existing session
-        if Path(session_file).exists():
-            try:
-                cl.load_settings(session_file)
-                # Test if session is still valid
-                user_info = cl.account_info()
-                if user_info and user_info.pk:
-                    print(f'Existing session valid for user: {user_info.username}')
-                    login_required = False
-                else:
-                    print('Existing session invalid, need to re-login')
-            except Exception as e:
-                print(f'Failed to load session: {e}')
-        
-        # Login if needed
-        if login_required:
-            try:
-                print('Logging into Instagram...')
-                
-                # Setup 2FA handler if TOTP secret is provided
-                if totp_secret and totp_secret.strip():
-                    try:
-                        import pyotp
-                        totp = pyotp.TOTP(totp_secret.strip())
-                        code = totp.now()
-                        print(f'Generated TOTP code: {code}')
-                        cl.verification_code = code
-                    except ImportError:
-                        print('pyotp not installed, TOTP codes won\'t work. Install with: pip install pyotp')
-                    except Exception as totp_error:
-                        print(f'TOTP generation failed: {totp_error}. Check that INSTAGRAM_TOTP_SECRET is a valid base32 string.')
-                
-                # Attempt login
-                login_result = cl.login(username, password)
-                
-                if not login_result:
-                    return {'error': 'Login failed', 'details': 'Invalid credentials or account locked'}
-                
-                # Save session for future use
-                cl.dump_settings(session_file)
-                print('Instagram login successful, session saved')
-                
-            except Exception as login_error:
-                error_msg = str(login_error).lower()
-                
-                if 'challenge' in error_msg:
-                    return {'error': 'Challenge required', 'details': 'Instagram requires additional verification. Check your email/SMS or try logging in through browser first.'}
-                elif 'two_factor' in error_msg or '2fa' in error_msg:
-                    return {'error': '2FA required', 'details': 'Two-factor authentication required. Set INSTAGRAM_TOTP_SECRET environment variable.'}
-                elif 'rate' in error_msg or 'too many' in error_msg:
-                    return {'error': 'Rate limited', 'details': 'Too many login attempts. Wait before trying again.'}
-                elif 'user not found' in error_msg or 'incorrect' in error_msg:
-                    return {'error': 'Invalid credentials', 'details': 'Username or password is incorrect'}
-                else:
-                    return {'error': 'Login error', 'details': f'Login failed: {login_error}'}
-        
-        # Verify we're logged in
-        try:
-            user_info = cl.account_info()
-            if not user_info or not user_info.pk:
-                return {'error': 'Authentication failed', 'details': 'Could not verify login status'}
-            print(f'Authenticated as: {user_info.username} (ID: {user_info.pk})')
-        except Exception as e:
-            return {'error': 'Account verification failed', 'details': f'Could not get account info: {e}'}
-        
-        # Upload video
-        print(f'Uploading video: {video_path}')
+        print(f'Uploading video to Instagram: {video_path}')
+        print(f'Username: {INSTAGRAM_USERNAME}')
+        print(f'Song: {song_name}')
         print(f'Caption: {caption[:100]}...' if len(caption) > 100 else f'Caption: {caption}')
         
-        try:
-            if thumbnail:
-                media = cl.clip_upload(
-                    path=Path(video_path), 
-                    caption=caption, 
-                    thumbnail=Path(thumbnail)
-                )
-            else:
-                media = cl.clip_upload(
-                    path=Path(video_path), 
-                    caption=caption
-                )
+        # Prepare multipart form data
+        files = {
+            'video': ('video.mp4', open(video_path, 'rb'), 'video/mp4')
+        }
+        
+        data = {
+            'user': INSTAGRAM_USERNAME,
+            'title': song_name,
+            'platform[]': 'instagram',
+            'async_upload': 'true',
+            'media_type': 'REELS',
+            'share_to_feed': 'true',
+            'first_comment': f'song is {song_name}'
+        }
+        
+        headers = {
+            'Authorization': f'Apikey {UPLOAD_POST_API_KEY}'
+        }
+        
+        # Make API request
+        response = requests.post(
+            'https://api.upload-post.com/api/upload',
+            headers=headers,
+            data=data,
+            files=files,
+            timeout=300  # 5 minute timeout for video upload
+        )
+        
+        # Close file handle
+        files['video'][1].close()
+        
+        # Check response
+        if response.status_code == 200:
+            response_data = response.json()
+            print(f'Instagram upload response: {response_data}')
             
-            if media and hasattr(media, 'pk'):
-                return {
-                    'success': True,
-                    'media_id': media.pk,
-                    'url': f'https://www.instagram.com/p/{media.code}/',
-                    'details': 'Video uploaded successfully'
-                }
-            else:
-                return {'error': 'Upload failed', 'details': 'Upload completed but no media returned'}
-                
-        except Exception as upload_error:
-            error_msg = str(upload_error).lower()
+            return {
+                'success': True,
+                'details': 'Video uploaded successfully (async)',
+                'response': response_data
+            }
+        else:
+            error_msg = f'API returned status {response.status_code}'
+            try:
+                error_data = response.json()
+                error_msg = error_data.get('message', error_msg)
+            except:
+                error_msg = response.text[:200] if response.text else error_msg
             
-            if 'video too long' in error_msg or 'duration' in error_msg:
-                return {'error': 'Video too long', 'details': 'Instagram Reels must be under 90 seconds'}
-            elif 'file size' in error_msg or 'too large' in error_msg:
-                return {'error': 'File too large', 'details': 'Video file size exceeds Instagram limits'}
-            elif 'format' in error_msg or 'codec' in error_msg:
-                return {'error': 'Invalid format', 'details': 'Video format not supported by Instagram'}
-            elif 'spam' in error_msg or 'blocked' in error_msg:
-                return {'error': 'Content blocked', 'details': 'Content may violate Instagram policies or be flagged as spam'}
-            else:
-                return {'error': 'Upload error', 'details': f'Upload failed: {upload_error}'}
+            print(f'Instagram upload failed: {error_msg}')
+            return {
+                'error': 'Upload failed',
+                'details': error_msg
+            }
     
-    except ImportError as e:
-        return {'error': 'Missing dependency', 'details': f'Required library not installed: {e}'}
+    except requests.exceptions.Timeout:
+        return {'error': 'Upload timeout', 'details': 'Request timed out after 5 minutes'}
+    except requests.exceptions.RequestException as e:
+        return {'error': 'Network error', 'details': f'Request failed: {e}'}
+    except FileNotFoundError:
+        return {'error': 'File not found', 'details': f'Video file does not exist: {video_path}'}
     except Exception as e:
         return {'error': 'Unexpected error', 'details': f'Instagram upload failed: {e}'}
 

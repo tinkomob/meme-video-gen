@@ -14,7 +14,7 @@ New-Item -ItemType File -Path .env -Force | Out-Null
 Add-Content .env "TELEGRAM_BOT_TOKEN=ваш_токен_бота"
 # Опционально для загрузок в соцсети
 Add-Content .env "INSTAGRAM_USERNAME=..."
-Add-Content .env "INSTAGRAM_PASSWORD=..."
+Add-Content .env "UPLOAD_POST_API_KEY=..."
 Add-Content .env "YOUTUBE_API_KEY=..."
 
 # Запуск бота
@@ -35,9 +35,7 @@ python bot.py
 ### Instagram
 ```bash
 INSTAGRAM_USERNAME=your_username
-INSTAGRAM_PASSWORD=your_password
-INSTAGRAM_TOTP_SECRET=your_totp_secret  # Опционально для 2FA
-INSTAGRAM_PROXY=http://proxy:port       # Опционально
+UPLOAD_POST_API_KEY=your_api_key  # API key from upload-post.com
 ```
 
 ### YouTube
