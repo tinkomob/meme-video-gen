@@ -5,7 +5,7 @@ import shutil
 import inspect
 import glob
 import requests
-from .config import CLIENT_SECRETS, TOKEN_PICKLE, UPLOAD_POST_API_KEY, INSTAGRAM_USERNAME
+from .config import CLIENT_SECRETS, TOKEN_PICKLE, UPLOAD_POST_API_KEY, INSTAGRAM_USERNAME, POSTS_CHATID, TELEGRAM_BOT_TOKEN
 import re
 
 def youtube_authenticate(credentials_path: str = CLIENT_SECRETS, token_path: str = TOKEN_PICKLE):
@@ -74,6 +74,76 @@ def youtube_upload_short(youtube, file_path: str, title: str, description: str =
     except Exception as e:
         print(f'YouTube upload failed: {e}')
         return None
+
+def telegram_post_upload(video_path: str, song_info: str):
+    """
+    Send video to Telegram posts channel with song info.
+    song_info should be formatted as "author - title"
+    """
+    try:
+        if not POSTS_CHATID:
+            print('POSTS_CHATID not found in environment variables')
+            return {'error': 'Missing chat ID', 'details': 'POSTS_CHATID required'}
+        
+        if not TELEGRAM_BOT_TOKEN:
+            print('TELEGRAM_BOT_TOKEN not found in environment variables')
+            return {'error': 'Missing bot token', 'details': 'TELEGRAM_BOT_TOKEN required'}
+        
+        # Prepare caption
+        caption = f"song is {song_info}"
+        
+        print(f'Posting video to Telegram: {video_path}')
+        print(f'Chat ID: {POSTS_CHATID}')
+        print(f'Song info: {song_info}')
+        
+        # Send video via Telegram Bot API
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendVideo"
+        
+        with open(video_path, 'rb') as video_file:
+            files = {'video': video_file}
+            data = {
+                'chat_id': POSTS_CHATID,
+                'caption': caption,
+                'parse_mode': 'HTML',
+            }
+            
+            response = requests.post(url, files=files, data=data, timeout=300)
+        
+        # Check response
+        if response.status_code == 200:
+            response_data = response.json()
+            print(f'Telegram post response: {response_data}')
+            
+            if response_data.get('ok'):
+                message_id = response_data.get('result', {}).get('message_id')
+                return {
+                    'success': True,
+                    'details': 'Video posted successfully',
+                    'message_id': message_id
+                }
+            else:
+                error_msg = response_data.get('description', 'Unknown error')
+                print(f'Telegram post failed: {error_msg}')
+                return {
+                    'error': 'Post failed',
+                    'details': error_msg
+                }
+        else:
+            error_msg = f'API returned status {response.status_code}'
+            print(f'Telegram post failed: {error_msg}')
+            return {
+                'error': 'Post failed',
+                'details': error_msg
+            }
+    
+    except requests.exceptions.Timeout:
+        return {'error': 'Upload timeout', 'details': 'Request timed out after 5 minutes'}
+    except requests.exceptions.RequestException as e:
+        return {'error': 'Network error', 'details': f'Request failed: {e}'}
+    except FileNotFoundError:
+        return {'error': 'File not found', 'details': f'Video file does not exist: {video_path}'}
+    except Exception as e:
+        return {'error': 'Unexpected error', 'details': f'Telegram post failed: {e}'}
 
 def instagram_upload(video_path: str, caption: str, thumbnail: str | None = None):
     """

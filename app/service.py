@@ -16,8 +16,9 @@ from .sources import scrape_one_from_pinterest
 from .audio import download_random_song_from_playlist, extract_random_audio_clip, get_song_title
 from .video import convert_to_tiktok_format, generate_thumbnail, get_video_metadata
 from .metadata import generate_metadata_from_source
-from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload
+from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload, telegram_post_upload
 from .uploaders import x_upload
+from .config import POSTS_CHATID
 from .debug import set_phase
 
 class GenerationResult:
@@ -491,37 +492,34 @@ def deploy_to_socials(
     insta_link = None
     if 'instagram' in socials:
         if dry_run:
-            insta_link = f"https://www.instagram.com/reel/dry-run-{generated['title'].replace(' ', '-').lower()}/"
-            print(f"DRY RUN: Would upload to Instagram with caption: {generated.get('description', '')[:50]}...", flush=True)
+            insta_link = f"https://t.me/c/dry-run-{generated['title'].replace(' ', '-').lower()}/"
+            print(f"DRY RUN: Would post to Telegram channel with video: {video_path}", flush=True)
         else:
-            caption = generated.get('description', '').replace('#Shorts', '').strip()
             song_title = None
             if audio_path:
                 song_title = get_song_title(audio_path)
             if not song_title:
                 song_title = _song_from_title_fallback(generated.get('title'))
-            if song_title:
-                caption = f"♪ {song_title} ♪\n\n{caption}"
-            tags = [t for t in generated.get('tags', []) if t.lower() != 'shorts']
-            if tags:
-                caption += ('\n\n' + ' '.join(f'#{t}' for t in tags))
-            insta = instagram_upload(video_path, caption, thumbnail=thumbnail_path)
+            if not song_title:
+                song_title = 'Unknown - Unknown'
+            
+            insta = telegram_post_upload(video_path, song_title)
             try:
                 if insta:
                     if isinstance(insta, dict):
                         if 'error' in insta:
                             err = insta.get('error') or 'Ошибка'
                             det = insta.get('details') or ''
-                            # Don't notify about "Invalid format" errors
-                            if err != 'Invalid format':
-                                notify(f"❌ Instagram: {err}{(': ' + det) if det else ''}")
+                            notify(f"❌ Telegram Post: {err}{(': ' + det) if det else ''}")
                         elif 'success' in insta and insta['success']:
-                            # Async upload - no immediate URL available
-                            insta_link = f"https://www.instagram.com/{INSTAGRAM_USERNAME}/"
+                            msg_id = insta.get('message_id', '')
+                            chat_num = abs(int(POSTS_CHATID)) if POSTS_CHATID else 'unknown'
+                            insta_link = f"https://t.me/c/{chat_num}/{msg_id}"
+                            notify("✅ Telegram Post: загружено")
                 else:
-                    notify("❌ Instagram: загрузка не удалась")
+                    notify("❌ Telegram Post: загрузка не удалась")
             except Exception:
-                notify("❌ Instagram: непредвиденная ошибка при обработке ответа")
+                notify("❌ Telegram Post: непредвиденная ошибка при обработке ответа")
 
     # TikTok загрузка полностью отключена
     tiktok_link = None
