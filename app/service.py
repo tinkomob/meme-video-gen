@@ -517,7 +517,6 @@ def deploy_to_socials(
                                 notify(f"❌ Instagram: {err}{(': ' + det) if det else ''}")
                         elif 'success' in insta and insta['success']:
                             # Async upload - no immediate URL available
-                            notify("✅ Instagram: видео поставлено в очередь на загрузку")
                             insta_link = f"https://www.instagram.com/{INSTAGRAM_USERNAME}/"
                 else:
                     notify("❌ Instagram: загрузка не удалась")
