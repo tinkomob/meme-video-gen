@@ -433,6 +433,7 @@ def deploy_to_socials(
     socials: list[str] | None = None,
     dry_run: bool = False,
     progress: Optional[Callable[[str], None]] = None,
+    source_chat_id: int | None = None,
 ):
     notify = (lambda msg: progress(msg) if callable(progress) else None)
     generated = generate_metadata_from_source(source_url, None, audio_path)
