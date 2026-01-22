@@ -311,6 +311,199 @@ def _unlock_generation(app):
             pass
 
 
+async def _send_video_slider(context, chat_id: int, results: list, generation_id: str) -> list:
+    """Отправляет первое видео из списка со слайдер-кнопками и сохраняет данные для навигации.
+    
+    Args:
+        context: Контекст бота
+        chat_id: ID чата для отправки
+        results: Список элементов истории видео
+        generation_id: Уникальный ID генерации для отслеживания
+    
+    Returns:
+        Список отправленных message_id
+    """
+    if not results:
+        return []
+    
+    msg_ids = []
+    
+    # Отправляем заголовок
+    try:
+        header_text = f"✅ Готово! Создано {len(results)} видео.\nИспользуйте кнопки для навигации:"
+        m_header = await context.bot.send_message(chat_id=chat_id, text=header_text)
+        if m_header and getattr(m_header, 'message_id', None):
+            msg_ids.append(m_header.message_id)
+    except Exception as e:
+        logging.error(f"Ошибка отправки заголовка слайдера: {e}")
+    
+    # Отправляем первое видео с навигацией
+    current_idx = 0
+    item = results[current_idx]
+    vid = item.get('id')
+    
+    # Формируем caption с счётчиком
+    caption_lines = [f"📹 Видео {current_idx + 1}/{len(results)}"]
+    caption_lines.append(f"ID: #{vid}")
+    caption_lines.append("")
+    caption_lines.append(_format_video_info_from_history(item))
+    caption = "\n".join(caption_lines)
+    
+    # Создаём кнопки навигации и действий
+    kb = _build_slider_keyboard(generation_id, current_idx, len(results), vid)
+    
+    try:
+        if item.get('video_path') and os.path.exists(item.get('video_path')):
+            m_video = await context.bot.send_video(
+                chat_id=chat_id,
+                video=open(item.get('video_path'), 'rb'),
+                caption=caption,
+                reply_markup=kb
+            )
+            if m_video and getattr(m_video, 'message_id', None):
+                msg_ids.append(m_video.message_id)
+                video_msg_id = m_video.message_id
+        else:
+            m_video = await context.bot.send_message(
+                chat_id=chat_id,
+                text=caption,
+                reply_markup=kb
+            )
+            if m_video and getattr(m_video, 'message_id', None):
+                msg_ids.append(m_video.message_id)
+                video_msg_id = m_video.message_id
+    except Exception as e:
+        logging.error(f"Ошибка отправки видео слайдера: {e}")
+        return msg_ids
+    
+    # Сохраняем данные для навигации
+    try:
+        slider_data = context.application.bot_data.setdefault('video_sliders', {})
+        slider_data[generation_id] = {
+            'chat_id': chat_id,
+            'results': [r.get('id') for r in results],  # Храним только ID
+            'current_idx': current_idx,
+            'msg_ids': msg_ids,
+            'video_msg_id': video_msg_id
+        }
+    except Exception as e:
+        logging.error(f"Ошибка сохранения данных слайдера: {e}")
+    
+    return msg_ids
+
+
+def _build_slider_keyboard(generation_id: str, current_idx: int, total: int, video_id: str):
+    """Создаёт клавиатуру со слайдер-кнопками и кнопками действий."""
+    if not InlineKeyboardButton or not InlineKeyboardMarkup:
+        return None
+    
+    buttons = []
+    
+    # Кнопки навигации
+    nav_row = []
+    if current_idx > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Назад", callback_data=f"slider_prev:{generation_id}"))
+    else:
+        nav_row.append(InlineKeyboardButton("◀️", callback_data=f"slider_noop"))
+    
+    nav_row.append(InlineKeyboardButton(f"{current_idx + 1}/{total}", callback_data=f"slider_noop"))
+    
+    if current_idx < total - 1:
+        nav_row.append(InlineKeyboardButton("Вперёд ▶️", callback_data=f"slider_next:{generation_id}"))
+    else:
+        nav_row.append(InlineKeyboardButton("▶️", callback_data=f"slider_noop"))
+    
+    buttons.append(nav_row)
+    
+    # Кнопки действий для текущего видео
+    buttons.append([
+        InlineKeyboardButton(f"Опубликовать #{video_id}", callback_data=f"publish:{video_id}")
+    ])
+    buttons.append([
+        InlineKeyboardButton(f"Выбрать платформы #{video_id}", callback_data=f"choose:{video_id}")
+    ])
+    buttons.append([
+        InlineKeyboardButton(f"Сменить трек #{video_id}", callback_data=f"changeaudio:{video_id}")
+    ])
+    
+    # Кнопка регенерации всей пачки
+    buttons.append([
+        InlineKeyboardButton("🔄 Сгенерировать заново", callback_data=f"slider_regen:{generation_id}")
+    ])
+    
+    return InlineKeyboardMarkup(buttons)
+
+
+async def _update_slider_video(context, generation_id: str, new_idx: int):
+    """Обновляет видео в слайдере при навигации."""
+    try:
+        slider_data = context.application.bot_data.get('video_sliders', {}).get(generation_id)
+        if not slider_data:
+            return False
+        
+        chat_id = slider_data['chat_id']
+        video_msg_id = slider_data['video_msg_id']
+        result_ids = slider_data['results']
+        
+        if new_idx < 0 or new_idx >= len(result_ids):
+            return False
+        
+        # Загружаем историю и находим нужный элемент
+        hist = load_video_history()
+        current_id = result_ids[new_idx]
+        item = next((it for it in hist if it.get('id') == current_id), None)
+        
+        if not item:
+            return False
+        
+        # Обновляем индекс
+        slider_data['current_idx'] = new_idx
+        
+        # Формируем новый caption
+        vid = item.get('id')
+        caption_lines = [f"📹 Видео {new_idx + 1}/{len(result_ids)}"]
+        caption_lines.append(f"ID: #{vid}")
+        caption_lines.append("")
+        caption_lines.append(_format_video_info_from_history(item))
+        caption = "\n".join(caption_lines)
+        
+        # Создаём новую клавиатуру
+        kb = _build_slider_keyboard(generation_id, new_idx, len(result_ids), vid)
+        
+        # Удаляем старое сообщение с видео
+        try:
+            await context.bot.delete_message(chat_id=chat_id, message_id=video_msg_id)
+        except Exception as e:
+            logging.warning(f"Не удалось удалить старое видео: {e}")
+        
+        # Отправляем новое видео
+        try:
+            if item.get('video_path') and os.path.exists(item.get('video_path')):
+                m_video = await context.bot.send_video(
+                    chat_id=chat_id,
+                    video=open(item.get('video_path'), 'rb'),
+                    caption=caption,
+                    reply_markup=kb
+                )
+            else:
+                m_video = await context.bot.send_message(
+                    chat_id=chat_id,
+                    text=caption,
+                    reply_markup=kb
+                )
+            
+            if m_video and getattr(m_video, 'message_id', None):
+                slider_data['video_msg_id'] = m_video.message_id
+                return True
+        except Exception as e:
+            logging.error(f"Ошибка отправки нового видео в слайдере: {e}")
+            return False
+    
+    except Exception as e:
+        logging.error(f"Ошибка обновления слайдера: {e}")
+        return False
+
+
 def _format_video_info_from_history(item: dict) -> str:
     """Форматирует информацию о видео из истории для отправки пользователю"""
     lines = []
@@ -508,54 +701,60 @@ async def cmd_generate(update, context):
                         break
                     await asyncio.sleep(0.5 * attempts)
                 return (i, last_res)
-            gathered = []
-            for i in range(batch_count):
-                result = await gen_one(i)
-                gathered.append(result)
-            result_map = {idx_res: val for idx_res, val in gathered}
-            success = 0
-            fail = 0
-            for idx in range(batch_count):
-                result = result_map.get(idx)
-                if not result or not result.video_path:
-                    fail += 1
-                    try:
-                        await context.bot.send_message(chat_id=chat_id, text=f"[{idx+1}/{batch_count}] ❌ Не удалось создать видео.")
-                    except Exception:
-                        pass
-                    continue
-                success += 1
-                new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
-                caption = _format_video_info(result)
-                caption = f"[{idx+1}/{batch_count}]\n" + caption
-                kb = None
-                if InlineKeyboardButton and InlineKeyboardMarkup:
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
-                        [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
-                        [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
-                        [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
-                    ])
-                try:
-                    m = await context.bot.send_video(chat_id=chat_id, video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
-                    try:
-                        if m and getattr(m, "message_id", None):
-                            _add_msg_id(context, m.message_id)
-                    except Exception:
-                        pass
-                except Exception:
-                    try:
-                        await context.bot.send_message(chat_id=chat_id, text=caption, reply_markup=kb)
-                    except Exception:
-                        pass
-            elapsed = time.monotonic() - start_ts
-            mins = int(elapsed // 60)
-            secs = int(elapsed % 60)
-            summary = f"Готово. Успех: {success}, ошибки: {fail}. Время: {mins}м {secs}с." if mins else f"Готово. Успех: {success}, ошибки: {fail}. Время: {secs}с."
             try:
-                await context.bot.send_message(chat_id=chat_id, text=summary)
-            except Exception:
-                pass
+                gathered = []
+                for i in range(batch_count):
+                    result = await gen_one(i)
+                    gathered.append(result)
+                result_map = {idx_res: val for idx_res, val in gathered}
+                success = 0
+                fail = 0
+                success_results = []
+                
+                for idx in range(batch_count):
+                    result = result_map.get(idx)
+                    if not result or not result.video_path:
+                        fail += 1
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=f"[{idx+1}/{batch_count}] ❌ Не удалось создать видео.")
+                        except Exception:
+                            pass
+                        continue
+                    success += 1
+                    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
+                    success_results.append(new_item)
+                
+                # Отправляем результаты через слайдер
+                if success_results:
+                    generation_id = os.urandom(4).hex()
+                    try:
+                        await _send_video_slider(context, chat_id, success_results, generation_id)
+                    except Exception as e:
+                        logging.error(f"Ошибка отправки слайдера: {e}")
+                        # Fallback: отправляем как раньше
+                        for item in success_results:
+                            try:
+                                caption = _format_video_info_from_history(item)
+                                kb = None
+                                if InlineKeyboardButton and InlineKeyboardMarkup:
+                                    kb = InlineKeyboardMarkup([
+                                        [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{item['id']}")],
+                                        [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{item['id']}")],
+                                        [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{item['id']}")],
+                                    ])
+                                await context.bot.send_video(chat_id=chat_id, video=open(item['video_path'], "rb"), caption=caption, reply_markup=kb)
+                            except Exception:
+                                pass
+                
+                elapsed = time.monotonic() - start_ts
+                mins = int(elapsed // 60)
+                secs = int(elapsed % 60)
+                summary = f"Готово. Успех: {success}, ошибки: {fail}. Время: {mins}м {secs}с." if mins else f"Готово. Успех: {success}, ошибки: {fail}. Время: {secs}с."
+                if fail > 0:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=summary)
+                    except Exception:
+                        pass
             finally:
                 _unlock_generation(context.application)
                 try:
@@ -1601,58 +1800,54 @@ async def _scheduled_job(context):
     if cid and results:
         try:
             generation_id = os.urandom(4).hex()
-            msg_ids = []
-            item_ids = [it['id'] for it in results if it]
-            lines = ["Автогенерация завершена. Отправлено 3 варианта ниже:"]
-            try:
-                m0 = await app.bot.send_message(chat_id=cid, text="\n".join(lines))
-                if m0 and getattr(m0, 'message_id', None):
-                    msg_ids.append(m0.message_id)
-            except Exception as e:
-                logging.error(f"Ошибка отправки заголовка: {e}")
+            valid_results = [r for r in results if r]
             
-            for item in results:
-                if not item:
-                    continue
-                vid = item['id']
-                kb = None
-                if InlineKeyboardButton and InlineKeyboardMarkup:
-                    kb = InlineKeyboardMarkup([
-                        [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
-                        [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
-                        [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
-                    ])
+            if valid_results:
+                # Используем слайдер для отправки результатов
                 try:
-                    if item.get('video_path') and os.path.exists(item.get('video_path')):
-                        info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
-                        mv = await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=info_text, reply_markup=kb)
-                    else:
-                        info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
-                        mv = await app.bot.send_message(chat_id=cid, text=info_text, reply_markup=kb)
-                    if mv and getattr(mv, 'message_id', None):
-                        msg_ids.append(mv.message_id)
+                    msg_ids = await _send_video_slider(context, cid, valid_results, generation_id)
                 except Exception as e:
-                    logging.error(f"Ошибка отправки видео #{vid}: {e}")
-            
-            try:
-                if InlineKeyboardButton and InlineKeyboardMarkup:
-                    regen_kb = InlineKeyboardMarkup([[InlineKeyboardButton("Сгенерировать заново", callback_data=f"schedregen:{generation_id}")]])
-                else:
-                    regen_kb = None
-                regen_msg = await app.bot.send_message(chat_id=cid, text="Если варианты не подходят – можно сгенерировать заново", reply_markup=regen_kb)
-                if regen_msg and getattr(regen_msg, 'message_id', None):
-                    msg_ids.append(regen_msg.message_id)
-            except Exception as e:
-                logging.error(f"Ошибка отправки кнопки регенерации: {e}")
-            
-            try:
-                store = app.bot_data.get('scheduled_generations')
-                if not isinstance(store, dict):
-                    store = {}
-                    app.bot_data['scheduled_generations'] = store
-                store[generation_id] = {'item_ids': item_ids, 'msg_ids': msg_ids, 'chat_id': cid}
-            except Exception as e:
-                logging.error(f"Ошибка сохранения данных генерации: {e}")
+                    logging.error(f"Ошибка отправки слайдера при автогенерации: {e}")
+                    # Fallback на старый метод
+                    msg_ids = []
+                    try:
+                        m0 = await app.bot.send_message(chat_id=cid, text="Автогенерация завершена. Отправлено 3 варианта ниже:")
+                        if m0 and getattr(m0, 'message_id', None):
+                            msg_ids.append(m0.message_id)
+                    except Exception:
+                        pass
+                    
+                    for item in valid_results:
+                        vid = item['id']
+                        kb = None
+                        if InlineKeyboardButton and InlineKeyboardMarkup:
+                            kb = InlineKeyboardMarkup([
+                                [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
+                                [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
+                                [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
+                            ])
+                        try:
+                            if item.get('video_path') and os.path.exists(item.get('video_path')):
+                                info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(item)}"
+                                mv = await app.bot.send_video(chat_id=cid, video=open(item.get('video_path'), 'rb'), caption=info_text, reply_markup=kb)
+                                if mv and getattr(mv, 'message_id', None):
+                                    msg_ids.append(mv.message_id)
+                        except Exception as e:
+                            logging.error(f"Ошибка отправки видео #{vid}: {e}")
+                
+                # Сохраняем данные для возможной регенерации
+                try:
+                    store = app.bot_data.get('scheduled_generations')
+                    if not isinstance(store, dict):
+                        store = {}
+                        app.bot_data['scheduled_generations'] = store
+                    store[generation_id] = {
+                        'item_ids': [it['id'] for it in valid_results],
+                        'msg_ids': msg_ids,
+                        'chat_id': cid
+                    }
+                except Exception as e:
+                    logging.error(f"Ошибка сохранения данных генерации: {e}")
         except Exception as e:
             logging.error(f"Критическая ошибка при отправке сообщений: {e}", exc_info=True)
             save_generation_state("send_error", {"error": str(e), "time": datetime.now(tz).isoformat()})
@@ -1928,6 +2123,203 @@ def main():
     app.add_handler(CallbackQueryHandler(on_callback_cancel_choose, pattern=r"^cancelchoose:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_regenerate, pattern=r"^regenerate:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_change_audio, pattern=r"^changeaudio:\d+"))
+    
+    # Handlers для слайдера видео
+    async def on_callback_slider_prev(update, context):
+        """Обработчик кнопки 'Назад' в слайдере."""
+        q = update.callback_query
+        await q.answer()
+        data = q.data or ""
+        generation_id = data.split(":", 1)[1] if ":" in data else None
+        if not generation_id:
+            return
+        
+        slider_data = context.application.bot_data.get('video_sliders', {}).get(generation_id)
+        if not slider_data:
+            await q.message.reply_text("Данные слайдера не найдены.")
+            return
+        
+        current_idx = slider_data.get('current_idx', 0)
+        new_idx = current_idx - 1
+        
+        if new_idx < 0:
+            await q.answer("Это первое видео")
+            return
+        
+        success = await _update_slider_video(context, generation_id, new_idx)
+        if not success:
+            await q.message.reply_text("Ошибка при переключении видео.")
+    
+    async def on_callback_slider_next(update, context):
+        """Обработчик кнопки 'Вперёд' в слайдере."""
+        q = update.callback_query
+        await q.answer()
+        data = q.data or ""
+        generation_id = data.split(":", 1)[1] if ":" in data else None
+        if not generation_id:
+            return
+        
+        slider_data = context.application.bot_data.get('video_sliders', {}).get(generation_id)
+        if not slider_data:
+            await q.message.reply_text("Данные слайдера не найдены.")
+            return
+        
+        current_idx = slider_data.get('current_idx', 0)
+        total = len(slider_data.get('results', []))
+        new_idx = current_idx + 1
+        
+        if new_idx >= total:
+            await q.answer("Это последнее видео")
+            return
+        
+        success = await _update_slider_video(context, generation_id, new_idx)
+        if not success:
+            await q.message.reply_text("Ошибка при переключении видео.")
+    
+    async def on_callback_slider_noop(update, context):
+        """Обработчик для неактивных кнопок слайдера."""
+        q = update.callback_query
+        await q.answer()
+    
+    async def on_callback_slider_regen(update, context):
+        """Обработчик кнопки 'Сгенерировать заново' в слайдере."""
+        q = update.callback_query
+        await q.answer()
+        data = q.data or ""
+        generation_id = data.split(":", 1)[1] if ":" in data else None
+        if not generation_id:
+            await q.message.reply_text("Не удалось определить генерацию.")
+            return
+        
+        slider_data = context.application.bot_data.get('video_sliders', {}).get(generation_id)
+        if not slider_data:
+            await q.message.reply_text("Данные слайдера не найдены или уже удалены.")
+            return
+        
+        item_ids = slider_data.get('results', [])
+        msg_ids = slider_data.get('msg_ids', [])
+        chat_id = slider_data.get('chat_id') or q.message.chat_id
+        
+        # Удаляем старые видео из истории
+        try:
+            hist = load_video_history()
+            target_set = {str(i) for i in item_ids}
+            remaining = []
+            for it in hist:
+                iid = str(it.get('id'))
+                if iid in target_set:
+                    for p in [it.get('video_path'), it.get('thumbnail_path')]:
+                        try:
+                            if p and os.path.exists(p):
+                                os.remove(p)
+                        except Exception:
+                            pass
+                else:
+                    remaining.append(it)
+            save_video_history(remaining)
+        except Exception as e:
+            logging.error(f"Ошибка удаления старых видео: {e}")
+        
+        # Удаляем сообщения слайдера
+        for mid in set(msg_ids):
+            try:
+                await context.bot.delete_message(chat_id=chat_id, message_id=mid)
+            except Exception:
+                pass
+        
+        # Удаляем текущее видео
+        try:
+            await q.message.delete()
+        except Exception:
+            pass
+        
+        # Удаляем данные слайдера
+        try:
+            context.application.bot_data.get('video_sliders', {}).pop(generation_id, None)
+        except Exception:
+            pass
+        
+        await context.bot.send_message(chat_id=chat_id, text="Удалил предыдущие варианты. Начинаю новую генерацию…")
+        
+        # Запускаем новую генерацию
+        pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
+        music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+        reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+        twitter_sources = load_urls_json(DEFAULT_TWITTER_JSON, [])
+        
+        async def gen_one(idx: int, attempt: int):
+            def run_generation():
+                seed = int.from_bytes(os.urandom(4), 'big') ^ (idx + attempt * 8647)
+                return generate_meme_video(
+                    pinterest_urls, music_playlists, 
+                    pin_num=10000, audio_duration=10, 
+                    seed=seed, variant_group=idx % 5, 
+                    reddit_sources=reddit_sources, 
+                    twitter_sources=twitter_sources
+                )
+            return await asyncio.to_thread(run_generation)
+        
+        gens = []
+        count = len(item_ids)  # Генерируем столько же, сколько было
+        for i in range(count):
+            result = await gen_one(i, 0)
+            gens.append(result)
+        
+        # Проверка на дубликаты
+        def result_source(res):
+            return getattr(res, 'source_url', None) if res else None
+        
+        for attempt in range(1, DUP_REGEN_RETRIES + 1):
+            seen = set()
+            dup_idx = []
+            for i, res in enumerate(gens):
+                if isinstance(res, Exception) or not res:
+                    dup_idx.append(i)
+                    continue
+                src = result_source(res)
+                if not src or src in seen:
+                    dup_idx.append(i)
+                else:
+                    seen.add(src)
+            if not dup_idx:
+                break
+            for i in dup_idx:
+                new_res = await gen_one(i, attempt)
+                gens[i] = new_res
+        
+        # Сохраняем результаты
+        new_results = []
+        for res in gens:
+            try:
+                if isinstance(res, Exception) or not res:
+                    continue
+                vp = getattr(res, 'video_path', None)
+                tp = getattr(res, 'thumbnail_path', None)
+                sp = getattr(res, 'source_url', None)
+                ap = getattr(res, 'audio_path', None)
+                if vp and os.path.exists(vp):
+                    it = add_video_history_item(vp, tp, sp, ap)
+                    new_results.append(it)
+            except Exception:
+                pass
+        
+        if not new_results:
+            await context.bot.send_message(chat_id=chat_id, text="Не удалось создать новые варианты")
+            return
+        
+        # Отправляем новый слайдер
+        new_gen_id = os.urandom(4).hex()
+        try:
+            await _send_video_slider(context, chat_id, new_results, new_gen_id)
+        except Exception as e:
+            logging.error(f"Ошибка отправки нового слайдера: {e}")
+            await context.bot.send_message(chat_id=chat_id, text=f"Ошибка отправки результатов: {e}")
+    
+    app.add_handler(CallbackQueryHandler(on_callback_slider_prev, pattern=r"^slider_prev:[A-Fa-f0-9]+"))
+    app.add_handler(CallbackQueryHandler(on_callback_slider_next, pattern=r"^slider_next:[A-Fa-f0-9]+"))
+    app.add_handler(CallbackQueryHandler(on_callback_slider_noop, pattern=r"^slider_noop"))
+    app.add_handler(CallbackQueryHandler(on_callback_slider_regen, pattern=r"^slider_regen:[A-Fa-f0-9]+"))
+    
     async def on_callback_scheduled_regenerate(update, context):
         q = update.callback_query
         await q.answer()
@@ -2023,44 +2415,43 @@ def main():
         if not new_results:
             await context.bot.send_message(chat_id=chat_id, text="Не удалось создать новые варианты")
             return
+        
         new_gen_id = os.urandom(4).hex()
-        msg_ids2 = []
+        
+        # Используем слайдер для отправки новых результатов
         try:
-            mhead = await context.bot.send_message(chat_id=chat_id, text="Готово. Новые варианты ниже:")
-            if mhead and getattr(mhead,'message_id',None):
-                msg_ids2.append(mhead.message_id)
-        except Exception:
-            pass
-        for it in new_results:
-            vid = it['id']
-            kb = None
-            if InlineKeyboardButton and InlineKeyboardMarkup:
-                kb = InlineKeyboardMarkup([
-                    [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
-                    [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
-                    [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
-                ])
+            msg_ids2 = await _send_video_slider(context, chat_id, new_results, new_gen_id)
+        except Exception as e:
+            logging.error(f"Ошибка отправки слайдера при повторной генерации: {e}")
+            # Fallback на старый метод
+            msg_ids2 = []
             try:
-                if it.get('video_path') and os.path.exists(it.get('video_path')):
-                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
-                    mv = await context.bot.send_video(chat_id=chat_id, video=open(it.get('video_path'),'rb'), caption=info_text, reply_markup=kb)
-                else:
-                    info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
-                    mv = await context.bot.send_message(chat_id=chat_id, text=info_text, reply_markup=kb)
-                if mv and getattr(mv,'message_id',None):
-                    msg_ids2.append(mv.message_id)
+                mhead = await context.bot.send_message(chat_id=chat_id, text="Готово. Новые варианты ниже:")
+                if mhead and getattr(mhead,'message_id',None):
+                    msg_ids2.append(mhead.message_id)
             except Exception:
                 pass
-        try:
-            if InlineKeyboardButton and InlineKeyboardMarkup:
-                regen_kb2 = InlineKeyboardMarkup([[InlineKeyboardButton("Сгенерировать заново", callback_data=f"schedregen:{new_gen_id}")]])
-            else:
-                regen_kb2 = None
-            mregen = await context.bot.send_message(chat_id=chat_id, text="Если снова не подходит – можно ещё раз", reply_markup=regen_kb2)
-            if mregen and getattr(mregen,'message_id',None):
-                msg_ids2.append(mregen.message_id)
-        except Exception:
-            pass
+            for it in new_results:
+                vid = it['id']
+                kb = None
+                if InlineKeyboardButton and InlineKeyboardMarkup:
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton(f"Опубликовать #{vid}", callback_data=f"publish:{vid}")],
+                        [InlineKeyboardButton(f"Выбрать платформы #{vid}", callback_data=f"choose:{vid}")],
+                        [InlineKeyboardButton(f"Сменить трек #{vid}", callback_data=f"changeaudio:{vid}")],
+                    ])
+                try:
+                    if it.get('video_path') and os.path.exists(it.get('video_path')):
+                        info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
+                        mv = await context.bot.send_video(chat_id=chat_id, video=open(it.get('video_path'),'rb'), caption=info_text, reply_markup=kb)
+                    else:
+                        info_text = f"Кандидат #{vid}\n{_format_video_info_from_history(it)}"
+                        mv = await context.bot.send_message(chat_id=chat_id, text=info_text, reply_markup=kb)
+                    if mv and getattr(mv,'message_id',None):
+                        msg_ids2.append(mv.message_id)
+                except Exception:
+                    pass
+        
         try:
             store2 = context.application.bot_data.get('scheduled_generations')
             if not isinstance(store2, dict):
