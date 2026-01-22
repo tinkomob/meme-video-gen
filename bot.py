@@ -692,11 +692,7 @@ async def cmd_deploy(update, context):
 
     links = await asyncio.to_thread(run_deploy)
 
-    text_lines = ["Готово:"]
-    for k, v in (links or {}).items():
-        text_lines.append(f"- {k}: {v or '—'}")
-
-    await update.message.reply_text("\n".join(text_lines))
+    await update.message.reply_text("✅ Готово, видео успешно загружено")
 
 
 def delete_generation_item_by_id(item_id: str) -> bool:
@@ -778,10 +774,7 @@ async def on_callback_publish(update, context):
                 it["deployment_links"] = links
                 break
         save_video_history(hist)
-    lines = ["Готово:"]
-    for k, v in (links or {}).items():
-        lines.append(f"- {k}: {v or '—'}")
-    await q.message.reply_text("\n".join(lines))
+    await q.message.reply_text("✅ Готово, видео успешно загружено")
 
 
 def _get_selected_socials_store(context):
@@ -912,10 +905,7 @@ async def on_callback_publish_selected(update, context):
                 it["deployment_links"] = links
                 break
         save_video_history(hist)
-    lines = ["Готово:"]
-    for k, v in (links or {}).items():
-        lines.append(f"- {k}: {v or '—'}")
-    await q.message.reply_text("\n".join(lines))
+    await q.message.reply_text("✅ Готово, видео успешно загружено")
 
 
 async def on_callback_publish_all(update, context):
@@ -965,10 +955,7 @@ async def on_callback_publish_all(update, context):
                 it["deployment_links"] = links
                 break
         save_video_history(hist)
-    lines = ["Готово:"]
-    for k, v in (links or {}).items():
-        lines.append(f"- {k}: {v or '—'}")
-    await q.message.reply_text("\n".join(lines))
+    await q.message.reply_text("✅ Готово, видео успешно загружено")
 
 
 async def on_callback_cancel_choose(update, context):

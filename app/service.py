@@ -516,7 +516,6 @@ def deploy_to_socials(
                             msg_id = insta.get('message_id', '')
                             chat_num = abs(int(POSTS_CHATID)) if POSTS_CHATID else 'unknown'
                             insta_link = f"https://t.me/c/{chat_num}/{msg_id}"
-                            notify("✅ Telegram Post: загружено")
                 else:
                     notify("❌ Telegram Post: загрузка не удалась")
             except Exception:
