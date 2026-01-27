@@ -16,11 +16,14 @@ _LOG_SUPPRESS_WINDOW = 15
 _EMPTY_RESP_STATE = {"last": 0.0, "suppressed": 0}
 from .utils import load_history, add_url_to_history
 from .pinterest_monitor import should_use_pinterest_fallback, get_pinterest_status
-from .config import DEFAULT_PINS_DIR
+from .config import DEFAULT_PINS_DIR, SERPAPI_KEY
 
 # Twitter caching and rate limiting (1 request per 15 minutes on Free plan)
 _TWITTER_CACHE_FILE = 'twitter_cache.json'
 _TWITTER_RATE_WINDOW_SECONDS = 15 * 60
+
+# Google Images via SerpAPI
+_GOOGLE_KEYWORDS_FILE = 'google_keywords.json'
 
 def _now_ts() -> float:
     return time.time()
@@ -103,6 +106,187 @@ def _twitter_rate_mark_window(reset_epoch: float | None = None):
     else:
         data['next_allowed_ts'] = now + _TWITTER_RATE_WINDOW_SECONDS
     _save_twitter_cache(data)
+
+def _load_google_keywords() -> list[str]:
+    """Load keywords from google_keywords.json"""
+    try:
+        import json
+        if os.path.isfile(_GOOGLE_KEYWORDS_FILE):
+            with open(_GOOGLE_KEYWORDS_FILE, 'r', encoding='utf-8') as f:
+                keywords = json.load(f)
+                if isinstance(keywords, list) and keywords:
+                    return keywords
+    except Exception as e:
+        print(f"Google: Error loading keywords: {e}", flush=True)
+    # Fallback keywords
+    return [
+        "funny cat memes", "funny dog memes", "programming memes",
+        "dank memes", "cursed images", "wholesome memes"
+    ]
+
+def scrape_one_from_google_images(output_dir: str = 'pins') -> tuple[str | None, str | None]:
+    """
+    Scrape one image from Google Images using SerpAPI.
+    Returns (image_path, source_url) or (None, None) on failure.
+    Uses google_keywords.json for search terms.
+    """
+    if not SERPAPI_KEY:
+        print("Google: SERPAPI_KEY not configured", flush=True)
+        return None, None
+    
+    print("Google: Starting Google Images scraping...", flush=True)
+    
+    try:
+        # Load keywords
+        keywords = _load_google_keywords()
+        print(f"Google: Loaded {len(keywords)} keywords", flush=True)
+        
+        # Load history to avoid duplicates
+        hist = load_history()
+        used_urls = set(hist.get('urls', []))
+        
+        # Try multiple random keywords if needed
+        random.shuffle(keywords)
+        max_keyword_attempts = min(5, len(keywords))
+        
+        for keyword_idx in range(max_keyword_attempts):
+            query = keywords[keyword_idx]
+            print(f"Google: Trying keyword {keyword_idx + 1}/{max_keyword_attempts}: '{query}'", flush=True)
+            
+            try:
+                # Call SerpAPI Google Images Light endpoint
+                params = {
+                    'engine': 'google_images_light',
+                    'q': query,
+                    'api_key': SERPAPI_KEY,
+                    'hl': 'en',
+                    'gl': 'us',
+                    'device': 'desktop'
+                }
+                
+                print(f"Google: Requesting SerpAPI for query: '{query}'", flush=True)
+                response = requests.get('https://serpapi.com/search.json', params=params, timeout=30)
+                response.raise_for_status()
+                
+                data = response.json()
+                
+                # Check for API errors
+                if 'error' in data:
+                    print(f"Google: SerpAPI error: {data['error']}", flush=True)
+                    continue
+                
+                # Extract image results
+                images_results = data.get('images_results', [])
+                
+                if not images_results:
+                    print(f"Google: No images found for query: '{query}'", flush=True)
+                    continue
+                
+                print(f"Google: Found {len(images_results)} images for query: '{query}'", flush=True)
+                
+                # Shuffle results to get variety
+                random.shuffle(images_results)
+                
+                # Try to download an image
+                for img_idx, img_data in enumerate(images_results[:20]):  # Try first 20 images
+                    # Get the original image URL
+                    img_url = img_data.get('original')
+                    thumbnail = img_data.get('thumbnail')
+                    source_link = img_data.get('link', '')
+                    
+                    if not img_url:
+                        continue
+                    
+                    # Skip if already used
+                    if img_url in used_urls:
+                        print(f"Google: Image {img_idx + 1} already used, skipping", flush=True)
+                        continue
+                    
+                    print(f"Google: Attempting to download image {img_idx + 1} from: {img_url[:80]}...", flush=True)
+                    
+                    try:
+                        # Download the image
+                        Path(output_dir).mkdir(parents=True, exist_ok=True)
+                        headers = {
+                            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+                            'Referer': 'https://www.google.com/'
+                        }
+                        
+                        img_response = requests.get(img_url, headers=headers, timeout=20, stream=True)
+                        img_response.raise_for_status()
+                        
+                        # Determine extension from content-type or URL
+                        ext = '.jpg'
+                        content_type = img_response.headers.get('content-type', '').lower()
+                        url_lower = img_url.lower()
+                        
+                        if 'png' in content_type or '.png' in url_lower:
+                            ext = '.png'
+                        elif 'gif' in content_type or '.gif' in url_lower:
+                            ext = '.gif'
+                        elif 'webp' in content_type or '.webp' in url_lower:
+                            ext = '.webp'
+                        elif 'jpeg' in content_type or '.jpeg' in url_lower:
+                            ext = '.jpg'
+                        
+                        # Create filename
+                        safe_query = re.sub(r'[^a-zA-Z0-9]+', '_', query)[:30]
+                        filename = f'google_{safe_query}_{abs(hash(img_url)) % 10**8}{ext}'
+                        filepath = os.path.join(output_dir, filename)
+                        
+                        # Download with size limit
+                        downloaded_size = 0
+                        max_size = 50 * 1024 * 1024  # 50MB limit
+                        
+                        with open(filepath, 'wb') as f:
+                            for chunk in img_response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    f.write(chunk)
+                                    downloaded_size += len(chunk)
+                                    if downloaded_size > max_size:
+                                        print(f"Google: Image too large (>{max_size} bytes), stopping", flush=True)
+                                        break
+                        
+                        # Check if file is valid
+                        if os.path.isfile(filepath) and os.path.getsize(filepath) > 1000:
+                            print(f"Google: Successfully downloaded: {filepath} ({downloaded_size} bytes)", flush=True)
+                            add_url_to_history(img_url)
+                            return filepath, source_link
+                        else:
+                            print(f"Google: Downloaded file too small or invalid", flush=True)
+                            try:
+                                if os.path.exists(filepath):
+                                    os.remove(filepath)
+                            except:
+                                pass
+                    
+                    except requests.exceptions.Timeout:
+                        print(f"Google: Download timeout for image {img_idx + 1}", flush=True)
+                        continue
+                    except requests.exceptions.RequestException as e:
+                        print(f"Google: Download failed for image {img_idx + 1}: {e}", flush=True)
+                        continue
+                    except Exception as e:
+                        print(f"Google: Error downloading image {img_idx + 1}: {e}", flush=True)
+                        continue
+                
+                print(f"Google: No valid images could be downloaded for query: '{query}'", flush=True)
+                
+            except requests.exceptions.RequestException as e:
+                print(f"Google: SerpAPI request failed for query '{query}': {e}", flush=True)
+                continue
+            except Exception as e:
+                print(f"Google: Error processing query '{query}': {e}", flush=True)
+                continue
+        
+        print(f"Google: Failed to download any image after {max_keyword_attempts} keyword attempts", flush=True)
+        return None, None
+        
+    except Exception as e:
+        print(f"Google: Fatal error in scrape_one_from_google_images: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        return None, None
 
 def log_pinterest_debug(message: str, level: str = "INFO"):
     """Enhanced logging for Pinterest debugging"""
