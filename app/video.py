@@ -18,7 +18,10 @@ except AttributeError:
 # Disable PIL deprecation warnings
 os.environ['PILLOW_IGNORE_DEPRECATION'] = '1'
 
-from moviepy.editor import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, TextClip, vfx, AudioFileClip, concatenate_videoclips, concatenate_audioclips
+from moviepy.editor import (
+    VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, TextClip, vfx, 
+    AudioFileClip, concatenate_videoclips, concatenate_audioclips
+)
 
 def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_path=None, song_title=None, seed=None, variant_group=None):
     print(f"convert_to_tiktok_format called with input_path: {input_path}, output_path: {output_path}", flush=True)
@@ -66,7 +69,6 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
                 if clip.duration < random_duration:
                     # Loop the GIF to reach desired duration
                     loops_needed = int(random_duration / clip.duration) + 1
-                    from moviepy.editor import concatenate_videoclips
                     concat_clip = concatenate_videoclips([base_clip] * loops_needed)
                     clip = concat_clip.subclip(0, random_duration)
                 else:
