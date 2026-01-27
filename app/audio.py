@@ -7,10 +7,11 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
     opts: dict[str, Any] = {
         'quiet': True,
         'no_warnings': True,
-        'retries': 3,
-        'fragment_retries': 3,
-        'extractor_retries': 2,
+        'retries': 5,
+        'fragment_retries': 5,
+        'extractor_retries': 3,
         'retry_sleep': '3,6,10',
+        'socket_timeout': 60,
     }
     if base_opts:
         opts.update(base_opts)
@@ -51,7 +52,14 @@ def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]
         'Sec-Fetch-Dest': 'document',
         'Upgrade-Insecure-Requests': '1',
         'Referer': 'https://www.youtube.com/',
+        'Connection': 'keep-alive',
     }
+    
+    # Network optimization
+    opts['socket_timeout'] = 60
+    opts['connection_timeout'] = 60
+    opts['source_address'] = '0.0.0.0'  # Bind to all available interfaces
+    opts['verbose'] = False
     
     opts['extractor_args'] = {
         'youtube': {
@@ -142,7 +150,9 @@ def download_random_song_from_playlist_fallback(playlist_url: str, output_dir: s
             'fragment_retries': 5,
             'extractor_retries': 3,
             'retry_sleep': '3,6,10',
-            'format': 'bestaudio/best',
+            'socket_timeout': 60,
+            'connection_timeout': 60,
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
             'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -209,7 +219,7 @@ def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'aud
         video_url = video_id if video_id.startswith('http') else f'https://www.youtube.com/watch?v={video_id}'
         print(f"Selected video: {video_url}", flush=True)
         ydl_opts = _build_ytdlp_opts({
-            'format': 'bestaudio/best',
+            'format': 'bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best',
             'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
             'postprocessors': [{
                 'key': 'FFmpegExtractAudio',
@@ -260,6 +270,8 @@ def download_random_song_from_playlist(playlist_url: str, output_dir: str = 'aud
                 raise RuntimeError(f"Ошибка при загрузке аудио (даже с fallback): {retry_error}") from retry_error
         elif 'HTTP Error 403' in error_detail:
             error_msg = "Ошибка доступа к YouTube (403). Возможно, нужны cookies или YouTube заблокировал запрос."
+        elif 'Read timed out' in error_detail or 'Connection' in error_detail:
+            error_msg = f"Сетевая ошибка при загрузке: {error_detail[:100]}. Попробуйте позже."
         elif 'Video unavailable' in error_detail or 'Private video' in error_detail:
             error_msg = "Видео недоступно или приватное"
         elif 'Sign in to confirm' in error_detail:

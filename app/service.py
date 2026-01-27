@@ -262,6 +262,7 @@ def generate_meme_video(
     audio_title = None
     chosen_music = random.choice(music_playlists) if music_playlists else None
     print(f"Selected music playlist: {chosen_music}", flush=True)
+    notify(f"🎵 Плейлист: {chosen_music}")
     
     cookies_path = os.getenv('YT_COOKIES_FILE') or 'youtube_cookies.txt'
     try:
@@ -273,7 +274,7 @@ def generate_meme_video(
         notify("YouTube может заблокировать загрузку. Загрузите cookies через /uploadytcookies")
     
     audio_attempts = 0
-    max_audio_attempts = 3
+    max_audio_attempts = 4
     audio_success = False
     last_audio_error = None
     
@@ -325,11 +326,21 @@ def generate_meme_video(
                         notify(f"⚠️ Ошибка 403 даже с cookies (попытка {audio_attempts}/{max_audio_attempts})")
                         if audio_attempts < max_audio_attempts:
                             import time
-                            time.sleep(3)
+                            wait_time = 5 * (2 ** (audio_attempts - 1))  # Экспоненциальная задержка: 5, 10, 20 сек
+                            time.sleep(wait_time)
+                elif 'read timed out' in error_str or 'connection' in error_str:
+                    # Сетевые ошибки - пробуем с большей задержкой
+                    if audio_attempts < max_audio_attempts:
+                        notify(f"⚠️ Сетевая ошибка: {e}")
+                        import time
+                        wait_time = 8 * audio_attempts  # 8, 16, 24 сек
+                        notify(f"⏳ Ожидание {wait_time} сек перед следующей попыткой…")
+                        time.sleep(wait_time)
                 elif audio_attempts < max_audio_attempts:
                     notify(f"⚠️ Ошибка: {e}")
                     import time
-                    time.sleep(2)
+                    wait_time = 3 * audio_attempts
+                    time.sleep(wait_time)
         
         if not audio_success:
             notify(f"❌ Не удалось загрузить аудио после {max_audio_attempts} попыток")
