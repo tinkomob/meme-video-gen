@@ -349,7 +349,7 @@ def generate_meme_video(
         set_phase('video_convert')
         notify("🎬 Конвертирую видео в формат TikTok…")
         print(f"Starting video conversion with downloaded_path: {downloaded_path}, output_path: {output_path}", flush=True)
-        result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path, seed=seed, variant_group=variant_group)
+        result_path = convert_to_tiktok_format(downloaded_path, output_path, is_youtube=False, audio_path=audio_clip_path, song_title=audio_title, seed=seed, variant_group=variant_group)
         print(f"Video conversion result: {result_path}", flush=True)
         if not result_path or not os.path.exists(result_path):
             print("Video conversion failed", flush=True)
@@ -807,6 +807,7 @@ def process_uploaded_video_with_audio(
             output_path, 
             is_youtube=False, 
             audio_path=audio_clip_path,
+            song_title=audio_title,
             seed=None,
             variant_group=None
         )

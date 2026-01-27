@@ -178,6 +178,14 @@ HELP_TEXT = (
     "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), Twitter (twitter_urls.json), музыка (music_playlists.json)\n"
     "  После генерации доступны кнопки: Опубликовать, Выбрать платформы, Сменить трек, Сгенерировать заново\n"
     "\n"
+    "🤖 ИИ ИДЕИ ДЛЯ ВИДЕО:\n"
+    "/ai — сгенерировать креативную идею для короткого видео на основе музыки\n"
+    "  Форматы:\n"
+    "  • /ai — случайный трек из плейлистов\n"
+    "  • /ai <название трека> — поиск трека по названию\n"
+    "  • Загрузите аудио (MP3/WAV) → кнопка 'Сгенерировать идею'\n"
+    "  ИИ проанализирует музыку и предложит одно креативное предложение для 8-сек видео без текста\n"
+    "\n"
     "📤 ЗАГРУЗКА СВОЕГО ВИДЕО:\n"
     "1. Отправьте видео в чат\n"
     "2. Выберите способ добавления аудио:\n"
@@ -570,6 +578,142 @@ async def cmd_start(update, context):
 
 async def cmd_help(update, context):
     await update.message.reply_text(HELP_TEXT)
+
+
+async def cmd_ai(update, context):
+    """Генерация идеи для видео на основе музыки с помощью ИИ"""
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
+    
+    # Проверяем API ключ
+    from app.config import GEMINI_API_KEY
+    if not GEMINI_API_KEY:
+        await update.message.reply_text(
+            "❌ GEMINI_API_KEY не настроен в .env файле\n\n"
+            "Получите API ключ на https://ai.google.dev/ и добавьте в .env:\n"
+            "GEMINI_API_KEY=your_key_here"
+        )
+        return
+    
+    args = context.args or []
+    search_query = " ".join(args).strip() if args else None
+    
+    music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+    if not music_playlists:
+        await update.message.reply_text("❌ Нет доступных плейлистов музыки")
+        return
+    
+    loop = asyncio.get_running_loop()
+    
+    if search_query:
+        # Ищем трек по названию
+        await update.message.reply_text(f"🔍 Ищу трек '{search_query}' в плейлистах...")
+        
+        def search_tracks():
+            from app.audio import search_tracks_in_playlists
+            return search_tracks_in_playlists(music_playlists, search_query, max_results=5)
+        
+        try:
+            results = await asyncio.to_thread(search_tracks)
+            
+            if not results:
+                await update.message.reply_text(
+                    f"❌ Трек '{search_query}' не найден в плейлистах\n\n"
+                    "Попробуйте:\n"
+                    "• /ai — для случайного трека\n"
+                    "• /ai <другое название> — для поиска другого трека"
+                )
+                return
+            
+            # Берём первый результат
+            video_id, title, uploader = results[0]
+            
+            await update.message.reply_text(
+                f"✅ Найден трек: {uploader} - {title}\n\n"
+                "⏳ Скачиваю и анализирую..."
+            )
+            
+            # Скачиваем трек
+            def download_track():
+                from app.audio import download_specific_track
+                import tempfile
+                audio_dir = tempfile.mkdtemp(prefix='audio_ai_')
+                return download_specific_track(video_id, output_dir=audio_dir)
+            
+            audio_path = await asyncio.to_thread(download_track)
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка при поиске трека: {e}")
+            return
+    else:
+        # Случайный трек
+        await update.message.reply_text("🎲 Выбираю случайный трек из плейлистов...")
+        
+        def download_random():
+            from app.audio import download_random_song_from_playlist
+            import tempfile
+            import random
+            playlist_url = random.choice(music_playlists)
+            audio_dir = tempfile.mkdtemp(prefix='audio_ai_')
+            return download_random_song_from_playlist(playlist_url, output_dir=audio_dir)
+        
+        try:
+            audio_path = await asyncio.to_thread(download_random)
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка при загрузке трека: {e}")
+            return
+    
+    # Получаем название трека
+    def get_title():
+        from app.audio import get_song_title
+        return get_song_title(audio_path)
+    
+    try:
+        track_title = await asyncio.to_thread(get_title)
+    except Exception:
+        track_title = "Неизвестный трек"
+    
+    await update.message.reply_text(
+        f"🎵 Трек: {track_title}\n\n"
+        "🤖 Генерирую креативную идею для видео с помощью ИИ..."
+    )
+    
+    # Генерируем идею
+    def generate_idea():
+        from app.ai import generate_video_idea_from_track
+        # Парсим название трека
+        parts = track_title.split(" - ", 1)
+        artist = parts[0].strip() if len(parts) > 1 else None
+        title = parts[1].strip() if len(parts) > 1 else track_title
+        return generate_video_idea_from_track(title, artist, track_duration=8)
+    
+    try:
+        idea = await asyncio.to_thread(generate_idea)
+        
+        if idea:
+            await update.message.reply_text(
+                f"✨ ИДЕЯ ДЛЯ ВИДЕО (8 сек):\n\n"
+                f"💡 {idea}\n\n"
+                f"🎵 Трек: {track_title}\n\n"
+                "Эта идея сгенерирована ИИ на основе анализа музыки!"
+            )
+        else:
+            await update.message.reply_text("❌ Не удалось сгенерировать идею. Проверьте GEMINI_API_KEY")
+            
+    except Exception as e:
+        await update.message.reply_text(f"❌ Ошибка при генерации идеи: {e}")
+    
+    # Очищаем временный файл
+    try:
+        if audio_path and os.path.exists(audio_path):
+            audio_dir = os.path.dirname(audio_path)
+            import shutil
+            shutil.rmtree(audio_dir, ignore_errors=True)
+    except Exception:
+        pass
+
 
 async def cmd_status(update, context):
     try:
@@ -2077,6 +2221,7 @@ def main():
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help", cmd_help))
+    app.add_handler(CommandHandler("ai", cmd_ai))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("generate", cmd_generate))
     app.add_handler(CommandHandler("deploy", cmd_deploy))
@@ -2554,6 +2699,54 @@ def main():
         
         # Проверяем, ждем ли мы аудио для видео
         video_path = context.chat_data.get("uploaded_video_path")
+        awaiting_audio = context.chat_data.get("awaiting_audio_upload", False)
+        
+        if not video_path and not awaiting_audio:
+            # Аудио загружено само по себе - предлагаем сгенерировать идею
+            try:
+                # Скачиваем аудио
+                file = await context.bot.get_file(audio.file_id)
+                
+                import uuid
+                import tempfile
+                audio_ext = "mp3"
+                if hasattr(audio, 'mime_type'):
+                    if 'wav' in audio.mime_type:
+                        audio_ext = "wav"
+                    elif 'ogg' in audio.mime_type:
+                        audio_ext = "ogg"
+                
+                audio_filename = f"user_audio_{uuid.uuid4().hex[:8]}.{audio_ext}"
+                audio_path = os.path.join(tempfile.gettempdir(), audio_filename)
+                
+                await update.message.reply_text("📥 Загружаю аудио...")
+                await file.download_to_drive(audio_path)
+                
+                # Сохраняем путь в контексте
+                context.chat_data["uploaded_audio_path"] = audio_path
+                
+                # Предлагаем кнопку для генерации идеи
+                if InlineKeyboardButton and InlineKeyboardMarkup:
+                    kb = InlineKeyboardMarkup([
+                        [InlineKeyboardButton("🤖 Сгенерировать идею для трека", callback_data="generate_audio_idea")]
+                    ])
+                    await update.message.reply_text(
+                        "✅ Аудио загружено!\n\n"
+                        "Нажмите кнопку, чтобы ИИ придумал креативную идею для короткого видео (8 сек) под этот трек:",
+                        reply_markup=kb
+                    )
+                else:
+                    await update.message.reply_text(
+                        "✅ Аудио загружено!\n\n"
+                        "Отправьте команду /generateideafromaudio чтобы сгенерировать идею"
+                    )
+                return
+                
+            except Exception as e:
+                logging.error(f"Ошибка при загрузке аудио: {e}", exc_info=True)
+                await update.message.reply_text(f"❌ Ошибка при загрузке аудио: {e}")
+                return
+        
         if not video_path:
             await update.message.reply_text("⚠️ Сначала загрузите видео")
             return
@@ -2878,6 +3071,61 @@ def main():
     app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, on_audio_received))
     app.add_handler(CallbackQueryHandler(on_callback_audio_choice, pattern=r'^audio:'))
     app.add_handler(CallbackQueryHandler(on_callback_select_track, pattern=r'^selecttrack:'))
+    
+    async def on_callback_generate_audio_idea(update, context):
+        """Обработчик кнопки 'Сгенерировать идею для трека'"""
+        q = update.callback_query
+        await q.answer()
+        
+        audio_path = context.chat_data.get("uploaded_audio_path")
+        if not audio_path or not os.path.exists(audio_path):
+            await q.message.reply_text("⚠️ Аудио файл не найден. Загрузите аудио заново.")
+            return
+        
+        # Проверяем API ключ
+        from app.config import GEMINI_API_KEY
+        if not GEMINI_API_KEY:
+            await q.message.reply_text(
+                "❌ GEMINI_API_KEY не настроен в .env файле\n\n"
+                "Получите API ключ на https://ai.google.dev/ и добавьте в .env:\n"
+                "GEMINI_API_KEY=your_key_here"
+            )
+            return
+        
+        await q.message.reply_text("🤖 Анализирую аудио и генерирую креативную идею для видео...")
+        
+        loop = asyncio.get_running_loop()
+        
+        # Генерируем идею из аудио файла
+        def generate_idea():
+            from app.ai import generate_video_idea_from_audio_file
+            return generate_video_idea_from_audio_file(audio_path, track_duration=8)
+        
+        try:
+            idea = await asyncio.to_thread(generate_idea)
+            
+            if idea:
+                await q.message.reply_text(
+                    f"✨ ИДЕЯ ДЛЯ ВИДЕО (8 сек):\n\n"
+                    f"💡 {idea}\n\n"
+                    "Эта идея сгенерирована ИИ на основе анализа вашего аудио!"
+                )
+            else:
+                await q.message.reply_text("❌ Не удалось сгенерировать идею. Проверьте GEMINI_API_KEY")
+                
+        except Exception as e:
+            logging.error(f"Ошибка генерации идеи: {e}", exc_info=True)
+            await q.message.reply_text(f"❌ Ошибка при генерации идеи: {e}")
+        
+        # Очищаем временный файл
+        try:
+            if audio_path and os.path.exists(audio_path):
+                os.remove(audio_path)
+                context.chat_data.pop("uploaded_audio_path", None)
+        except Exception:
+            pass
+    
+    app.add_handler(CallbackQueryHandler(on_callback_generate_audio_idea, pattern=r'^generate_audio_idea$'))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
     
     app.add_handler(MessageHandler(filters.Document.ALL, on_document_received))

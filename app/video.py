@@ -20,7 +20,7 @@ os.environ['PILLOW_IGNORE_DEPRECATION'] = '1'
 
 from moviepy.editor import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, TextClip, vfx, AudioFileClip
 
-def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_path=None, seed=None, variant_group=None):
+def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_path=None, song_title=None, seed=None, variant_group=None):
     print(f"convert_to_tiktok_format called with input_path: {input_path}, output_path: {output_path}", flush=True)
     if not os.path.exists(input_path):
         print(f"Input file does not exist: {input_path}", flush=True)
@@ -48,6 +48,7 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
     final_clip = None
     audio_clip = None
     clip_resized = None
+    overlay_clips = None
     try:
         random_duration = random.uniform(7, 12)
         ext = os.path.splitext(input_path)[1].lower()
@@ -163,6 +164,7 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
             else:
                 print(f"No audio path provided", flush=True)
             print("Video will be created WITHOUT audio", flush=True)
+        
         # Настройки кодека подобраны так, чтобы результат подходил
         # как для TikTok, так и для Instagram (H.264 + AAC в MP4).
         final_clip.write_videofile(
@@ -181,6 +183,8 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
     finally:
         # Clean up all video objects to free memory
         objs = [final_clip, audio_clip, background, clip_resized, clip, concat_clip, base_clip]
+        if overlay_clips:
+            objs.extend(overlay_clips if isinstance(overlay_clips, list) else [overlay_clips])
         for obj in objs:
             try:
                 if obj:

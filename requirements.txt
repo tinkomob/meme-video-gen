@@ -21,3 +21,4 @@ pillow>=9.5.0
 brotli>=1.0.0
 selenium>=4.14
 psutil>=5.9.0
+google-genai>=1.60.0
