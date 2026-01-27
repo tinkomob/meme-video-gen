@@ -372,3 +372,151 @@ def get_song_title(audio_path: str):
     except Exception:
         name = os.path.splitext(os.path.basename(audio_path))[0]
         return f"Song: {name}"
+
+def search_tracks_in_playlists(music_playlists: list[str], search_query: str, max_results: int = 10):
+    """
+    Поиск треков в плейлистах YouTube по запросу
+    Возвращает список кортежей (video_id, title, author)
+    """
+    print(f"Searching for '{search_query}' in {len(music_playlists)} playlists", flush=True)
+    import yt_dlp
+    
+    results = []
+    search_lower = search_query.lower()
+    
+    for playlist_url in music_playlists:
+        try:
+            list_opts = _build_ytdlp_opts({
+                'skip_download': True,
+                'extract_flat': 'in_playlist',
+                'ignoreerrors': True,
+            })
+            
+            with yt_dlp.YoutubeDL(list_opts) as ydl:  # type: ignore[arg-type]
+                info = ydl.extract_info(playlist_url, download=False)
+            
+            entries = (info or {}).get('entries') or []
+            
+            for e in entries:
+                if not e:
+                    continue
+                
+                video_id = e.get('id') or e.get('url')
+                title = e.get('title', '')
+                uploader = e.get('uploader', '') or e.get('channel', '')
+                
+                if not video_id or not title:
+                    continue
+                
+                # Проверяем совпадение с запросом
+                if search_lower in title.lower() or (uploader and search_lower in uploader.lower()):
+                    results.append((video_id, title, uploader))
+                    
+                    if len(results) >= max_results:
+                        return results
+        
+        except Exception as e:
+            print(f"Error searching in playlist {playlist_url}: {e}", flush=True)
+            continue
+    
+    return results
+
+def download_specific_track(video_id: str, output_dir: str = 'audio', audio_format: str = 'mp3'):
+    """
+    Скачивает конкретный трек по video_id
+    Возвращает путь к скачанному аудио файлу
+    """
+    print(f"Downloading specific track: {video_id}", flush=True)
+    import yt_dlp
+    
+    try:
+        Path(output_dir).mkdir(parents=True, exist_ok=True)
+        
+        video_url = video_id if video_id.startswith('http') else f'https://www.youtube.com/watch?v={video_id}'
+        
+        ydl_opts = _build_ytdlp_opts({
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(output_dir, '%(id)s.%(ext)s'),
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': audio_format,
+                'preferredquality': '192',
+            }],
+        })
+        
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:  # type: ignore[arg-type]
+            result = ydl.download([video_url])
+            if result != 0:
+                raise RuntimeError(f"yt-dlp вернул код ошибки: {result}")
+        
+        # Извлекаем чистый video_id
+        clean_id = video_id.split('?')[0].split('/')[-1] if 'youtube.com' in video_id or 'youtu.be' in video_id else video_id
+        expected_path = os.path.join(output_dir, f"{clean_id}.{audio_format}")
+        
+        if os.path.exists(expected_path):
+            file_size = os.path.getsize(expected_path)
+            if file_size > 0:
+                print(f"Track downloaded successfully: {file_size} bytes", flush=True)
+                return expected_path
+        
+        # Поиск файла
+        for root, _, files in os.walk(output_dir):
+            for f in files:
+                if clean_id in f and f.lower().endswith(f'.{audio_format}'):
+                    found_path = os.path.join(root, f)
+                    if os.path.getsize(found_path) > 0:
+                        print(f"Found track file: {found_path}", flush=True)
+                        return found_path
+        
+        raise FileNotFoundError("Аудио-файл не был создан после загрузки")
+        
+    except Exception as e:
+        error_msg = f"Ошибка при загрузке трека: {str(e)}"
+        print(error_msg, flush=True)
+        raise RuntimeError(error_msg) from e
+
+def extract_audio_from_file(input_path: str, output_dir: str = 'audio', audio_format: str = 'mp3'):
+    """
+    Извлекает аудио из видео или конвертирует аудио файл в нужный формат
+    Возвращает путь к извлеченному аудио файлу
+    """
+    print(f"Extracting audio from: {input_path}", flush=True)
+    
+    if not os.path.exists(input_path):
+        raise FileNotFoundError(f"Файл не найден: {input_path}")
+    
+    Path(output_dir).mkdir(parents=True, exist_ok=True)
+    
+    import uuid
+    unique_id = str(uuid.uuid4())[:8]
+    output_path = os.path.join(output_dir, f"uploaded_audio_{unique_id}.{audio_format}")
+    
+    try:
+        from moviepy.editor import VideoFileClip, AudioFileClip
+        
+        # Пытаемся открыть как видео
+        try:
+            video_clip = VideoFileClip(input_path)
+            if video_clip.audio is None:
+                video_clip.close()
+                raise ValueError("Видео не содержит аудио дорожку")
+            
+            video_clip.audio.write_audiofile(output_path, write_logfile=False, logger=None)
+            video_clip.close()
+            
+        except Exception:
+            # Если не получилось как видео, пробуем как аудио
+            audio_clip = AudioFileClip(input_path)
+            audio_clip.write_audiofile(output_path, write_logfile=False, logger=None)
+            audio_clip.close()
+        
+        if not os.path.exists(output_path) or os.path.getsize(output_path) == 0:
+            raise RuntimeError("Не удалось извлечь аудио")
+        
+        print(f"Audio extracted to: {output_path}", flush=True)
+        return output_path
+        
+    except Exception as e:
+        error_msg = f"Ошибка при извлечении аудио: {str(e)}"
+        print(error_msg, flush=True)
+        raise RuntimeError(error_msg) from e

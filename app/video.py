@@ -20,46 +20,6 @@ os.environ['PILLOW_IGNORE_DEPRECATION'] = '1'
 
 from moviepy.editor import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, TextClip, vfx, AudioFileClip
 
-def apply_random_effects(clip, seed=None, variant_group=None):
-    if seed is not None:
-        random.seed(seed)
-    def _fx(name):
-        return getattr(vfx, name, None)
-    effects_bank = [
-        lambda c: c.fx(_fx('mirrorx')) if _fx('mirrorx') else c,
-        lambda c: c.fx(_fx('mirrory')) if _fx('mirrory') else c,
-        lambda c: c.fx(_fx('fadein'), random.uniform(0.2, 0.8)) if _fx('fadein') else c,
-        lambda c: c.fx(_fx('fadeout'), random.uniform(0.2, 0.8)) if _fx('fadeout') else c,
-        lambda c: c.fx(_fx('colorx'), random.uniform(0.7, 1.4)) if _fx('colorx') else c,
-        lambda c: c.fx(_fx('speedx'), random.uniform(0.95, 1.05)) if _fx('speedx') else c,
-        lambda c: c.fx(_fx('blackwhite')) if _fx('blackwhite') and random.random() < 0.35 else c,
-        lambda c: c.fx(_fx('margin'), left=random.randint(0,30), right=random.randint(0,30), top=random.randint(0,60), bottom=random.randint(0,60), color=(0,0,0)) if _fx('margin') else c,
-        lambda c: c.fx(_fx('crop'), x1=random.randint(0,15), y1=random.randint(0,30), x2=None, y2=None) if _fx('crop') else c,
-        lambda c: c.set_opacity(random.uniform(0.88, 1.0)),
-        lambda c: c.fx(_fx('time_symetrize')) if _fx('time_symetrize') and random.random() < 0.2 else c,
-    ]
-    variant_sets = [
-        [0,2,4,7],
-        [1,3,5,8],
-        [0,5,9],
-        [2,6,7,10],
-        [1,4,8,9],
-    ]
-    if variant_group is not None and 0 <= int(variant_group) < len(variant_sets):
-        pool_idx = variant_sets[int(variant_group)]
-    else:
-        pool_idx = list(range(len(effects_bank)))
-    pool = [effects_bank[i] for i in pool_idx]
-    k = random.randint(2, min(4, len(pool)))
-    chosen = random.sample(pool, k)
-    random.shuffle(chosen)
-    for fx_func in chosen:
-        try:
-            clip = fx_func(clip)
-        except Exception:
-            continue
-    return clip
-
 def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_path=None, seed=None, variant_group=None):
     print(f"convert_to_tiktok_format called with input_path: {input_path}, output_path: {output_path}", flush=True)
     if not os.path.exists(input_path):
@@ -161,7 +121,10 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
                         pass
         except Exception:
             clip_resized = clip.set_position('center')
-        clip_resized = apply_random_effects(clip_resized, seed=seed, variant_group=variant_group)
+        
+        # Эффекты отключены - используем клип как есть
+        # clip_resized = apply_random_effects(clip_resized, seed=seed, variant_group=variant_group)
+        
         clip_duration = getattr(clip_resized, 'duration', getattr(clip, 'duration', 10)) or 10
         background = ColorClip(size=tiktok_res, color=(0, 0, 0), duration=clip_duration)
         final_clip = CompositeVideoClip([background, clip_resized])

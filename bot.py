@@ -15,7 +15,7 @@ from io import BytesIO
 
 from dotenv import load_dotenv
 from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
-from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs, cleanup_old_generated_files, replace_audio_in_video
+from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs, cleanup_old_generated_files, replace_audio_in_video, process_uploaded_video_with_audio
 from app.logger import setup_error_logging
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
@@ -177,6 +177,16 @@ HELP_TEXT = (
     "/generate — генерация мемов. Форматы: /generate N (N видео), /generate <pin_num> <audio_duration> [count=M]. Примеры: /generate 3; /generate 80 12 count=2\n"
     "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), Twitter (twitter_urls.json), музыка (music_playlists.json)\n"
     "  После генерации доступны кнопки: Опубликовать, Выбрать платформы, Сменить трек, Сгенерировать заново\n"
+    "\n"
+    "📤 ЗАГРУЗКА СВОЕГО ВИДЕО:\n"
+    "1. Отправьте видео в чат\n"
+    "2. Выберите способ добавления аудио:\n"
+    "   • 🎲 Случайный трек из плейлистов\n"
+    "   • 📤 Загрузить свой аудио файл (MP3/WAV)\n"
+    "   • 🔍 Поиск трека в плейлистах\n"
+    "3. Бот обработает видео и добавит выбранный аудио\n"
+    "4. Доступны те же опции: публикация, смена трека\n"
+    "\n"
     "/deploy — опубликовать последнее видео (опционально: соцсети, приватность, dry)\n"
     "/dryrun — показать/изменить режим публикации (on/off)\n"
     "/checkfiles — проверить cookies.txt, youtube_cookies.txt, client_secrets.json и token.pickle\n"
@@ -2479,6 +2489,397 @@ def main():
             await update.message.reply_text("Используйте: /dryrun on|off")
 
     app.add_handler(CommandHandler("dryrun", cmd_dryrun))
+    
+    # Обработчики для загрузки видео и аудио
+    async def on_video_received(update, context):
+        """Обработчик загруженного видео от пользователя"""
+        try:
+            set_last_chat_id(update.effective_chat.id)
+        except Exception:
+            pass
+        
+        video = update.message.video
+        if not video:
+            return
+        
+        try:
+            # Скачиваем видео
+            file = await context.bot.get_file(video.file_id)
+            
+            import uuid
+            import tempfile
+            video_filename = f"user_video_{uuid.uuid4().hex[:8]}.mp4"
+            video_path = os.path.join(tempfile.gettempdir(), video_filename)
+            
+            await update.message.reply_text("📥 Загружаю видео...")
+            await file.download_to_drive(video_path)
+            
+            # Сохраняем путь к видео в контексте
+            context.chat_data["uploaded_video_path"] = video_path
+            
+            # Предлагаем выбор аудио
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎲 Случайный трек", callback_data="audio:random")],
+                    [InlineKeyboardButton("📤 Загрузить свой аудио", callback_data="audio:upload")],
+                    [InlineKeyboardButton("🔍 Поиск по плейлистам", callback_data="audio:search")],
+                ])
+                await update.message.reply_text(
+                    "✅ Видео загружено!\n\n"
+                    "Выберите способ добавления аудио:",
+                    reply_markup=kb
+                )
+            else:
+                await update.message.reply_text(
+                    "✅ Видео загружено!\n\n"
+                    "Отправьте команду:\n"
+                    "/processrandom - случайный трек\n"
+                    "/processsearch <запрос> - поиск трека"
+                )
+        
+        except Exception as e:
+            logging.error(f"Ошибка при обработке видео: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка при загрузке видео: {e}")
+    
+    async def on_audio_received(update, context):
+        """Обработчик загруженного аудио файла от пользователя"""
+        try:
+            set_last_chat_id(update.effective_chat.id)
+        except Exception:
+            pass
+        
+        audio = update.message.audio or update.message.voice or update.message.document
+        if not audio:
+            return
+        
+        # Проверяем, ждем ли мы аудио для видео
+        video_path = context.chat_data.get("uploaded_video_path")
+        if not video_path:
+            await update.message.reply_text("⚠️ Сначала загрузите видео")
+            return
+        
+        try:
+            # Скачиваем аудио
+            file = await context.bot.get_file(audio.file_id)
+            
+            import uuid
+            import tempfile
+            audio_ext = "mp3"
+            if hasattr(audio, 'mime_type'):
+                if 'wav' in audio.mime_type:
+                    audio_ext = "wav"
+                elif 'ogg' in audio.mime_type:
+                    audio_ext = "ogg"
+            
+            audio_filename = f"user_audio_{uuid.uuid4().hex[:8]}.{audio_ext}"
+            audio_path = os.path.join(tempfile.gettempdir(), audio_filename)
+            
+            await update.message.reply_text("📥 Загружаю аудио...")
+            await file.download_to_drive(audio_path)
+            
+            # Извлекаем аудио в правильный формат
+            from app.audio import extract_audio_from_file
+            
+            try:
+                processed_audio = extract_audio_from_file(audio_path, output_dir=tempfile.gettempdir())
+            except Exception as e:
+                await update.message.reply_text(f"❌ Ошибка обработки аудио: {e}")
+                return
+            
+            # Обрабатываем видео с этим аудио
+            await process_video_with_selected_audio(update, context, video_path, processed_audio)
+            
+            # Очищаем временные файлы
+            try:
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
+            except Exception:
+                pass
+        
+        except Exception as e:
+            logging.error(f"Ошибка при обработке аудио: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка при загрузке аудио: {e}")
+    
+    async def on_callback_audio_choice(update, context):
+        """Обработчик выбора способа добавления аудио"""
+        q = update.callback_query
+        await q.answer()
+        
+        data = q.data or ""
+        choice = data.split(":", 1)[1] if ":" in data else None
+        
+        if not choice:
+            return
+        
+        video_path = context.chat_data.get("uploaded_video_path")
+        if not video_path:
+            await q.message.reply_text("⚠️ Видео не найдено. Загрузите видео заново.")
+            return
+        
+        if choice == "random":
+            # Случайный трек из плейлистов
+            music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+            if not music_playlists:
+                await q.message.reply_text("❌ Нет доступных плейлистов")
+                return
+            
+            await process_video_with_selected_audio(update, context, video_path, None, music_playlists)
+        
+        elif choice == "upload":
+            # Ожидаем загрузку аудио файла
+            await q.message.reply_text(
+                "📤 Загрузите аудио файл (MP3, WAV) или голосовое сообщение\n"
+                "Я извлеку случайный фрагмент длиной 12 секунд"
+            )
+            context.chat_data["awaiting_audio_upload"] = True
+        
+        elif choice == "search":
+            # Ожидаем поисковый запрос
+            await q.message.reply_text(
+                "🔍 Введите запрос для поиска трека\n"
+                "Например: 'phonk' или 'lofi'\n\n"
+                "Я найду подходящие треки в плейлистах"
+            )
+            context.chat_data["awaiting_search_query"] = True
+    
+    async def on_text_message(update, context):
+        """Обработчик текстовых сообщений (для поиска треков)"""
+        # Проверяем, ждем ли мы поисковый запрос
+        if not context.chat_data.get("awaiting_search_query"):
+            return
+        
+        video_path = context.chat_data.get("uploaded_video_path")
+        if not video_path:
+            await update.message.reply_text("⚠️ Видео не найдено. Загрузите видео заново.")
+            context.chat_data["awaiting_search_query"] = False
+            return
+        
+        search_query = update.message.text.strip()
+        if not search_query:
+            await update.message.reply_text("⚠️ Введите непустой запрос")
+            return
+        
+        context.chat_data["awaiting_search_query"] = False
+        
+        # Ищем треки
+        music_playlists = load_urls_json(DEFAULT_PLAYLISTS_JSON, [])
+        if not music_playlists:
+            await update.message.reply_text("❌ Нет доступных плейлистов")
+            return
+        
+        await update.message.reply_text(f"🔍 Ищу '{search_query}' в плейлистах...")
+        
+        loop = asyncio.get_running_loop()
+        
+        def search_tracks():
+            from app.audio import search_tracks_in_playlists
+            return search_tracks_in_playlists(music_playlists, search_query, max_results=10)
+        
+        try:
+            results = await asyncio.to_thread(search_tracks)
+            
+            if not results:
+                await update.message.reply_text(f"❌ Треки по запросу '{search_query}' не найдены")
+                return
+            
+            # Сохраняем результаты и показываем кнопки
+            context.chat_data["search_results"] = results
+            
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                buttons = []
+                for idx, (video_id, title, uploader) in enumerate(results[:10]):
+                    display_text = f"{uploader} - {title}" if uploader else title
+                    if len(display_text) > 60:
+                        display_text = display_text[:57] + "..."
+                    buttons.append([InlineKeyboardButton(display_text, callback_data=f"selecttrack:{idx}")])
+                
+                kb = InlineKeyboardMarkup(buttons)
+                await update.message.reply_text(
+                    f"✅ Найдено треков: {len(results)}\n\n"
+                    "Выберите трек:",
+                    reply_markup=kb
+                )
+            else:
+                # Без кнопок - показываем список
+                lines = [f"✅ Найдено треков: {len(results)}\n"]
+                for idx, (video_id, title, uploader) in enumerate(results[:10]):
+                    lines.append(f"{idx+1}. {uploader} - {title}")
+                await update.message.reply_text("\n".join(lines))
+        
+        except Exception as e:
+            logging.error(f"Ошибка при поиске треков: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка поиска: {e}")
+    
+    async def on_callback_select_track(update, context):
+        """Обработчик выбора трека из результатов поиска"""
+        q = update.callback_query
+        await q.answer()
+        
+        data = q.data or ""
+        idx_str = data.split(":", 1)[1] if ":" in data else None
+        
+        if not idx_str:
+            return
+        
+        try:
+            idx = int(idx_str)
+        except Exception:
+            await q.message.reply_text("❌ Неверный индекс трека")
+            return
+        
+        results = context.chat_data.get("search_results", [])
+        if idx < 0 or idx >= len(results):
+            await q.message.reply_text("❌ Трек не найден")
+            return
+        
+        video_path = context.chat_data.get("uploaded_video_path")
+        if not video_path:
+            await q.message.reply_text("⚠️ Видео не найдено. Загрузите видео заново.")
+            return
+        
+        video_id, title, uploader = results[idx]
+        
+        await q.message.reply_text(f"⏬ Скачиваю трек: {uploader} - {title}")
+        
+        # Скачиваем выбранный трек
+        loop = asyncio.get_running_loop()
+        
+        def download_track():
+            from app.audio import download_specific_track
+            import tempfile
+            import datetime
+            unique_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
+            audio_dir = os.path.join(tempfile.gettempdir(), f"audio_{unique_id}")
+            return download_specific_track(video_id, output_dir=audio_dir)
+        
+        try:
+            audio_path = await asyncio.to_thread(download_track)
+            
+            # Обрабатываем видео с этим аудио
+            await process_video_with_selected_audio(update, context, video_path, audio_path)
+        
+        except Exception as e:
+            logging.error(f"Ошибка при скачивании трека: {e}", exc_info=True)
+            await q.message.reply_text(f"❌ Ошибка скачивания: {e}")
+    
+    async def process_video_with_selected_audio(update, context, video_path: str, audio_path: str | None = None, music_playlists: list[str] | None = None):
+        """Обрабатывает видео с выбранным аудио"""
+        chat_id = update.effective_chat.id
+        
+        # Убрано сообщение "Начинаю обработку видео..."
+        
+        loop = asyncio.get_running_loop()
+        
+        def run_processing():
+            def progress(msg: str):
+                try:
+                    asyncio.run_coroutine_threadsafe(
+                        context.bot.send_message(chat_id=chat_id, text=msg),
+                        loop
+                    ).result(timeout=5)
+                except Exception:
+                    pass
+            
+            # Определяем длительность видео, если не передан audio_duration
+            video_duration = 12  # значение по умолчанию
+            try:
+                from app.video import get_video_metadata
+                metadata = get_video_metadata(video_path)
+                if metadata and metadata.get('duration'):
+                    video_duration = int(metadata['duration'])
+            except Exception:
+                pass
+            
+            return process_uploaded_video_with_audio(
+                video_path=video_path,
+                audio_path=audio_path,
+                audio_duration=video_duration,
+                music_playlists=music_playlists,
+                progress=progress
+            )
+        
+        try:
+            result = await asyncio.to_thread(run_processing)
+            
+            if not result or not result.video_path:
+                await context.bot.send_message(chat_id=chat_id, text="❌ Не удалось обработать видео")
+                return
+            
+            # Добавляем в историю
+            new_item = add_video_history_item(
+                result.video_path,
+                result.thumbnail_path,
+                result.source_url,
+                None,
+                None
+            )
+            
+            caption = "✅ Видео обработано!\n"
+            if result.audio_title:
+                caption += f"🎵 Трек: {result.audio_title}\n"
+            
+            kb = None
+            if InlineKeyboardButton and InlineKeyboardMarkup:
+                kb = InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Опубликовать", callback_data=f"publish:{new_item['id']}")],
+                    [InlineKeyboardButton("Выбрать платформы", callback_data=f"choose:{new_item['id']}")],
+                    [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
+                ])
+            
+            # Проверяем что файл существует и не пустой
+            if not os.path.exists(result.video_path):
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ Файл видео не найден: {result.video_path}")
+                return
+            
+            file_size = os.path.getsize(result.video_path)
+            if file_size == 0:
+                await context.bot.send_message(chat_id=chat_id, text="❌ Файл видео пустой")
+                return
+            
+            logging.info(f"Отправка видео: {result.video_path} (размер: {file_size} байт)")
+            
+            try:
+                with open(result.video_path, "rb") as video_file:
+                    await context.bot.send_video(
+                        chat_id=chat_id,
+                        video=video_file,
+                        caption=caption,
+                        reply_markup=kb,
+                        read_timeout=60,
+                        write_timeout=60,
+                        connect_timeout=30
+                    )
+                logging.info("Видео успешно отправлено")
+            except Exception as send_error:
+                logging.error(f"Ошибка при отправке видео: {send_error}", exc_info=True)
+                await context.bot.send_message(
+                    chat_id=chat_id, 
+                    text=f"{caption}\n\n⚠️ Не удалось отправить видео напрямую: {send_error}\nФайл сохранён: {result.video_path}", 
+                    reply_markup=kb
+                )
+            
+            # Очищаем контекст
+            context.chat_data.pop("uploaded_video_path", None)
+            context.chat_data.pop("search_results", None)
+            context.chat_data.pop("awaiting_audio_upload", None)
+            
+            # Удаляем загруженное видео
+            try:
+                if os.path.exists(video_path):
+                    os.remove(video_path)
+            except Exception:
+                pass
+        
+        except Exception as e:
+            logging.error(f"Ошибка при обработке видео: {e}", exc_info=True)
+            await context.bot.send_message(chat_id=chat_id, text=f"❌ Ошибка: {e}")
+    
+    app.add_handler(MessageHandler(filters.VIDEO, on_video_received))
+    app.add_handler(MessageHandler(filters.AUDIO | filters.VOICE, on_audio_received))
+    app.add_handler(CallbackQueryHandler(on_callback_audio_choice, pattern=r'^audio:'))
+    app.add_handler(CallbackQueryHandler(on_callback_select_track, pattern=r'^selecttrack:'))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, on_text_message))
+    
     app.add_handler(MessageHandler(filters.Document.ALL, on_document_received))
 
     async def cmd_scheduleinfo(update, context):

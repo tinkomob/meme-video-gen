@@ -13,7 +13,7 @@ from .config import CLIENT_SECRETS, TOKEN_PICKLE, INSTAGRAM_USERNAME
 from .config import YT_COOKIES_FILE, MAX_PARALLEL_GENERATIONS, DUP_REGEN_RETRIES, TEMP_DIR_MAX_AGE_MINUTES
 from .utils import ensure_gitignore_entries, load_urls_json
 from .sources import scrape_one_from_pinterest
-from .audio import download_random_song_from_playlist, extract_random_audio_clip, get_song_title
+from .audio import download_random_song_from_playlist, extract_random_audio_clip, get_song_title, search_tracks_in_playlists, download_specific_track, extract_audio_from_file
 from .video import convert_to_tiktok_format, generate_thumbnail, get_video_metadata
 from .metadata import generate_metadata_from_source
 from .uploaders import youtube_authenticate, youtube_upload_short, instagram_upload, telegram_post_upload
@@ -719,3 +719,154 @@ def replace_audio_in_video(
                 shutil.rmtree(audio_dir, ignore_errors=True)
         except Exception:
             pass
+
+def process_uploaded_video_with_audio(
+    video_path: str,
+    audio_path: str | None = None,
+    audio_duration: int = 12,
+    music_playlists: list[str] | None = None,
+    progress: Optional[Callable[[str], None]] = None,
+):
+    """
+    Обрабатывает загруженное пользователем видео с добавлением аудио
+    audio_path - путь к конкретному аудио файлу (если пользователь загрузил свой)
+    music_playlists - список плейлистов для случайного выбора (если audio_path не указан)
+    """
+    notify = (lambda msg: progress(msg) if callable(progress) else None)
+    set_phase('init')
+    
+    # Единственное сообщение о начале процесса
+    notify("🎬 Генерирую видео...")
+    
+    try:
+        unique_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
+        audio_dir = f"{DEFAULT_AUDIO_DIR}_{unique_id}"
+        Path(audio_dir).mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        notify(f"❌ Ошибка: {e}")
+        logging.error(f"Ошибка создания временных директорий: {e}", exc_info=True)
+        return GenerationResult(None, None, None, None, None)
+    
+    if not os.path.exists(video_path):
+        notify("❌ Видео файл не найден")
+        return GenerationResult(None, None, None, None, None)
+    
+    # Определяем длительность видео
+    video_duration = audio_duration
+    try:
+        metadata = get_video_metadata(video_path)
+        if metadata and metadata.get('duration'):
+            video_duration = int(metadata['duration'])
+            # Не выводим сообщение о длительности
+    except Exception as e:
+        logging.warning(f"Не удалось определить длительность видео, использую {audio_duration}с: {e}")
+    
+    audio_clip_path = None
+    audio_title = None
+    
+    # Если аудио не указано, выбираем случайный трек из плейлистов
+    if not audio_path and music_playlists:
+        # Не выводим промежуточные сообщения
+        try:
+            from .audio import download_random_song_from_playlist
+            chosen_music = random.choice(music_playlists)
+            set_phase('audio_download')
+            audio_path = download_random_song_from_playlist(chosen_music, output_dir=audio_dir)
+        except Exception as e:
+            notify(f"⚠️ Ошибка загрузки аудио: {e}")
+            logging.error(f"Ошибка загрузки аудио из плейлиста: {e}", exc_info=True)
+    
+    # Извлекаем клип из аудио (длительность = длительности видео)
+    if audio_path and os.path.exists(audio_path):
+        try:
+            from .audio import extract_random_audio_clip, get_song_title
+            
+            audio_title = get_song_title(audio_path)
+            # Не выводим сообщение о вырезании
+            set_phase('audio_clip')
+            audio_clip_path = extract_random_audio_clip(audio_path, clip_duration=video_duration)
+            
+            if not audio_clip_path or not os.path.exists(audio_clip_path):
+                # Не выводим предупреждение
+                audio_clip_path = None
+        except Exception as e:
+            notify(f"⚠️ Ошибка при обработке аудио: {e}")
+            logging.error(f"Ошибка при извлечении аудио-клипа: {e}", exc_info=True)
+            audio_clip_path = None
+    
+    # Создаем видео с аудио
+    unique_suffix = datetime.datetime.now().strftime('%Y%m%d_%H%M%S_') + os.urandom(3).hex()
+    output_path = f"tiktok_video_{unique_suffix}.mp4"
+    
+    try:
+        set_phase('video_convert')
+        # Не выводим сообщение об обработке
+        
+        result_path = convert_to_tiktok_format(
+            video_path, 
+            output_path, 
+            is_youtube=False, 
+            audio_path=audio_clip_path,
+            seed=None,
+            variant_group=None
+        )
+        
+        if not result_path or not os.path.exists(result_path):
+            notify("❌ Ошибка при обработке видео")
+            return GenerationResult(None, None, None, None, audio_title)
+        
+        # Проверяем метаданные (но не выводим сообщения)
+        try:
+            metadata = get_video_metadata(result_path)
+            if metadata:
+                has_audio = metadata.get('has_audio', False)
+                
+                if audio_clip_path and not has_audio:
+                    notify("⚠️ ВНИМАНИЕ: Видео создано, но аудио НЕ ДОБАВЛЕНО")
+        except Exception as meta_err:
+            logging.warning(f"Не удалось проверить метаданные видео: {meta_err}")
+    
+    except Exception as e:
+        logging.error(f"Критическая ошибка при обработке видео: {e}", exc_info=True)
+        notify(f"❌ Критическая ошибка: {e}")
+        return GenerationResult(None, None, None, None, audio_title)
+    
+    # Создаем миниатюру
+    thumbnail_path = f"thumbnail_{unique_suffix}.jpg"
+    try:
+        set_phase('thumbnail')
+        # Не выводим сообщение о генерации миниатюры
+        thumb_result = generate_thumbnail(output_path, thumbnail_path)
+        
+        if not thumb_result or not os.path.exists(thumb_result):
+            notify("❌ Не удалось создать миниатюру")
+            return GenerationResult(None, None, None, None, audio_title)
+    except Exception as e:
+        logging.error(f"Критическая ошибка при создании миниатюры: {e}", exc_info=True)
+        notify(f"❌ Критическая ошибка: {e}")
+        return GenerationResult(None, None, None, None, audio_title)
+    
+    # Очистка временных файлов
+    if audio_clip_path and os.path.exists(audio_clip_path):
+        try:
+            os.remove(audio_clip_path)
+        except Exception:
+            pass
+    
+    if audio_path and os.path.exists(audio_path):
+        try:
+            os.remove(audio_path)
+        except Exception:
+            pass
+    
+    try:
+        if Path(audio_dir).exists():
+            shutil.rmtree(audio_dir, ignore_errors=True)
+    except Exception:
+        pass
+    
+    set_phase('done')
+    # Не выводим финальное сообщение - видео будет отправлено напрямую
+    
+    return GenerationResult(output_path, thumbnail_path, "uploaded", None, audio_title)
+
