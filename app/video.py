@@ -18,7 +18,7 @@ except AttributeError:
 # Disable PIL deprecation warnings
 os.environ['PILLOW_IGNORE_DEPRECATION'] = '1'
 
-from moviepy.editor import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, TextClip, vfx, AudioFileClip
+from moviepy.editor import VideoFileClip, ImageClip, ColorClip, CompositeVideoClip, TextClip, vfx, AudioFileClip, concatenate_videoclips, concatenate_audioclips
 
 def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_path=None, song_title=None, seed=None, variant_group=None):
     print(f"convert_to_tiktok_format called with input_path: {input_path}, output_path: {output_path}", flush=True)
@@ -50,6 +50,7 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
     clip_resized = None
     overlay_clips = None
     try:
+        MIN_VIDEO_DURATION = 8  # Минимальная длина видео - 8 секунд
         random_duration = random.uniform(7, 12)
         ext = os.path.splitext(input_path)[1].lower()
         if ext in ['.png', '.jpg', '.jpeg']:
@@ -70,6 +71,11 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
                     clip = concat_clip.subclip(0, random_duration)
                 else:
                     clip = clip.subclip(0, random_duration)
+            elif clip.duration < MIN_VIDEO_DURATION:
+                # Loop the GIF if it's shorter than minimum duration
+                loops_needed = int(MIN_VIDEO_DURATION / clip.duration) + 1
+                concat_clip = concatenate_videoclips([base_clip] * loops_needed)
+                clip = concat_clip.subclip(0, MIN_VIDEO_DURATION)
             print(f"Processing GIF: {input_path} (original duration: {base_clip.duration}s)", flush=True)
         else:
             # Video files (mp4, webm, mov, etc.)
@@ -77,7 +83,22 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
             clip = base_clip
             if not is_youtube and clip.duration > random_duration:
                 clip = clip.subclip(0, random_duration)
+            elif clip.duration < MIN_VIDEO_DURATION:
+                # Loop the video if it's shorter than minimum duration
+                loops_needed = int(MIN_VIDEO_DURATION / clip.duration) + 1
+                concat_clip = concatenate_videoclips([base_clip] * loops_needed)
+                clip = concat_clip.subclip(0, MIN_VIDEO_DURATION)
             print(f"Processing video: {input_path} (duration: {base_clip.duration}s)", flush=True)
+        
+        # Гарантируем минимальную длину видео 8 секунд
+        current_duration = getattr(clip, 'duration', 0) or 0
+        if current_duration < MIN_VIDEO_DURATION:
+            print(f"Video is too short ({current_duration:.1f}s), looping to reach {MIN_VIDEO_DURATION}s minimum", flush=True)
+            loops_needed = int(MIN_VIDEO_DURATION / current_duration) + 1
+            concat_clip = concatenate_videoclips([clip] * loops_needed)
+            clip = concat_clip.subclip(0, MIN_VIDEO_DURATION)
+            print(f"Video looped to {MIN_VIDEO_DURATION}s", flush=True)
+        
         # Ограничиваем длительность, чтобы ролики подходили под Instagram Reels
         # и оставались короткими шортами.
         if clip.duration > 60:
@@ -136,10 +157,17 @@ def convert_to_tiktok_format(input_path, output_path, is_youtube=False, audio_pa
                 audio_duration_val = getattr(audio_clip, 'duration', 0)
                 if audio_duration_val > 0:
                     max_d = getattr(clip_resized, 'duration', clip_duration)
-                    if audio_clip.duration > max_d:
+                    
+                    # Зацикливаем аудио, если оно короче видео
+                    if audio_clip.duration < max_d:
+                        print(f"Audio ({audio_duration_val:.1f}s) is shorter than video ({max_d:.1f}s), looping audio", flush=True)
+                        loops_needed = int(max_d / audio_clip.duration) + 1
+                        audio_looped = concatenate_audioclips([audio_clip] * loops_needed)
+                        audio_clip = audio_looped.subclip(0, max_d)
+                        print(f"Audio looped to {max_d:.1f}s", flush=True)
+                    elif audio_clip.duration > max_d:
                         audio_clip = audio_clip.subclip(0, max_d)
-                    else:
-                        audio_clip = audio_clip.subclip(0, min(audio_clip.duration, max_d))
+                    
                     try:
                         clip_with_audio = clip_resized.set_audio(audio_clip)  # type: ignore[attr-defined]
                         final_clip = CompositeVideoClip([background, clip_with_audio])
