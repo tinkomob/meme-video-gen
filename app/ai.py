@@ -3,11 +3,21 @@ AI module for generating video ideas using Google Gemini API.
 """
 import os
 import logging
+import sys
 from typing import Optional
 from google import genai
 from google.genai import types
 
 logger = logging.getLogger(__name__)
+
+# Ensure logger output is captured
+if not logger.handlers:
+    handler = logging.StreamHandler(sys.stdout)
+    handler.setLevel(logging.DEBUG)
+    formatter = logging.Formatter('%(asctime)s - [%(name)s] - %(levelname)s - %(message)s')
+    handler.setFormatter(formatter)
+    logger.addHandler(handler)
+    logger.setLevel(logging.DEBUG)
 
 
 def _get_gemini_client() -> Optional[genai.Client]:
@@ -17,14 +27,22 @@ def _get_gemini_client() -> Optional[genai.Client]:
     """
     api_key = os.getenv('GEMINI_API_KEY')
     if not api_key:
+        print("[AI] GEMINI_API_KEY not found in environment variables", flush=True)
         logger.error("GEMINI_API_KEY not found in environment variables")
+        sys.stdout.flush()
         return None
     
     try:
+        print(f"[AI] Creating Gemini client with API key: {api_key[:10]}...", flush=True)
+        sys.stdout.flush()
         client = genai.Client(api_key=api_key)
+        print("[AI] Gemini client created successfully", flush=True)
+        sys.stdout.flush()
         return client
     except Exception as e:
+        print(f"[AI] Failed to create Gemini client: {e}", flush=True)
         logger.error(f"Failed to create Gemini client: {e}")
+        sys.stdout.flush()
         return None
 
 
@@ -197,3 +215,153 @@ def generate_video_idea_from_audio_file(
             client.close()
         except Exception:
             pass
+
+
+def generate_catchy_title_from_audio(
+    audio_path: str,
+    track_title: str,
+    thumbnail_path: Optional[str] = None
+) -> Optional[str]:
+    """
+    Generate a catchy YouTube Shorts title by analyzing audio file and thumbnail.
+    
+    Args:
+        audio_path: Path to the audio file (MP3/WAV)
+        track_title: Original track title
+        thumbnail_path: Optional path to thumbnail image for visual context
+    
+    Returns:
+        A catchy title for YouTube Shorts, or original title if generation fails
+    """
+    # Force logging to stdout immediately
+    print(f"[AI Title] Starting generation for: {track_title}", flush=True)
+    print(f"[AI Title] Audio path: {audio_path}", flush=True)
+    if thumbnail_path:
+        print(f"[AI Title] Thumbnail path: {thumbnail_path}", flush=True)
+    logger.info(f"[AI Title] Starting generation for: {track_title}")
+    logger.info(f"[AI Title] Audio path: {audio_path}")
+    if thumbnail_path:
+        logger.info(f"[AI Title] Thumbnail path: {thumbnail_path}")
+    sys.stdout.flush()
+    
+    client = _get_gemini_client()
+    if not client:
+        print("[AI Title] Failed to create Gemini client", flush=True)
+        logger.error("[AI Title] Failed to create Gemini client")
+        sys.stdout.flush()
+        return track_title
+    
+    try:
+        # Check if file exists
+        if not os.path.isfile(audio_path):
+            print(f"[AI Title] Audio file not found: {audio_path}", flush=True)
+            logger.error(f"[AI Title] Audio file not found: {audio_path}")
+            sys.stdout.flush()
+            return track_title
+        
+        # Get file size
+        file_size = os.path.getsize(audio_path)
+        print(f"[AI Title] Audio file size: {file_size} bytes", flush=True)
+        logger.info(f"[AI Title] Audio file size: {file_size} bytes")
+        sys.stdout.flush()
+        
+        # Upload audio file to Gemini
+        print("[AI Title] Uploading audio to Gemini...", flush=True)
+        logger.info("[AI Title] Uploading audio to Gemini...")
+        sys.stdout.flush()
+        audio_file = client.files.upload(file=audio_path)
+        print(f"[AI Title] Audio file uploaded: {audio_file.uri}", flush=True)
+        logger.info(f"[AI Title] Audio file uploaded: {audio_file.uri}")
+        sys.stdout.flush()
+        
+        # Upload thumbnail if available
+        thumbnail_file = None
+        if thumbnail_path and os.path.isfile(thumbnail_path):
+            try:
+                print(f"[AI Title] Uploading thumbnail to Gemini...", flush=True)
+                logger.info(f"[AI Title] Uploading thumbnail to Gemini...")
+                sys.stdout.flush()
+                thumbnail_file = client.files.upload(file=thumbnail_path)
+                print(f"[AI Title] Thumbnail uploaded: {thumbnail_file.uri}", flush=True)
+                logger.info(f"[AI Title] Thumbnail uploaded: {thumbnail_file.uri}")
+                sys.stdout.flush()
+            except Exception as e:
+                print(f"[AI Title] Warning: Failed to upload thumbnail: {e}", flush=True)
+                logger.warning(f"[AI Title] Failed to upload thumbnail: {e}")
+                sys.stdout.flush()
+        
+        # Create prompt
+        prompt = f"""Ты - эксперт по созданию вирусных названий для YouTube Shorts.
+
+Оригинальное название трека: {track_title}
+
+Прослушай аудиотрек и посмотри на миниатюру видео. Создай ОДНО привлекательное название для YouTube Shorts (максимум 70-80 символов).
+
+ВАЖНЫЕ ПРАВИЛА:
+- Название должно быть КРАТКИМ и ЦЕПЛЯЮЩИМ
+- Учитывай стиль, настроение и энергию музыки
+- Рассмотри визуальный контент на миниатюре для большего контекста
+- Используй эмодзи (1-2 максимум) для привлечения внимания
+- НЕ добавляй хештеги или лишние слова
+- Если трек известный - можешь немного модифицировать название для привлекательности
+- Если это инструментал или неизвестный трек - создай интригующее название
+
+ПРИМЕРЫ ХОРОШИХ НАЗВАНИЙ:
+- "🔥 Cyberpunk Vibes"
+- "Late Night Drive 🌙"
+- "Pure Energy ⚡"
+- "Chill Beats to Relax"
+- "That Song You Needed 🎵"
+
+Твоё название (ТОЛЬКО название, без кавычек и объяснений):"""
+        
+        print("[AI Title] Sending to Gemini API...", flush=True)
+        logger.info("[AI Title] Sending to Gemini API...")
+        sys.stdout.flush()
+        
+        # Prepare content list with audio and optional thumbnail
+        content_parts = [prompt, audio_file]
+        if thumbnail_file:
+            content_parts.append(thumbnail_file)
+        
+        response = client.models.generate_content(
+            model='gemini-3-flash-preview',
+            contents=content_parts,
+            config=types.GenerateContentConfig(
+                temperature=0.9,
+                max_output_tokens=100,
+                top_p=0.9,
+                top_k=40,
+            )
+        )
+        
+        print(f"[AI Title] API Response received", flush=True)
+        logger.info(f"[AI Title] API Response: {response}")
+        sys.stdout.flush()
+        
+        if response and response.text:
+            title = response.text.strip()
+            # Remove quotes if present
+            title = title.strip('"').strip("'").strip()
+            
+            # Limit length
+            if len(title) > 100:
+                title = title[:97] + '...'
+            
+            print(f"[AI Title] Generated title: '{title}'", flush=True)
+            logger.info(f"[AI Title] Generated title: '{title}'")
+            sys.stdout.flush()
+            return title
+        else:
+            print("[AI Title] Empty response from Gemini API", flush=True)
+            logger.error("[AI Title] Empty response from Gemini API")
+            logger.info(f"[AI Title] Falling back to original title: {track_title}")
+            sys.stdout.flush()
+            return track_title
+            
+    except Exception as e:
+        print(f"[AI Title] ERROR: {str(e)}", flush=True)
+        logger.error(f"[AI Title] Error generating title: {str(e)}", exc_info=True)
+        logger.info(f"[AI Title] Falling back to original title: {track_title}")
+        sys.stdout.flush()
+        return track_title

@@ -34,6 +34,9 @@ DEFAULT_OUTPUT_VIDEO = 'tiktok_video.mp4'
 DEFAULT_THUMBNAIL = 'thumbnail.jpg'
 TOKEN_PICKLE = 'token.pickle'
 CLIENT_SECRETS = 'client_secrets.json'
+TOKEN_EENFINIT = 'token_eenfinit.pickle'
+CLIENT_SECRETS_EENFINIT = 'client_secrets.json'  # Uses same client secrets
+EENFINIT_PLAYLIST = 'https://music.youtube.com/playlist?list=OLAK5uy_mjqaQ3Ut5XK1m2vEvYuzcoUb3D6XrW9SA'
 YT_COOKIES_FILE = os.getenv('YT_COOKIES_FILE', 'youtube_cookies.txt')
 DAILY_GENERATIONS = int(os.getenv('DAILY_GENERATIONS', '3') or 3)
 MAX_PARALLEL_GENERATIONS = int(os.getenv('MAX_PARALLEL_GENERATIONS', '2') or 2)

@@ -148,6 +148,7 @@ tiktok_video_*.mp4
 thumbnail_*.jpg
 pins_*/
 audio_*/
+archived_audio/
 
 # OAuth credentials
 client_secrets.json

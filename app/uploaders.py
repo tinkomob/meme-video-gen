@@ -5,7 +5,7 @@ import shutil
 import inspect
 import glob
 import requests
-from .config import CLIENT_SECRETS, TOKEN_PICKLE, UPLOAD_POST_API_KEY, INSTAGRAM_USERNAME, POSTS_CHATID, TELEGRAM_BOT_TOKEN
+from .config import CLIENT_SECRETS, TOKEN_PICKLE, UPLOAD_POST_API_KEY, INSTAGRAM_USERNAME, POSTS_CHATID, TELEGRAM_BOT_TOKEN, TOKEN_EENFINIT, CLIENT_SECRETS_EENFINIT
 import re
 
 def youtube_authenticate(credentials_path: str = CLIENT_SECRETS, token_path: str = TOKEN_PICKLE):
@@ -34,6 +34,10 @@ def youtube_authenticate(credentials_path: str = CLIENT_SECRETS, token_path: str
     except Exception as e:
         print(f'YouTube auth failed: {e}')
         return None
+
+def youtube_authenticate_eenfinit(credentials_path: str = CLIENT_SECRETS_EENFINIT, token_path: str = TOKEN_EENFINIT):
+    """Аутентификация для аккаунта eenfinit"""
+    return youtube_authenticate(credentials_path, token_path)
 
 def _remove_shorts_hashtag(s: str) -> str:
     try:

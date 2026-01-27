@@ -16,6 +16,9 @@ from io import BytesIO
 from dotenv import load_dotenv
 from app.config import TELEGRAM_BOT_TOKEN, DEFAULT_THUMBNAIL, HISTORY_FILE
 from app.service import generate_meme_video, deploy_to_socials, cleanup_old_temp_dirs, cleanup_old_generated_files, replace_audio_in_video, process_uploaded_video_with_audio
+from app.uploaders import youtube_authenticate_eenfinit, youtube_upload_short
+from app.metadata import get_random_fact
+from app.ai import generate_catchy_title_from_audio
 from app.logger import setup_error_logging
 from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
@@ -167,6 +170,7 @@ DEFAULT_PLAYLISTS_JSON = "music_playlists.json"
 DEFAULT_REDDIT_JSON = "reddit_sources.json"
 DEFAULT_TWITTER_JSON = "twitter_urls.json"
 ALL_SOCIALS = ["youtube", "instagram", "x"]
+EENFINIT_PLAYLIST = 'https://music.youtube.com/playlist?list=OLAK5uy_mjqaQ3Ut5XK1m2vEvYuzcoUb3D6XrW9SA'
 
 
 HELP_TEXT = (
@@ -177,6 +181,13 @@ HELP_TEXT = (
     "/generate — генерация мемов. Форматы: /generate N (N видео), /generate <pin_num> <audio_duration> [count=M]. Примеры: /generate 3; /generate 80 12 count=2\n"
     "  Поддерживает источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json), Twitter (twitter_urls.json), музыка (music_playlists.json)\n"
     "  После генерации доступны кнопки: Опубликовать, Выбрать платформы, Сменить трек, Сгенерировать заново\n"
+    "\n"
+    "🎯 СПЕЦИАЛИЗИРОВАННЫЕ КОМАНДЫ:\n"
+    "/eenfinit — генерация мемов ТОЛЬКО для аккаунта eenfinit на YouTube\n"
+    "  • Использует плейлист: https://music.youtube.com/playlist?list=OLAK5uy_mjqaQ3Ut5XK1m2vEvYuzcoUb3D6XrW9SA\n"
+    "  • Источники: Pinterest (pinterest_urls.json), Reddit (reddit_sources.json)\n"
+    "  • Публикация только в YouTube (требует token_eenfinit.pickle)\n"
+    "  • Форматы: /eenfinit, /eenfinit 5, /eenfinit 50 10 count=3\n"
     "\n"
     "🤖 ИИ ИДЕИ ДЛЯ ВИДЕО:\n"
     "/ai — сгенерировать креативную идею для короткого видео на основе музыки\n"
@@ -202,7 +213,7 @@ HELP_TEXT = (
     "/history — последние публикации\n"
     "/uploadytcookies — загрузить youtube_cookies.txt (YouTube) как документ\n"
     "/uploadclient — загрузить client_secrets.json как документ\n"
-    "/uploadtoken — загрузить token.pickle как документ\n"
+    "/uploadtoken — загрузить token.pickle или token_eenfinit.pickle как документ\n"
     "/clearhistory — очистить video_history.json\n"
     "/scheduleinfo — показать расписание всех генераций на сегодня\n"
     "/runscheduled — немедленно выполнить ближайшую запланированную генерацию\n"
@@ -875,7 +886,7 @@ async def cmd_generate(update, context):
                             pass
                         continue
                     success += 1
-                    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
+                    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path, result.audio_title)
                     success_results.append(new_item)
                 
                 # Отправляем результаты через слайдер
@@ -958,7 +969,7 @@ async def cmd_generate(update, context):
     if not result or not result.video_path:
         await update.message.reply_text("Не удалось создать видео.")
         return
-    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
+    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path, result.audio_title)
     caption = _format_video_info(result)
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
@@ -968,6 +979,229 @@ async def cmd_generate(update, context):
             [InlineKeyboardButton("Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
             [InlineKeyboardButton("Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
         ])
+    try:
+        m = await update.message.reply_video(video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
+        try:
+            if m and getattr(m, "message_id", None):
+                _add_msg_id(context, m.message_id)
+        except Exception:
+            pass
+    except Exception:
+        try:
+            await update.message.reply_text(caption, reply_markup=kb)
+        except Exception:
+            await update.message.reply_text(caption)
+
+
+async def cmd_eenfinit(update, context):
+    """Команда для генерации мема только для плейлиста eenfinit и публикации в YouTube аккаунт eenfinit"""
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
+    
+    # Проверяем наличие token_eenfinit.pickle
+    if not os.path.exists('token_eenfinit.pickle'):
+        await update.message.reply_text(
+            "❌ Файл token_eenfinit.pickle не найден\n\n"
+            "Загрузите его или создайте новый:\n"
+            "/uploadtoken (загрузите как token_eenfinit.pickle)\n\n"
+            "Или используйте скрипт:\n"
+            "python get_youtube_token.py token_eenfinit.pickle client_secrets.json"
+        )
+        return
+    
+    args = context.args or []
+    count = 1
+    pin_num = 10000
+    audio_duration = 10
+    
+    if args:
+        if len(args) == 1:
+            v = parse_int(args[0], 1)
+            if v > 1:
+                count = min(v, 20)
+            else:
+                pin_num = v
+        else:
+            pin_num = parse_int(args[0], 10000)
+            audio_duration = parse_int(args[1], 10) if len(args) >= 2 else 10
+            for a in args[2:]:
+                if a.startswith("count="):
+                    try:
+                        count = min(int(a.split("=",1)[1]), 20)
+                    except Exception:
+                        pass
+    
+    # Для eenfinit используем только Pinterest и Reddit, плейлист eenfinit
+    pinterest_urls = load_urls_json(DEFAULT_PINTEREST_JSON, [])
+    reddit_sources = load_urls_json(DEFAULT_REDDIT_JSON, [])
+    
+    if not pinterest_urls and not reddit_sources:
+        await update.message.reply_text("❌ Нет источников изображений. Добавьте ссылки в pinterest_urls.json или reddit_sources.json")
+        return
+    
+    if _is_generation_locked(context.application):
+        lock_time = context.application.bot_data.get('generation_lock_time', 0)
+        elapsed = int(time.time() - lock_time)
+        await update.message.reply_text(f"⚠️ Генерация уже выполняется (запущена {elapsed} сек. назад). Пожалуйста, дождитесь завершения.")
+        return
+    
+    if count > 1:
+        await update.message.reply_text(f"Запускаю генерацию {count} мемов для eenfinit… Это может занять несколько минут.")
+        
+        async def background_batch_eenfinit(chat_id: int, batch_count: int):
+            if not _lock_generation(context.application):
+                try:
+                    await context.bot.send_message(chat_id=chat_id, text="⚠️ Генерация уже выполняется. Пожалуйста, дождитесь завершения.")
+                except Exception:
+                    pass
+                return
+            
+            try:
+                log_resource_usage("eenfinit_batch_start")
+            except Exception:
+                pass
+            
+            start_ts = time.monotonic()
+            
+            async def gen_one(i: int):
+                attempts = 0
+                last_res = None
+                while attempts < 3:
+                    attempts += 1
+                    def run_generation():
+                        try:
+                            seed = int.from_bytes(os.urandom(4), 'big') ^ (i + attempts * 7919)
+                            return generate_meme_video(
+                                pinterest_urls=pinterest_urls,
+                                music_playlists=[EENFINIT_PLAYLIST],
+                                pin_num=pin_num,
+                                audio_duration=audio_duration,
+                                progress=None,
+                                seed=seed,
+                                variant_group=i % 5,
+                                reddit_sources=reddit_sources,
+                                twitter_sources=[],
+                            )
+                        except Exception as e:
+                            logging.warning(f"eenfinit batch gen #{i} attempt {attempts} failed: {e}")
+                            return None
+                    try:
+                        last_res = await asyncio.to_thread(run_generation)
+                    except Exception as e:
+                        logging.error(f"eenfinit background thread exception gen #{i} attempt {attempts}: {e}")
+                        last_res = None
+                    if last_res and getattr(last_res, 'video_path', None):
+                        break
+                    await asyncio.sleep(0.5 * attempts)
+                return (i, last_res)
+            
+            try:
+                gathered = []
+                for i in range(batch_count):
+                    result = await gen_one(i)
+                    gathered.append(result)
+                
+                result_map = {idx_res: val for idx_res, val in gathered}
+                success = 0
+                fail = 0
+                success_results = []
+                
+                for idx in range(batch_count):
+                    result = result_map.get(idx)
+                    if not result or not result.video_path:
+                        fail += 1
+                        try:
+                            await context.bot.send_message(chat_id=chat_id, text=f"[{idx+1}/{batch_count}] ❌ Не удалось создать видео.")
+                        except Exception:
+                            pass
+                        continue
+                    success += 1
+                    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path, result.audio_title)
+                    success_results.append(new_item)
+                
+                # Отправляем результаты через слайдер
+                if success_results:
+                    generation_id = os.urandom(4).hex()
+                    try:
+                        await _send_video_slider(context, chat_id, success_results, generation_id)
+                    except Exception as e:
+                        logging.error(f"Ошибка отправки слайдера: {e}")
+                
+                elapsed = time.monotonic() - start_ts
+                mins = int(elapsed // 60)
+                secs = int(elapsed % 60)
+                summary = f"✅ eenfinit: Готово. Успех: {success}, ошибки: {fail}. Время: {mins}м {secs}с." if mins else f"✅ eenfinit: Готово. Успех: {success}, ошибки: {fail}. Время: {secs}с."
+                if fail > 0:
+                    try:
+                        await context.bot.send_message(chat_id=chat_id, text=summary)
+                    except Exception:
+                        pass
+            finally:
+                _unlock_generation(context.application)
+                try:
+                    log_resource_usage("eenfinit_batch_end")
+                except Exception:
+                    pass
+        
+        asyncio.create_task(background_batch_eenfinit(update.effective_chat.id, count))
+        return
+    
+    if not _lock_generation(context.application):
+        lock_time = context.application.bot_data.get('generation_lock_time', 0)
+        elapsed = int(time.time() - lock_time)
+        await update.message.reply_text(f"⚠️ Генерация уже выполняется (запущена {elapsed} сек. назад). Пожалуйста, дождитесь завершения.")
+        return
+    
+    try:
+        log_resource_usage("eenfinit_gen_start")
+    except Exception:
+        pass
+    
+    context.chat_data["gen_msg_ids"] = []
+    context.chat_data.pop("progress_msg_id", None)
+    context.chat_data.pop("progress_lines", None)
+    header = f"[eenfinit] Запускаю генерацию... pins={pin_num}, audio={audio_duration}s"
+    await _progress_init(context, update.effective_chat.id, header)
+    loop = asyncio.get_running_loop()
+    
+    def run_generation():
+        def progress(msg: str):
+            asyncio.run_coroutine_threadsafe(_progress_queue(context, update.effective_chat.id, msg), loop)
+        return generate_meme_video(
+            pinterest_urls=pinterest_urls,
+            music_playlists=[EENFINIT_PLAYLIST],
+            pin_num=pin_num,
+            audio_duration=audio_duration,
+            progress=progress,
+            reddit_sources=reddit_sources,
+            twitter_sources=[],
+        )
+    
+    result = await asyncio.to_thread(run_generation)
+    
+    _unlock_generation(context.application)
+    try:
+        log_resource_usage("eenfinit_gen_end")
+    except Exception:
+        pass
+    
+    if not result or not result.video_path:
+        await update.message.reply_text("❌ [eenfinit] Не удалось создать видео.")
+        return
+    
+    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path, result.audio_title)
+    caption = f"✅ [eenfinit] Видео готово!\n\n📹 {_format_video_info(result)}"
+    
+    kb = None
+    if InlineKeyboardButton and InlineKeyboardMarkup:
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📤 Опубликовать в YouTube (eenfinit)", callback_data=f"publish_eenfinit:{new_item['id']}")],
+            [InlineKeyboardButton("🔄 Сменить трек", callback_data=f"changeaudio:{new_item['id']}")],
+            [InlineKeyboardButton("♻️ Сгенерировать заново", callback_data=f"regenerate:{new_item['id']}")],
+        ])
+    
     try:
         m = await update.message.reply_video(video=open(result.video_path, "rb"), caption=caption, reply_markup=kb)
         try:
@@ -1056,7 +1290,8 @@ def delete_generation_item_by_id(item_id: str) -> bool:
     item = items[idx]
     vp = item.get("video_path")
     tp = item.get("thumbnail_path")
-    for p in [vp, tp]:
+    ap = item.get("audio_path")  # Добавляем удаление аудиофайла
+    for p in [vp, tp, ap]:
         try:
             if p and os.path.exists(p):
                 os.remove(p)
@@ -1073,6 +1308,170 @@ def delete_generation_item_by_id(item_id: str) -> bool:
     except Exception:
         pass
     return True
+
+
+async def on_callback_publish_eenfinit(update, context):
+    """Публикация видео в YouTube аккаунт eenfinit"""
+    q = update.callback_query
+    await q.answer()
+    data = q.data or ""
+    item_id = data.split(":", 1)[1] if ":" in data else None
+    if not item_id:
+        await q.message.reply_text("❌ Не удалось определить видео для публикации.")
+        return
+
+    hist = load_video_history()
+    item = next((it for it in hist if str(it.get("id")) == str(item_id)), None)
+    if not item:
+        await q.message.reply_text("❌ Элемент истории не найден.")
+        return
+    
+    video_path = item.get("video_path")
+    thumbnail_path = item.get("thumbnail_path") or DEFAULT_THUMBNAIL
+    
+    if not video_path or not os.path.exists(video_path):
+        await q.message.reply_text("❌ Файл видео отсутствует на диске.")
+        return
+    
+    # Проверяем наличие токена
+    if not os.path.exists('token_eenfinit.pickle'):
+        await q.message.reply_text(
+            "❌ Файл token_eenfinit.pickle не найден\n\n"
+            "Загрузите его или создайте новый:\n"
+            "/uploadtoken (загрузите как token_eenfinit.pickle)"
+        )
+        return
+    
+    await q.message.reply_text("📤 Загружаю видео в YouTube (aккаунт eenfinit)… Это может занять несколько минут.")
+    
+    loop = asyncio.get_running_loop()
+    
+    def run_eenfinit_upload():
+        try:
+            logging.info("[eenfinit] Starting upload process...")
+            youtube = youtube_authenticate_eenfinit()
+            if not youtube:
+                logging.error("[eenfinit] YouTube authentication failed")
+                return {'success': False, 'error': 'YouTube authentication failed'}
+            
+            logging.info("[eenfinit] YouTube authenticated successfully")
+            
+            # Получаем аудио путь и оригинальное название
+            audio_path = item.get('audio_path')
+            original_title = item.get('audio_title', 'Мем видео')
+            
+            logging.info(f"[eenfinit] Audio path: {audio_path}")
+            logging.info(f"[eenfinit] Original title: {original_title}")
+            
+            # Генерируем привлекательное название через ИИ
+            title = original_title
+            if audio_path and os.path.exists(audio_path):
+                print(f"[eenfinit] Generating AI title... (audio exists: {os.path.getsize(audio_path)} bytes)", flush=True)
+                logging.info("[eenfinit] Generating AI title...")
+                sys.stdout.flush()
+                title = generate_catchy_title_from_audio(audio_path, original_title, thumbnail_path)
+                print(f"[eenfinit] AI title result: '{title}'", flush=True)
+                logging.info(f"[eenfinit] AI title result: '{title}'")
+                sys.stdout.flush()
+            else:
+                # Audio file not found - use original title or generate based on text
+                print(f"[eenfinit] Audio file not available for AI title generation, using original: {original_title}", flush=True)
+                logging.info(f"[eenfinit] Audio file not available. Audio path: {audio_path}")
+                logging.info(f"[eenfinit] File exists: {os.path.exists(audio_path) if audio_path else False}")
+                logging.info(f"[eenfinit] Using original title: {original_title}")
+                title = original_title
+                sys.stdout.flush()
+            
+            # Получаем рандомный факт через API
+            logging.info("[eenfinit] Fetching random fact...")
+            fact = get_random_fact()
+            description = fact
+            logging.info(f"[eenfinit] Random fact: {fact}")
+            
+            # Загружаем видео
+            logging.info(f"[eenfinit] Uploading video to YouTube...")
+            logging.info(f"[eenfinit] Title: '{title}'")
+            logging.info(f"[eenfinit] Description: '{description}'")
+            
+            response = youtube_upload_short(
+                youtube=youtube,
+                file_path=video_path,
+                title=title,
+                description=description,
+                tags=['eenfinit', 'meme', 'shorts'],
+                privacyStatus='public'
+            )
+            
+            if response and response.get('id'):
+                video_id = response['id']
+                url = f"https://www.youtube.com/watch?v={video_id}"
+                logging.info(f"[eenfinit] Upload successful! Video ID: {video_id}")
+                return {'success': True, 'url': url, 'video_id': video_id, 'title': title, 'fact': fact}
+            else:
+                logging.error("[eenfinit] No video ID in response")
+                return {'success': False, 'error': 'No video ID in response'}
+        
+        except Exception as e:
+            logging.error(f"[eenfinit] Upload error: {e}", exc_info=True)
+            return {'success': False, 'error': str(e)}
+    
+    result = await asyncio.to_thread(run_eenfinit_upload)
+    
+    if result.get('success'):
+        title = result.get('title', 'N/A')
+        fact = result.get('fact', 'N/A')
+        msg = (
+            f"✅ Видео успешно загружено в YouTube (eenfinit)!\n\n"
+            f"🎬 Ссылка: {result['url']}\n"
+            f"📝 Название: {title}\n"
+            f"💡 Факт: {fact}"
+        )
+        await q.message.reply_text(msg)
+        
+        # Удаляем файлы после успешной загрузки
+        try:
+            print("[eenfinit] Cleaning up files after successful upload...", flush=True)
+            logging.info("[eenfinit] Cleaning up files after successful upload...")
+            
+            # Удаляем видео
+            if video_path and os.path.exists(video_path):
+                try:
+                    os.remove(video_path)
+                    print(f"[eenfinit] Deleted video: {video_path}", flush=True)
+                    logging.info(f"[eenfinit] Deleted video: {video_path}")
+                except Exception as e:
+                    print(f"[eenfinit] Failed to delete video: {e}", flush=True)
+                    logging.warning(f"[eenfinit] Failed to delete video: {e}")
+            
+            # Удаляем thumbnail
+            if thumbnail_path and thumbnail_path != DEFAULT_THUMBNAIL and os.path.exists(thumbnail_path):
+                try:
+                    os.remove(thumbnail_path)
+                    print(f"[eenfinit] Deleted thumbnail: {thumbnail_path}", flush=True)
+                    logging.info(f"[eenfinit] Deleted thumbnail: {thumbnail_path}")
+                except Exception as e:
+                    print(f"[eenfinit] Failed to delete thumbnail: {e}", flush=True)
+                    logging.warning(f"[eenfinit] Failed to delete thumbnail: {e}")
+            
+            # Удаляем архивированное аудио
+            audio_path = item.get('audio_path')
+            if audio_path and os.path.exists(audio_path):
+                try:
+                    os.remove(audio_path)
+                    print(f"[eenfinit] Deleted archived audio: {audio_path}", flush=True)
+                    logging.info(f"[eenfinit] Deleted archived audio: {audio_path}")
+                except Exception as e:
+                    print(f"[eenfinit] Failed to delete archived audio: {e}", flush=True)
+                    logging.warning(f"[eenfinit] Failed to delete archived audio: {e}")
+            
+            sys.stdout.flush()
+        except Exception as e:
+            print(f"[eenfinit] Error during cleanup: {e}", flush=True)
+            logging.warning(f"[eenfinit] Error during cleanup: {e}")
+            sys.stdout.flush()
+    else:
+        error_msg = result.get('error', 'Unknown error')
+        await q.message.reply_text(f"❌ Ошибка загрузки: {error_msg}")
 
 
 async def on_callback_publish(update, context):
@@ -1384,7 +1783,7 @@ async def on_callback_regenerate(update, context):
     if not result or not result.video_path:
         await q.message.reply_text("Не удалось создать новое видео.")
         return
-    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path)
+    new_item = add_video_history_item(result.video_path, result.thumbnail_path, result.source_url, result.audio_path, result.audio_title)
     caption = _format_video_info(result)
     kb = None
     if InlineKeyboardButton and InlineKeyboardMarkup:
@@ -1476,7 +1875,7 @@ async def on_callback_change_audio(update, context):
         result.thumbnail_path, 
         item.get("source_url"), 
         None,  # audio_path
-        None   # deployment_links
+        result.audio_title  # audio_title
     )
     
     caption = f"✅ Аудио заменено!\n"
@@ -1677,7 +2076,8 @@ async def on_document_received(update, context):
         target = CLIENT_SECRETS
     elif purpose == "token" or fname == "token.pickle" or fname.endswith("/token.pickle"):
         target = TOKEN_PICKLE
-
+    elif fname == "token_eenfinit.pickle" or fname.endswith("/token_eenfinit.pickle"):
+        target = "token_eenfinit.pickle"
     else:
         if fname.endswith("youtube_cookies.txt"):
             target = YT_COOKIES_FILE
@@ -1685,17 +2085,23 @@ async def on_document_received(update, context):
             target = CLIENT_SECRETS
         elif fname.endswith("token.pickle"):
             target = TOKEN_PICKLE
+        elif fname.endswith("token_eenfinit.pickle"):
+            target = "token_eenfinit.pickle"
     if not target:
-        await update.message.reply_text("Неизвестный файл. Ожидаю cookies.txt, youtube_cookies.txt, client_secrets.json или token.pickle")
+        await update.message.reply_text("❌ Неизвестный файл. Ожидаю: youtube_cookies.txt, client_secrets.json, token.pickle или token_eenfinit.pickle")
         return
     try:
         file = await context.bot.get_file(doc.file_id)
         bio = BytesIO()
         await file.download_to_memory(out=bio)
         ok = replace_file_from_bytes(target, bio.getvalue())
-        await update.message.reply_text((f"Файл сохранён: {target}") if ok else "Не удалось сохранить файл")
+        if ok:
+            emoji = "✅" if target == "token_eenfinit.pickle" else "✅"
+            await update.message.reply_text(f"{emoji} Файл сохранён: {target}")
+        else:
+            await update.message.reply_text("❌ Не удалось сохранить файл")
     except Exception as e:
-        await update.message.reply_text(f"Ошибка: {e}")
+        await update.message.reply_text(f"❌ Ошибка: {e}")
 
 
 def _random_time_today_tomsk() -> datetime:
@@ -1927,8 +2333,9 @@ async def _scheduled_job(context):
                 tp = getattr(res, 'thumbnail_path', None)
                 sp = getattr(res, 'source_url', None)
                 ap = getattr(res, 'audio_path', None)
+                at = getattr(res, 'audio_title', None)
                 if vp and os.path.exists(vp):
-                    item = add_video_history_item(vp, tp, sp, ap)
+                    item = add_video_history_item(vp, tp, sp, ap, at)
                     results.append(item)
                 else:
                     results.append(None)
@@ -2224,6 +2631,7 @@ def main():
     app.add_handler(CommandHandler("ai", cmd_ai))
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("generate", cmd_generate))
+    app.add_handler(CommandHandler("eenfinit", cmd_eenfinit))
     app.add_handler(CommandHandler("deploy", cmd_deploy))
     app.add_handler(CommandHandler("history", cmd_history))
     app.add_handler(CommandHandler("uploadytcookies", cmd_uploadytcookies))
@@ -2271,6 +2679,7 @@ def main():
             await update.message.reply_text(f"Ошибка очистки: {e}")
     app.add_handler(CommandHandler("cleanup", cmd_cleanup))
     app.add_handler(CallbackQueryHandler(on_callback_publish, pattern=r"^publish:\d+"))
+    app.add_handler(CallbackQueryHandler(on_callback_publish_eenfinit, pattern=r"^publish_eenfinit:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_choose_platforms, pattern=r"^choose:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_toggle_platform, pattern=r"^toggle:[A-Za-z]+:\d+"))
     app.add_handler(CallbackQueryHandler(on_callback_publish_selected, pattern=r"^publishsel:\d+"))
@@ -2452,8 +2861,9 @@ def main():
                 tp = getattr(res, 'thumbnail_path', None)
                 sp = getattr(res, 'source_url', None)
                 ap = getattr(res, 'audio_path', None)
+                at = getattr(res, 'audio_title', None)
                 if vp and os.path.exists(vp):
-                    it = add_video_history_item(vp, tp, sp, ap)
+                    it = add_video_history_item(vp, tp, sp, ap, at)
                     new_results.append(it)
             except Exception:
                 pass
@@ -2562,8 +2972,9 @@ def main():
                 tp = getattr(res, 'thumbnail_path', None)
                 sp = getattr(res, 'source_url', None)
                 ap = getattr(res, 'audio_path', None)
+                at = getattr(res, 'audio_title', None)
                 if vp and os.path.exists(vp):
-                    it = add_video_history_item(vp, tp, sp, ap)
+                    it = add_video_history_item(vp, tp, sp, ap, at)
                     new_results.append(it)
             except Exception:
                 pass
@@ -3004,7 +3415,7 @@ def main():
                 result.thumbnail_path,
                 result.source_url,
                 None,
-                None
+                result.audio_title
             )
             
             caption = "✅ Видео обработано!\n"
@@ -3225,8 +3636,9 @@ def main():
                 tp = getattr(res, 'thumbnail_path', None)
                 sp = getattr(res, 'source_url', None)
                 ap = getattr(res, 'audio_path', None)
+                at = getattr(res, 'audio_title', None)
                 if vp and os.path.exists(vp):
-                    it = add_video_history_item(vp, tp, sp, ap)
+                    it = add_video_history_item(vp, tp, sp, ap, at)
                     results.append(it)
             except Exception:
                 continue

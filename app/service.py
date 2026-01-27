@@ -396,6 +396,21 @@ def generate_meme_video(
         return GenerationResult(None, None, chosen_pinterest, None, audio_title)
     
     try:
+        # Сохраняем аудио-клип перед удалением директорий
+        saved_audio_path = None
+        if audio_clip_path and os.path.exists(audio_clip_path):
+            try:
+                # Копируем клип в текущую директорию перед удалением
+                clip_filename = os.path.basename(audio_clip_path)
+                saved_audio_path = clip_filename
+                import shutil
+                shutil.copy2(audio_clip_path, saved_audio_path)
+                print(f"[service] Saved audio clip to: {saved_audio_path}", flush=True)
+            except Exception as e:
+                print(f"[service] Failed to save audio clip: {e}", flush=True)
+                logging.warning(f"Failed to save audio clip before cleanup: {e}")
+        
+        # Удаляем временные файлы
         if audio_clip_path and os.path.exists(audio_clip_path):
             try:
                 os.remove(audio_clip_path)
@@ -422,7 +437,10 @@ def generate_meme_video(
         logging.error(f"Ошибка при очистке временных файлов: {e}", exc_info=True) 
     set_phase('done')
     notify("✅ Готово! Видео и миниатюра созданы")
-    return GenerationResult(output_path, thumbnail_path, chosen_pinterest, original_audio_path, audio_title)
+    # Используем сохранённый аудио-файл вместо оригинального пути
+    final_audio_path = saved_audio_path if saved_audio_path else original_audio_path
+    print(f"[service] Returning audio path: {final_audio_path}", flush=True)
+    return GenerationResult(output_path, thumbnail_path, chosen_pinterest, final_audio_path, audio_title)
 
 def deploy_to_socials(
     video_path: str,
