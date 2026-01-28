@@ -1,7 +1,73 @@
 import os
 import random
+import hashlib
+import json
 from pathlib import Path
 from typing import Any
+
+# File for tracking audio files SHA256 hashes to prevent duplicates
+AUDIO_HASH_INDEX = "audio_hash_index.json"
+
+def _load_audio_hash_index() -> dict[str, str]:
+    """Load the audio hash index from disk"""
+    if not os.path.exists(AUDIO_HASH_INDEX):
+        return {}
+    try:
+        with open(AUDIO_HASH_INDEX, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_audio_hash_index(index: dict[str, str]) -> None:
+    """Save the audio hash index to disk"""
+    try:
+        with open(AUDIO_HASH_INDEX, 'w', encoding='utf-8') as f:
+            json.dump(index, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"Warning: Failed to save audio hash index: {e}", flush=True)
+
+def _calculate_file_hash(file_path: str) -> str:
+    """Calculate SHA256 hash of a file"""
+    sha256_hash = hashlib.sha256()
+    try:
+        with open(file_path, 'rb') as f:
+            for byte_block in iter(lambda: f.read(4096), b""):
+                sha256_hash.update(byte_block)
+        return sha256_hash.hexdigest()
+    except Exception as e:
+        print(f"Warning: Failed to calculate hash for {file_path}: {e}", flush=True)
+        return ""
+
+def _check_audio_duplicate(file_path: str) -> bool:
+    """Check if audio file with same hash already exists in index"""
+    if not os.path.exists(file_path):
+        return False
+    
+    file_hash = _calculate_file_hash(file_path)
+    if not file_hash:
+        return False
+    
+    index = _load_audio_hash_index()
+    return file_hash in index.values()
+
+def _register_audio_file(file_path: str, identifier: str = "") -> bool:
+    """Register audio file in hash index to prevent future duplicates"""
+    if not os.path.exists(file_path):
+        return False
+    
+    file_hash = _calculate_file_hash(file_path)
+    if not file_hash:
+        return False
+    
+    index = _load_audio_hash_index()
+    # Use file path or identifier as key
+    key = identifier or os.path.abspath(file_path)
+    
+    if file_hash not in index.values():
+        index[key] = file_hash
+        _save_audio_hash_index(index)
+        return True
+    return False
 
 def _build_ytdlp_opts(base_opts: dict[str, Any] | None = None) -> dict[str, Any]:
     opts: dict[str, Any] = {

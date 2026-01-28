@@ -20,7 +20,7 @@ from app.uploaders import youtube_authenticate_eenfinit, youtube_upload_short
 from app.metadata import get_random_fact
 from app.ai import generate_catchy_title_from_audio
 from app.logger import setup_error_logging
-from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, read_small_file
+from app.utils import load_urls_json, replace_file_from_bytes, clear_video_history, clear_sources, read_small_file
 from app.history import add_video_history_item, load_video_history, save_video_history
 from app.config import CLIENT_SECRETS, TOKEN_PICKLE, YT_COOKIES_FILE
 from app.state import set_last_chat_id, get_last_chat_id, set_next_run_iso, get_next_run_iso, set_daily_schedule_iso, get_daily_schedule_iso, set_selected_chat_id, get_selected_chat_id
@@ -215,6 +215,7 @@ HELP_TEXT = (
     "/uploadclient — загрузить client_secrets.json как документ\n"
     "/uploadtoken — загрузить token.pickle или token_eenfinit.pickle как документ\n"
     "/clearhistory — очистить video_history.json\n"
+    "/clearsources — очистить sources.json и папку sources\n"
     "/scheduleinfo — показать расписание всех генераций на сегодня\n"
     "/runscheduled — немедленно выполнить ближайшую запланированную генерацию\n"
     "/setnext — изменить время запланированной генерации: /setnext <index> <время|сдвиг> (пример: /setnext 2 22:10, /setnext 1 +30m)\n"
@@ -1977,6 +1978,40 @@ async def cmd_clearhistory(update, context):
     await update.message.reply_text("История очищена" if ok else "Не удалось очистить историю")
 
 
+async def cmd_clearsources(update, context):
+    try:
+        set_last_chat_id(update.effective_chat.id)
+    except Exception:
+        pass
+    
+    try:
+        result = clear_sources(sources_json_path="sources.json", sources_dir="sources")
+        
+        lines = ["🗑️ Очистка источников завершена\n"]
+        
+        if result['json_cleared']:
+            lines.append("✅ sources.json очищен")
+        else:
+            lines.append("⚠️ Не удалось очистить sources.json")
+        
+        if result['dir_removed']:
+            lines.append("✅ Папка sources удалена")
+        elif result['files_deleted'] > 0:
+            lines.append(f"✅ Удалено {result['files_deleted']} файлов из папки sources")
+        else:
+            lines.append("⚠️ Папка sources не найдена или пуста")
+        
+        if result['errors']:
+            lines.append("\n⚠️ Ошибки:")
+            for error in result['errors']:
+                lines.append(f"  • {error}")
+        
+        await update.message.reply_text("\n".join(lines))
+    except Exception as e:
+        logging.error(f"Error in cmd_clearsources: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка: {e}")
+
+
 async def cmd_checkfiles(update, context):
     try:
         set_last_chat_id(update.effective_chat.id)
@@ -2638,6 +2673,7 @@ def main():
     app.add_handler(CommandHandler("uploadclient", cmd_uploadclient))
     app.add_handler(CommandHandler("uploadtoken", cmd_uploadtoken))
     app.add_handler(CommandHandler("clearhistory", cmd_clearhistory))
+    app.add_handler(CommandHandler("clearsources", cmd_clearsources))
     app.add_handler(CommandHandler("checkfiles", cmd_checkfiles))
     app.add_handler(CommandHandler("pinterestcheck", cmd_pinterestcheck))
     async def cmd_cleanup(update, context):

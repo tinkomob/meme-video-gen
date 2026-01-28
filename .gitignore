@@ -7,6 +7,12 @@ __pycache__/
 *.so
 node_modules/
 
+# Go binaries
+# meme-bot
+*.exe
+*.test
+*.out
+
 # Distribution / packaging
 .Python
 build/
@@ -157,4 +163,4 @@ instagram_session.json
 
 # Working directories
 pins/
-audio/
+# audio/

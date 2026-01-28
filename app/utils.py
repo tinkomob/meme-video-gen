@@ -85,6 +85,62 @@ def clear_video_history(path: str = "video_history.json") -> bool:
         return False
 
 
+def clear_sources(sources_json_path: str = "sources.json", sources_dir: str = "sources") -> dict:
+    """
+    Clear sources.json file and sources directory.
+    Returns dict with deletion stats: {
+        'json_cleared': bool,
+        'dir_removed': bool,
+        'files_deleted': int,
+        'errors': list[str]
+    }
+    """
+    errors = []
+    files_deleted = 0
+    
+    # Clear sources.json
+    json_cleared = False
+    try:
+        if os.path.exists(sources_json_path):
+            with open(sources_json_path, 'w', encoding='utf-8') as f:
+                json.dump({"sources": []}, f, ensure_ascii=False, indent=2)
+            json_cleared = True
+    except Exception as e:
+        errors.append(f"Error clearing {sources_json_path}: {e}")
+    
+    # Remove sources directory
+    dir_removed = False
+    try:
+        if os.path.exists(sources_dir):
+            import shutil
+            shutil.rmtree(sources_dir)
+            dir_removed = True
+    except Exception as e:
+        # If we can't remove the dir, try to delete files inside
+        try:
+            if os.path.isdir(sources_dir):
+                for filename in os.listdir(sources_dir):
+                    file_path = os.path.join(sources_dir, filename)
+                    try:
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                            files_deleted += 1
+                        elif os.path.isdir(file_path):
+                            import shutil
+                            shutil.rmtree(file_path)
+                    except Exception as fe:
+                        errors.append(f"Error deleting {file_path}: {fe}")
+        except Exception as de:
+            errors.append(f"Error accessing {sources_dir}: {de}")
+    
+    return {
+        'json_cleared': json_cleared,
+        'dir_removed': dir_removed,
+        'files_deleted': files_deleted,
+        'errors': errors
+    }
+
+
 def read_small_file(path: str, max_bytes: int = 1024 * 1024) -> Optional[bytes]:
     try:
         p = Path(path)
