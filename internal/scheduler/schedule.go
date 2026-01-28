@@ -16,20 +16,20 @@ type ScheduleEntry struct {
 
 // DailySchedule holds the schedule for a single day
 type DailySchedule struct {
-	Date    string           `json:"date"` // YYYY-MM-DD
-	Entries []ScheduleEntry  `json:"entries"`
-	UpdatedAt time.Time      `json:"updated_at"`
+	Date      string          `json:"date"` // YYYY-MM-DD
+	Entries   []ScheduleEntry `json:"entries"`
+	UpdatedAt time.Time       `json:"updated_at"`
 }
 
 // BuildDailySchedule creates N evenly distributed times within the window [10:00, 24:00)
 // with random jitter to avoid clustering
 func BuildDailySchedule(date time.Time, count int) []time.Time {
 	loc := time.FixedZone("Asia/Tomsk", 7*3600) // UTC+7
-	
+
 	// Window: 10:00 to 23:59:59
 	start := time.Date(date.Year(), date.Month(), date.Day(), 10, 0, 0, 0, loc)
 	end := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 0, loc)
-	
+
 	totalSeconds := int(end.Sub(start).Seconds())
 	if count <= 0 {
 		return nil
@@ -38,25 +38,25 @@ func BuildDailySchedule(date time.Time, count int) []time.Time {
 		// Single slot at midpoint
 		return []time.Time{start.Add(time.Duration(totalSeconds/2) * time.Second)}
 	}
-	
+
 	segmentSeconds := float64(totalSeconds) / float64(count)
 	jitterMax := int(segmentSeconds / 3)
 	if jitterMax > 1800 {
 		jitterMax = 1800 // Cap jitter to 30 minutes
 	}
-	
+
 	var times []time.Time
 	for i := 0; i < count; i++ {
 		segStart := float64(i) * segmentSeconds
 		segEnd := float64(i+1) * segmentSeconds
 		center := (segStart + segEnd) / 2
-		
+
 		// Apply random jitter
 		jitter := 0
 		if jitterMax > 0 {
 			jitter = rand.Intn(2*jitterMax+1) - jitterMax
 		}
-		
+
 		t := start.Add(time.Duration(int(center)+jitter) * time.Second)
 		if t.Before(start) {
 			t = start
@@ -64,10 +64,10 @@ func BuildDailySchedule(date time.Time, count int) []time.Time {
 		if t.After(end) {
 			t = end
 		}
-		
+
 		times = append(times, t)
 	}
-	
+
 	return times
 }
 
@@ -91,28 +91,28 @@ func LoadSchedule(ctx context.Context, client s3.Client) (*DailySchedule, error)
 
 // GetOrCreateSchedule returns today's schedule, creating it if needed
 func GetOrCreateSchedule(ctx context.Context, client s3.Client, cfg *internal.Config, now time.Time) (*DailySchedule, error) {
-	
+
 	schedule, err := LoadSchedule(ctx, client)
 	if err == nil && schedule != nil && schedule.Date == now.Format("2006-01-02") {
 		return schedule, nil
 	}
-	
+
 	// Create new schedule for today
 	times := BuildDailySchedule(now, cfg.DailyGenerations)
 	entries := make([]ScheduleEntry, len(times))
 	for i, t := range times {
 		entries[i] = ScheduleEntry{Time: t}
 	}
-	
+
 	schedule = &DailySchedule{
 		Date:      now.Format("2006-01-02"),
 		Entries:   entries,
 		UpdatedAt: now,
 	}
-	
+
 	// Try to save but don't fail if we can't (might be permission issue)
 	_ = SaveSchedule(ctx, client, cfg, schedule)
-	
+
 	return schedule, nil
 }
 
