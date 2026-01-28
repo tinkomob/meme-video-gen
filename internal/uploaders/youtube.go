@@ -170,10 +170,3 @@ func (y *YouTubeUploader) saveToken(token *oauth2.Token) error {
 
 	return json.NewEncoder(f).Encode(token)
 }
-
-// RemoveShortsHashtag removes #shorts hashtag from text
-func RemoveShortsHashtag(s string) string {
-	// Simple implementation - in production use regex
-	// This matches the Python implementation
-	return s
-}

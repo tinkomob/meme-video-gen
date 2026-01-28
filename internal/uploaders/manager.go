@@ -32,10 +32,15 @@ func NewManager() *Manager {
 		m.uploaders["telegram"] = NewTelegramUploader(botToken, chatID)
 	}
 
-	// Initialize Instagram uploader
-	if apiKey := os.Getenv("UPLOAD_POST_API_KEY"); apiKey != "" {
-		username := os.Getenv("INSTAGRAM_USERNAME")
-		m.uploaders["instagram"] = NewInstagramUploader(apiKey, username)
+	// Initialize Instagram uploader (sends to Telegram POSTS_CHAT_ID)
+	if botToken := os.Getenv("TELEGRAM_BOT_TOKEN"); botToken != "" {
+		if chatIDStr := os.Getenv("POSTS_CHAT_ID"); chatIDStr != "" {
+			var chatID int64
+			fmt.Sscanf(chatIDStr, "%d", &chatID)
+			if chatID != 0 {
+				m.uploaders["instagram"] = NewInstagramUploader(botToken, chatID)
+			}
+		}
 	}
 
 	// Initialize X uploader

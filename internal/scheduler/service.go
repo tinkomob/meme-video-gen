@@ -27,6 +27,7 @@ type MemeService interface {
 	GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error)
 	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
 	DeleteMeme(ctx context.Context, memeID string) error
+	ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error)
 }
 
 type Service struct {
@@ -287,6 +288,17 @@ func (r *realImpl) DeleteMeme(ctx context.Context, memeID string) error {
 	}
 	r.log.Infof("service.DeleteMeme: SUCCESS - memeID=%s", memeID)
 	return nil
+}
+
+func (r *realImpl) ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error) {
+	r.log.Infof("service.ReplaceAudioInMeme: START - memeID=%s", memeID)
+	meme, err := r.video.ReplaceAudioInMeme(ctx, memeID)
+	if err != nil {
+		r.log.Errorf("service.ReplaceAudioInMeme: FAILED - memeID=%s, err=%v", memeID, err)
+		return nil, err
+	}
+	r.log.Infof("service.ReplaceAudioInMeme: SUCCESS - memeID=%s, new title=%s", memeID, meme.Title)
+	return meme, nil
 }
 
 func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {

@@ -158,7 +158,7 @@ archived_audio/
 
 # OAuth credentials
 client_secrets.json
-token.pickle
+*.pickle
 instagram_session.json
 
 # Working directories

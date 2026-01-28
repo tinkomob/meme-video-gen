@@ -59,11 +59,32 @@ func LoadConfig() (Config, error) {
 		TokensPrefix:  "tokens/",
 		PayloadPrefix: "payload/",
 
-		MaxSources:       10,
+		MaxSources:       50,
 		MaxMemes:         10,
-		MaxAge:           24 * time.Hour,
+		MaxAge:           16 * time.Hour,
 		DailyGenerations: 3,
 		PostsChatID:      0,
+	}
+
+	// Load MaxSources from env
+	if v := os.Getenv("MAX_SOURCES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxSources = n
+		}
+	}
+
+	// Load MaxMemes from env
+	if v := os.Getenv("MAX_MEMES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxMemes = n
+		}
+	}
+
+	// Load MaxAge from env
+	if v := os.Getenv("MAX_AGE"); v != "" {
+		if duration, err := time.ParseDuration(v); err == nil {
+			cfg.MaxAge = duration
+		}
 	}
 
 	// Load DailyGenerations from env

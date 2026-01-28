@@ -365,7 +365,9 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		g.log.Infof("video: ✓ source deleted from S3")
 	}
 
-	title := fmt.Sprintf("%s — %s", song.Author, song.Title)
+	// Clean up author name by removing " - Topic" suffix that YouTube adds to official audio channels
+	author := strings.TrimSuffix(song.Author, " - Topic")
+	title := fmt.Sprintf("%s — %s", author, song.Title)
 
 	meme := &model.Meme{
 		ID:        memeID,
@@ -429,13 +431,24 @@ func (g *Generator) GetRandomMemes(ctx context.Context, count int) ([]*model.Mem
 		count = len(idx.Items)
 	}
 
+	// Get unique random indices
+	used := make(map[int]bool)
 	result := make([]*model.Meme, 0, count)
+
 	for i := 0; i < count; i++ {
-		randIdx := randomIndex(len(idx.Items))
+		var randIdx int
+		// Keep generating random index until we get a unique one
+		for {
+			randIdx = randomIndex(len(idx.Items))
+			if !used[randIdx] {
+				used[randIdx] = true
+				break
+			}
+		}
 		result = append(result, &idx.Items[randIdx])
 	}
 
-	g.log.Infof("returning %d random memes (total=%d)", len(result), len(idx.Items))
+	g.log.Infof("returning %d unique random memes (total=%d)", len(result), len(idx.Items))
 	return result, nil
 }
 
@@ -446,6 +459,173 @@ func (g *Generator) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (s
 	}
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("meme-%s.mp4", meme.ID))
 	return tmpFile, os.WriteFile(tmpFile, data, 0o644)
+}
+
+// ReplaceAudioInMeme replaces the audio track in an existing meme with a new random audio
+func (g *Generator) ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error) {
+	g.log.Infof("ReplaceAudioInMeme: START - attempting to replace audio in memeID=%s", memeID)
+
+	// Lock to prevent concurrent modifications
+	g.memesJSONMux.Lock()
+
+	// Read memes.json
+	var idx model.MemesIndex
+	found, err := g.s3.ReadJSON(ctx, g.cfg.MemesJSONKey, &idx)
+	if err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to read memes.json - err=%v", err)
+		g.memesJSONMux.Unlock()
+		return nil, fmt.Errorf("failed to read memes.json: %w", err)
+	}
+	if !found {
+		g.log.Warnf("ReplaceAudioInMeme: memes.json not found in S3")
+		g.memesJSONMux.Unlock()
+		return nil, fmt.Errorf("memes.json not found")
+	}
+
+	// Find the meme
+	memeIndex := -1
+	var oldMeme *model.Meme
+	for i, m := range idx.Items {
+		if m.ID == memeID {
+			memeIndex = i
+			oldMeme = &idx.Items[i]
+			g.log.Infof("ReplaceAudioInMeme: found meme at index %d", i)
+			break
+		}
+	}
+
+	if memeIndex == -1 {
+		g.log.Errorf("ReplaceAudioInMeme: meme not found in JSON: %s", memeID)
+		g.memesJSONMux.Unlock()
+		return nil, fmt.Errorf("meme not found")
+	}
+
+	g.log.Infof("ReplaceAudioInMeme: found meme - ID=%s, VideoKey=%s, old SongID=%s",
+		oldMeme.ID, oldMeme.VideoKey, oldMeme.SongID)
+
+	// Unlock before starting long-running operations
+	g.memesJSONMux.Unlock()
+
+	// Get a new random audio track
+	g.log.Infof("ReplaceAudioInMeme: selecting new random audio track...")
+	newSong, err := g.audioIdx.GetRandomSong(ctx)
+	if err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to get random song: %v", err)
+		return nil, fmt.Errorf("get song: %w", err)
+	}
+	g.log.Infof("ReplaceAudioInMeme: got new song %s (%s - %s)", newSong.ID, newSong.Author, newSong.Title)
+
+	// Download the existing video from S3
+	g.log.Infof("ReplaceAudioInMeme: downloading existing video from S3 (key=%s)...", oldMeme.VideoKey)
+	videoData, _, err := g.s3.GetBytes(ctx, oldMeme.VideoKey)
+	if err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to download video from S3: %v", err)
+		return nil, fmt.Errorf("download video: %w", err)
+	}
+	g.log.Infof("ReplaceAudioInMeme: ✓ downloaded video (%d bytes)", len(videoData))
+
+	// Write video to temp file
+	oldVideoPath := filepath.Join(os.TempDir(), fmt.Sprintf("meme-old-%d.mp4", time.Now().UnixNano()))
+	if err := os.WriteFile(oldVideoPath, videoData, 0o644); err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to write old video to temp: %v", err)
+		return nil, fmt.Errorf("write video: %w", err)
+	}
+	defer os.Remove(oldVideoPath)
+	g.log.Infof("ReplaceAudioInMeme: ✓ wrote old video to %s", oldVideoPath)
+
+	// Download new audio
+	g.log.Infof("ReplaceAudioInMeme: downloading audio for song %s...", newSong.ID)
+	audioPath, err := g.audioIdx.DownloadSongToTemp(ctx, newSong)
+	if err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to download song: %v", err)
+		return nil, fmt.Errorf("download song: %w", err)
+	}
+	defer os.Remove(audioPath)
+	g.log.Infof("ReplaceAudioInMeme: ✓ downloaded audio to %s", audioPath)
+
+	// Create new video by replacing audio in the old video
+	newVideoPath := filepath.Join(os.TempDir(), fmt.Sprintf("meme-replace-%d.mp4", time.Now().UnixNano()))
+	g.log.Infof("ReplaceAudioInMeme: replacing audio in video using ffmpeg...")
+
+	if err := replaceAudioInVideo(ctx, oldVideoPath, audioPath, newVideoPath, g.log); err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to replace audio in video: %v", err)
+		os.Remove(newVideoPath)
+		return nil, fmt.Errorf("replace audio: %w", err)
+	}
+	defer os.Remove(newVideoPath)
+	g.log.Infof("ReplaceAudioInMeme: ✓ audio replaced successfully")
+
+	// Read new video data
+	newVideoData, err := os.ReadFile(newVideoPath)
+	if err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to read new video file: %v", err)
+		return nil, fmt.Errorf("read video: %w", err)
+	}
+	g.log.Infof("ReplaceAudioInMeme: ✓ read new video file (%d bytes)", len(newVideoData))
+
+	// Upload new video to S3, replacing the old one
+	g.log.Infof("ReplaceAudioInMeme: uploading new video to S3 (key=%s)...", oldMeme.VideoKey)
+	if err := g.s3.PutBytes(ctx, oldMeme.VideoKey, newVideoData, "video/mp4"); err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to upload video to S3: %v", err)
+		return nil, fmt.Errorf("upload video: %w", err)
+	}
+	g.log.Infof("ReplaceAudioInMeme: ✓ video uploaded to S3")
+
+	// Re-acquire lock to update the memes index
+	g.memesJSONMux.Lock()
+	defer g.memesJSONMux.Unlock()
+
+	// Re-read memes.json to get latest state
+	found, err = g.s3.ReadJSON(ctx, g.cfg.MemesJSONKey, &idx)
+	if err != nil || !found {
+		g.log.Errorf("ReplaceAudioInMeme: failed to re-read memes.json: %v", err)
+		return nil, fmt.Errorf("re-read memes.json: %w", err)
+	}
+
+	// Find the meme again
+	memeIndex = -1
+	for i, m := range idx.Items {
+		if m.ID == memeID {
+			memeIndex = i
+			break
+		}
+	}
+
+	if memeIndex == -1 {
+		g.log.Warnf("ReplaceAudioInMeme: meme not found in updated JSON: %s (might have been deleted)", memeID)
+		return nil, fmt.Errorf("meme was deleted")
+	}
+
+	// Update the meme with new song information
+	author := strings.TrimSuffix(newSong.Author, " - Topic")
+	newTitle := fmt.Sprintf("%s — %s", author, newSong.Title)
+
+	idx.Items[memeIndex].SongID = newSong.ID
+	idx.Items[memeIndex].Title = newTitle
+	idx.Items[memeIndex].CreatedAt = time.Now()
+	idx.UpdatedAt = time.Now()
+
+	g.log.Infof("ReplaceAudioInMeme: updating meme in index - old title=%s, new title=%s",
+		oldMeme.Title, newTitle)
+
+	// Write updated memes.json with retry logic
+	maxRetries := 3
+	var lastErr error
+	for retry := 0; retry < maxRetries; retry++ {
+		g.log.Infof("ReplaceAudioInMeme: attempt %d/%d to update memes.json", retry+1, maxRetries)
+		if err := g.s3.WriteJSON(ctx, g.cfg.MemesJSONKey, &idx); err != nil {
+			lastErr = err
+			g.log.Errorf("ReplaceAudioInMeme: attempt %d/%d FAILED to update memes.json - err=%v", retry+1, maxRetries, err)
+			time.Sleep(time.Duration(retry+1) * 500 * time.Millisecond)
+			continue
+		}
+		g.log.Infof("ReplaceAudioInMeme: ✓ SUCCESS - audio replaced: %s", memeID)
+		return &idx.Items[memeIndex], nil
+	}
+
+	// If we get here, all retries failed
+	g.log.Errorf("ReplaceAudioInMeme: CRITICAL - failed to update memes.json after %d attempts - last error=%v", maxRetries, lastErr)
+	return nil, fmt.Errorf("failed to update memes.json: %w", lastErr)
 }
 
 // DeleteMeme deletes a meme from S3 and updates memes.json
@@ -721,5 +901,68 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 	}
 
 	log.Infof("[FFMPEG] ✓ ffmpeg completed successfully, output file: %s", outputPath)
+	return nil
+}
+
+// replaceAudioInVideo replaces the audio track in an existing video with a new audio file
+func replaceAudioInVideo(ctx context.Context, videoPath, audioPath, outputPath string, log *logging.Logger) error {
+	log.Infof("[FFMPEG] replacing audio in video")
+	log.Infof("[FFMPEG] video: %s", videoPath)
+	log.Infof("[FFMPEG] audio: %s", audioPath)
+	log.Infof("[FFMPEG] output: %s", outputPath)
+
+	// Get video duration
+	log.Infof("[FFMPEG] determining video duration from %s...", videoPath)
+	ctxProbe, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
+	defer cancelProbe()
+
+	probeCmd := exec.CommandContext(ctxProbe, "ffprobe", "-v", "error", "-show_entries", "format=duration",
+		"-of", "default=noprint_wrappers=1:nokey=1", videoPath)
+	durationBytes, err := probeCmd.Output()
+	if err != nil {
+		log.Infof("[FFMPEG] ffprobe failed (timeout?): %v", err)
+		// Default to 10 seconds if we can't determine video duration
+		return replaceAudioWithDuration(ctx, videoPath, audioPath, outputPath, 10, log)
+	}
+
+	var duration float64
+	if _, err := fmt.Sscanf(string(durationBytes), "%f", &duration); err != nil || duration <= 0 {
+		log.Infof("[FFMPEG] failed to parse duration, using default")
+		duration = 10
+	}
+
+	log.Infof("[FFMPEG] ✓ determined video duration: %.2f seconds", duration)
+	return replaceAudioWithDuration(ctx, videoPath, audioPath, outputPath, duration, log)
+}
+
+// replaceAudioWithDuration replaces audio and trims it to match video duration
+func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputPath string, duration float64, log *logging.Logger) error {
+	log.Infof("[FFMPEG] replacing audio (trimmed to %.2f seconds)", duration)
+
+	// Use ffmpeg to replace audio in video with trimmed audio
+	// -i video_input -i audio_input -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -t duration output
+	cmd := exec.Command("ffmpeg",
+		"-hide_banner",
+		"-loglevel", "quiet",
+		"-i", videoPath,
+		"-i", audioPath,
+		"-c:v", "copy",
+		"-c:a", "aac",
+		"-b:a", "192k",
+		"-map", "0:v:0",
+		"-map", "1:a:0",
+		"-t", fmt.Sprintf("%.2f", duration),
+		"-y",
+		outputPath,
+	)
+
+	log.Infof("[FFMPEG] executing ffmpeg to replace and trim audio (duration=%.2fs)", duration)
+
+	if err := cmd.Run(); err != nil {
+		log.Errorf("[FFMPEG] ✗ ffmpeg failed: %v", err)
+		return fmt.Errorf("ffmpeg failed: %w", err)
+	}
+
+	log.Infof("[FFMPEG] ✓ audio replaced and trimmed successfully, output file: %s", outputPath)
 	return nil
 }
