@@ -107,7 +107,7 @@ func (t *TelegramUploader) Upload(ctx context.Context, req *UploadRequest) (*Upl
 
 	// Send request
 	url := fmt.Sprintf("https://api.telegram.org/bot%s/sendVideo", t.botToken)
-	
+
 	client := &http.Client{
 		Timeout: 300 * time.Second, // 5 minutes
 	}
