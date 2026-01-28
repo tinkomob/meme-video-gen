@@ -154,7 +154,7 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 				sc.log.Infof("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
 				continue
 			}
-			
+
 			newAssets = append(newAssets, *asset)
 			sourcesIdx.Items = append(sourcesIdx.Items, *asset)
 			sourcesIdx.UpdatedAt = time.Now()
