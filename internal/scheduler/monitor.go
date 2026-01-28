@@ -124,6 +124,9 @@ func (m *ResourceMonitor) monitorLoop(ctx context.Context) {
 
 // ensureResources checks and ensures all resources meet required counts
 func (m *ResourceMonitor) ensureResources(ctx context.Context) {
+	// First, cleanup old memes (older than 12 hours)
+	m.cleanupOldMemes(ctx)
+
 	// Get current counts
 	songsCount, err := m.svc.GetSongsCount(ctx)
 	if err != nil {
@@ -282,4 +285,15 @@ func (m *ResourceMonitor) ensureResourcesConcurrent(ctx context.Context, needSon
 func (m *ResourceMonitor) ForceCheck(ctx context.Context) {
 	m.log.Infof("resource monitor: force check triggered")
 	m.ensureResources(ctx)
+}
+
+// cleanupOldMemes removes memes older than 12 hours
+func (m *ResourceMonitor) cleanupOldMemes(ctx context.Context) {
+	m.log.Infof("resource monitor: cleaning up memes older than 12 hours")
+
+	if err := m.svc.DeleteMemesOlderThan(ctx, 12*time.Hour); err != nil {
+		m.log.Errorf("resource monitor: cleanup old memes failed: %v", err)
+	} else {
+		m.log.Infof("resource monitor: old memes cleanup completed")
+	}
 }

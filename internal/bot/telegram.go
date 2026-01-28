@@ -262,26 +262,7 @@ func (b *TelegramBot) handleMeme(ctx context.Context, chatID int64) {
 	}
 
 	b.log.Infof("sending meme %s to chat", meme.ID)
-	success := b.sendMemeVideo(ctx, chatID, meme)
-
-	// If sent successfully, delete it from pool and generate a new one
-	if success {
-		go func() {
-			b.log.Infof("handleSendNextMeme: meme sent successfully, deleting and generating new - memeID=%s", meme.ID)
-			// CRITICAL: Use background context for long-running operations
-			bgCtx := context.Background()
-
-			// CRITICAL: Delete BEFORE generating to avoid race condition
-			if err := b.svc.Impl().DeleteMeme(bgCtx, meme.ID); err != nil {
-				b.log.Errorf("handleSendNextMeme: failed to delete meme %s: %v", meme.ID, err)
-				return // Don't generate new meme if delete failed
-			}
-			b.log.Infof("handleSendNextMeme: meme deleted successfully, generating replacement: %s", meme.ID)
-			if _, err := b.svc.Impl().GenerateOneMeme(bgCtx); err != nil {
-				b.log.Errorf("handleSendNextMeme: failed to generate replacement meme: %v", err)
-			}
-		}()
-	}
+	b.sendMemeVideo(ctx, chatID, meme)
 }
 
 // sendMemeVideo sends a single meme video to a chat
@@ -409,87 +390,74 @@ func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
 	}
 }
 
-// sendScheduledMemes sends 3 random memes to the scheduled chat
+// sendScheduledMemes sends 3 unique memes as media group (slider) to the scheduled chat
 func (b *TelegramBot) sendScheduledMemes(ctx context.Context, chatID int64) {
-	sentMemeIDs := make([]string, 0, 3)
-
-	for i := 0; i < 3; i++ {
-		meme, err := b.svc.Impl().GetRandomMeme(ctx)
-		if err != nil {
-			b.log.Errorf("get random meme %d for scheduled send: %v", i+1, err)
-			continue
-		}
-
-		// Download meme to temp file
-		videoPath, err := b.svc.Impl().DownloadMemeToTemp(ctx, meme)
-		if err != nil {
-			b.log.Errorf("download meme %d: %v", i+1, err)
-			continue
-		}
-
-		sent := false
-		func() {
-			defer os.Remove(videoPath)
-
-			f, err := os.Open(videoPath)
-			if err != nil {
-				b.log.Errorf("open meme file %d: %v", i+1, err)
-				return
-			}
-			defer f.Close()
-
-			msg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{Name: "meme.mp4", Reader: f})
-			msg.Caption = meme.Title
-
-			// Add inline keyboard with action buttons
-			keyboard := tgbotapi.NewInlineKeyboardMarkup(
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("📤 Опубликовать", fmt.Sprintf("publish:%s", meme.ID)),
-				),
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("🎯 Выбрать платформы", fmt.Sprintf("choose:%s", meme.ID)),
-				),
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("🎵 Сменить трек", fmt.Sprintf("changeaudio:%s", meme.ID)),
-				),
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("🗑️ Удалить", fmt.Sprintf("delete:%s", meme.ID)),
-				),
-			)
-			msg.ReplyMarkup = keyboard
-
-			if _, err := b.tg.Send(msg); err != nil {
-				b.log.Errorf("send meme %d: %v", i+1, err)
-			} else {
-				sent = true
-			}
-		}()
-
-		if sent {
-			sentMemeIDs = append(sentMemeIDs, meme.ID)
-		}
-
-		// Small delay between sends
-		time.Sleep(500 * time.Millisecond)
+	// Get 3 unique memes
+	memes, err := b.svc.Impl().GetRandomMemes(ctx, 3)
+	if err != nil {
+		b.log.Errorf("get random memes for scheduled send: %v", err)
+		return
 	}
 
-	// Delete sent memes and generate new ones in background
-	if len(sentMemeIDs) > 0 {
-		go func() {
-			bgCtx := context.Background()
-			for _, memeID := range sentMemeIDs {
-				b.log.Infof("handleSendMultipleMemes: meme sent successfully, deleting and generating new - memeID=%s", memeID)
-				// CRITICAL: Delete BEFORE generating to avoid race condition
-				if err := b.svc.Impl().DeleteMeme(bgCtx, memeID); err != nil {
-					b.log.Errorf("handleSendMultipleMemes: failed to delete meme %s: %v", memeID, err)
-					continue // Skip generation if delete failed
-				}
-				b.log.Infof("handleSendMultipleMemes: meme deleted successfully, generating replacement: %s", memeID)
-				if _, err := b.svc.Impl().GenerateOneMeme(bgCtx); err != nil {
-					b.log.Errorf("handleSendMultipleMemes: failed to generate replacement meme: %v", err)
-				}
-			}
-		}()
+	if len(memes) == 0 {
+		b.log.Errorf("no memes available for scheduled send")
+		return
+	}
+
+	b.log.Infof("sending %d unique memes at scheduled time as media group", len(memes))
+
+	// Download all memes first
+	videos := make([]string, 0, len(memes))
+	for _, meme := range memes {
+		videoPath, err := b.svc.Impl().DownloadMemeToTemp(ctx, meme)
+		if err != nil {
+			b.log.Errorf("download meme %s: %v", meme.ID, err)
+			continue
+		}
+		videos = append(videos, videoPath)
+	}
+
+	if len(videos) == 0 {
+		b.log.Errorf("failed to download any memes")
+		return
+	}
+
+	defer func() {
+		for _, v := range videos {
+			os.Remove(v)
+		}
+	}()
+
+	// Build media group (up to 3 videos as slider)
+	mediaGroup := make([]interface{}, 0, len(videos))
+	for idx, videoPath := range videos {
+		meme := memes[idx]
+
+		f, err := os.Open(videoPath)
+		if err != nil {
+			b.log.Errorf("open meme file %d: %v", idx+1, err)
+			continue
+		}
+		defer f.Close()
+
+		// Create caption with slider counter and title
+		caption := fmt.Sprintf("%d/%d — %s", idx+1, len(videos), meme.Title)
+
+		video := tgbotapi.NewInputMediaVideo(tgbotapi.FileReader{
+			Name:   fmt.Sprintf("meme_%d.mp4", idx+1),
+			Reader: f,
+		})
+		video.Caption = caption
+		mediaGroup = append(mediaGroup, video)
+	}
+
+	if len(mediaGroup) > 0 {
+		msg := tgbotapi.NewMediaGroup(chatID, mediaGroup)
+		if _, err := b.tg.SendMediaGroup(msg); err != nil {
+			b.log.Errorf("send media group: %v", err)
+			return
+		}
+		b.log.Infof("✓ sent %d unique memes as media group/slider", len(mediaGroup))
 	}
 }
 

@@ -200,13 +200,24 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 	// Try up to 5 times to find a valid source
 	var source *model.SourceAsset
 	for attempt := 0; attempt < 5; attempt++ {
+		g.log.Infof("video: attempt %d/5 to find valid source", attempt+1)
+
 		src, err := g.sourcesScr.GetRandomUnusedSource(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("get source: %w", err)
 		}
+		g.log.Infof("video: got random source %s (key=%s)", src.ID, src.MediaKey)
 
-		// Check if file exists in S3 before trying to download
-		if !g.sourcesScr.SourceExistsInS3(ctx, src) {
+		// Check if file exists in S3 with short timeout
+		g.log.Infof("video: checking if source exists in S3...")
+		exists := false
+		{
+			checkCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			exists = g.sourcesScr.SourceExistsInS3(checkCtx, src)
+			cancel()
+		}
+
+		if !exists {
 			g.log.Warnf("source %s file not found in S3 (%s), removing from index", src.ID, src.MediaKey)
 			if err := g.sourcesScr.RemoveSourceFromIndex(ctx, src.ID); err != nil {
 				g.log.Errorf("failed to remove source from index: %v", err)
@@ -214,6 +225,7 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 			continue
 		}
 
+		g.log.Infof("video: ✓ source %s exists in S3, using it", src.ID)
 		source = src
 		break
 	}
@@ -222,19 +234,26 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		return nil, fmt.Errorf("failed to find valid source after 5 attempts")
 	}
 
+	g.log.Infof("video: downloading audio for song %s...", song.ID)
 	audioPath, err := g.audioIdx.DownloadSongToTemp(ctx, song)
 	if err != nil {
 		return nil, fmt.Errorf("download song: %w", err)
 	}
 	defer os.Remove(audioPath)
+	g.log.Infof("video: ✓ downloaded audio to %s", audioPath)
 
+	// Download source
+	g.log.Infof("video: downloading source %s from S3...", source.ID)
 	sourcePath, err := g.sourcesScr.DownloadSourceToTemp(ctx, source)
+
 	if err != nil {
 		return nil, fmt.Errorf("download source: %w", err)
 	}
 	defer os.Remove(sourcePath)
+	g.log.Infof("video: ✓ downloaded source to %s", sourcePath)
 
 	// Validate source file exists and has reasonable size
+	g.log.Infof("video: validating source file %s...", sourcePath)
 	srcInfo, err := os.Stat(sourcePath)
 	if err != nil {
 		return nil, fmt.Errorf("source file stat: %w", err)
@@ -243,24 +262,33 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		g.log.Infof("source file too small: %d bytes, skipping", srcInfo.Size())
 		return nil, fmt.Errorf("source file too small: %d bytes", srcInfo.Size())
 	}
+	g.log.Infof("video: ✓ source file is valid (%d bytes)", srcInfo.Size())
 
 	videoPath := filepath.Join(os.TempDir(), fmt.Sprintf("meme-%d.mp4", time.Now().UnixNano()))
 	defer os.Remove(videoPath)
+	g.log.Infof("video: creating video at %s from image+audio...", videoPath)
 
 	// Create video from image + audio using ffmpeg directly
 	if err := createVideoFromImageAndAudio(sourcePath, audioPath, videoPath, g.log); err != nil {
 		g.log.Infof("failed to create video from %s + audio: %v", sourcePath, err)
 		return nil, fmt.Errorf("create video: %w", err)
 	}
+	g.log.Infof("video: ✓ ffmpeg completed successfully, video created at %s", videoPath)
 
+	g.log.Infof("video: reading video file from %s...", videoPath)
 	videoData, err := os.ReadFile(videoPath)
 	if err != nil {
 		return nil, err
 	}
+	g.log.Infof("video: ✓ read video file %s (%d bytes)", videoPath, len(videoData))
+
+	g.log.Infof("video: computing SHA256 hash...")
 	h := sha256.Sum256(videoData)
 	hash := hex.EncodeToString(h[:])
+	g.log.Infof("video: ✓ computed SHA256: %s", hash)
 
 	if g.memeExists(*memesIdx, hash) {
+		g.log.Warnf("video: duplicate meme detected (SHA256: %s), skipping", hash)
 		return nil, fmt.Errorf("duplicate sha256")
 	}
 
@@ -269,39 +297,52 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 	thumbKey := g.cfg.MemesPrefix + memeID + "_thumb.jpg"
 
 	// Upload video to S3 - CRITICAL step
-	if err := g.s3.PutBytes(ctx, videoKey, videoData, "video/mp4"); err != nil {
-		g.log.Errorf("CRITICAL: failed to upload video to S3: %v", err)
+	g.log.Infof("video: [S3 UPLOAD START] uploading video to S3 (key=%s, size=%d bytes)...", videoKey, len(videoData))
+	err = g.s3.PutBytes(ctx, videoKey, videoData, "video/mp4")
+
+	if err != nil {
+		g.log.Errorf("CRITICAL: [S3 UPLOAD FAILED] failed to upload video to S3: %v", err)
 		return nil, fmt.Errorf("upload video: %w", err)
 	}
 
-	g.log.Infof("video uploaded to S3: %s (%d bytes)", videoKey, len(videoData))
+	g.log.Infof("video: [S3 UPLOAD SUCCESS] ✓ successfully uploaded video to S3: %s (%d bytes)", videoKey, len(videoData))
 
 	// Extract and upload thumbnail (non-critical, continue even if fails)
+	g.log.Infof("video: extracting thumbnail from video...")
 	thumbPath := filepath.Join(os.TempDir(), fmt.Sprintf("thumb-%d.jpg", time.Now().UnixNano()))
 	defer os.Remove(thumbPath)
 	if err := extractThumbnail(videoPath, thumbPath, g.log); err != nil {
-		g.log.Warnf("failed to extract thumbnail: %v, using placeholder", err)
+		g.log.Warnf("video: failed to extract thumbnail: %v, using placeholder", err)
 		_ = g.s3.PutBytes(ctx, thumbKey, []byte{}, "image/jpeg")
 	} else {
+		g.log.Infof("video: ✓ thumbnail extracted, reading and uploading...")
 		thumbData, err := os.ReadFile(thumbPath)
 		if err != nil {
-			g.log.Warnf("failed to read thumbnail file: %v", err)
+			g.log.Warnf("video: failed to read thumbnail file: %v", err)
 			_ = g.s3.PutBytes(ctx, thumbKey, []byte{}, "image/jpeg")
 		} else {
 			if err := g.s3.PutBytes(ctx, thumbKey, thumbData, "image/jpeg"); err != nil {
-				g.log.Warnf("failed to upload thumbnail: %v", err)
+				g.log.Warnf("video: failed to upload thumbnail: %v", err)
+			} else {
+				g.log.Infof("video: ✓ thumbnail uploaded to S3: %s (%d bytes)", thumbKey, len(thumbData))
 			}
 		}
 	}
 
 	// Mark source as used (non-critical)
+	g.log.Infof("video: marking source %s as used...", source.ID)
 	if err := g.sourcesScr.MarkSourceUsed(ctx, source.ID); err != nil {
-		g.log.Warnf("failed to mark source as used: %v", err)
+		g.log.Warnf("video: failed to mark source as used: %v", err)
+	} else {
+		g.log.Infof("video: ✓ source marked as used")
 	}
 
 	// Delete source file from S3 (non-critical)
+	g.log.Infof("video: deleting source file from S3: %s", source.MediaKey)
 	if err := g.s3.Delete(ctx, source.MediaKey); err != nil {
-		g.log.Warnf("failed to delete source from S3: %v", err)
+		g.log.Warnf("video: failed to delete source from S3: %v", err)
+	} else {
+		g.log.Infof("video: ✓ source deleted from S3")
 	}
 
 	title := fmt.Sprintf("%s — %s", song.Author, song.Title)
@@ -345,6 +386,37 @@ func (g *Generator) GetRandomMeme(ctx context.Context) (*model.Meme, error) {
 	i := randomIndex(len(idx.Items))
 	g.log.Infof("returning random meme (id=%s, total=%d)", idx.Items[i].ID, len(idx.Items))
 	return &idx.Items[i], nil
+}
+
+func (g *Generator) GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error) {
+	var idx model.MemesIndex
+	found, err := g.s3.ReadJSON(ctx, g.cfg.MemesJSONKey, &idx)
+	if err != nil {
+		g.log.Errorf("failed to read memes.json from S3 (key=%s): %v", g.cfg.MemesJSONKey, err)
+		return nil, fmt.Errorf("read memes.json: %w", err)
+	}
+	if !found {
+		g.log.Infof("memes.json not found in S3 (key=%s), no memes available", g.cfg.MemesJSONKey)
+		return nil, fmt.Errorf("memes.json not found")
+	}
+	if len(idx.Items) == 0 {
+		g.log.Infof("memes.json exists but empty, need to generate memes")
+		return nil, fmt.Errorf("no memes in index")
+	}
+
+	// Clamp count to available memes
+	if count > len(idx.Items) {
+		count = len(idx.Items)
+	}
+
+	result := make([]*model.Meme, 0, count)
+	for i := 0; i < count; i++ {
+		randIdx := randomIndex(len(idx.Items))
+		result = append(result, &idx.Items[randIdx])
+	}
+
+	g.log.Infof("returning %d random memes (total=%d)", len(result), len(idx.Items))
+	return result, nil
 }
 
 func (g *Generator) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error) {
@@ -550,33 +622,44 @@ func safeLoadVideo(path string) (vid moviego.Video, err error) {
 
 // createVideoFromImageAndAudio creates a video from a static image and audio file using ffmpeg
 func createVideoFromImageAndAudio(imagePath, audioPath, outputPath string, log *logging.Logger) error {
+	log.Infof("[FFMPEG] determining audio duration from %s...", audioPath)
+
 	// Get audio duration to determine video length
 	probeCmd := exec.Command("ffprobe", "-v", "error", "-show_entries", "format=duration",
 		"-of", "default=noprint_wrappers=1:nokey=1", audioPath)
 	durationBytes, err := probeCmd.Output()
 	if err != nil {
-		log.Infof("ffprobe failed, using default duration: %v", err)
+		log.Infof("[FFMPEG] ffprobe failed, using default duration: %v", err)
 		// Default to 10 seconds if we can't determine audio duration
-		return createVideoWithDuration(imagePath, audioPath, outputPath, 10)
+		return createVideoWithDuration(imagePath, audioPath, outputPath, 10, log)
 	}
 
 	var duration float64
 	if _, err := fmt.Sscanf(string(durationBytes), "%f", &duration); err != nil || duration <= 0 {
+		log.Infof("[FFMPEG] failed to parse duration, using default")
 		duration = 10
 	}
 
 	// Clamp duration between 8 and 12 seconds
 	if duration < 8 {
+		log.Infof("[FFMPEG] duration too short (%f), clamping to 8s", duration)
 		duration = 8
 	} else if duration > 12 {
+		log.Infof("[FFMPEG] duration too long (%f), clamping to 12s", duration)
 		duration = 12
 	}
 
-	return createVideoWithDuration(imagePath, audioPath, outputPath, duration)
+	log.Infof("[FFMPEG] ✓ determined audio duration: %.2f seconds", duration)
+	return createVideoWithDuration(imagePath, audioPath, outputPath, duration, log)
 }
 
 // createVideoWithDuration creates video with specific duration
-func createVideoWithDuration(imagePath, audioPath, outputPath string, duration float64) error {
+func createVideoWithDuration(imagePath, audioPath, outputPath string, duration float64, log *logging.Logger) error {
+	log.Infof("[FFMPEG] starting ffmpeg with duration %.2f seconds", duration)
+	log.Infof("[FFMPEG] image: %s", imagePath)
+	log.Infof("[FFMPEG] audio: %s", audioPath)
+	log.Infof("[FFMPEG] output: %s", outputPath)
+
 	// Use ffmpeg to create video from image with audio
 	// -loop 1: loop the image
 	// -i image: input image
@@ -605,16 +688,22 @@ func createVideoWithDuration(imagePath, audioPath, outputPath string, duration f
 		outputPath,
 	)
 
+	log.Infof("[FFMPEG] executing: %s", cmd.String())
 	output, err := cmd.CombinedOutput()
 	if err != nil {
+		log.Errorf("[FFMPEG] ✗ ffmpeg failed with error: %v", err)
+		log.Errorf("[FFMPEG] output: %s", string(output))
 		return fmt.Errorf("ffmpeg failed: %w (output: %s)", err, string(output))
 	}
 
+	log.Infof("[FFMPEG] ✓ ffmpeg completed successfully, output file: %s", outputPath)
 	return nil
 }
 
 // extractThumbnail extracts a single frame from video at 1 second mark as thumbnail
 func extractThumbnail(videoPath, outputPath string, log *logging.Logger) error {
+	log.Infof("[FFMPEG THUMB] extracting thumbnail from %s at 1 second mark...", videoPath)
+
 	cmd := exec.Command("ffmpeg",
 		"-i", videoPath,
 		"-ss", "1",
@@ -626,9 +715,10 @@ func extractThumbnail(videoPath, outputPath string, log *logging.Logger) error {
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
-		log.Infof("ffmpeg thumbnail extraction failed: %v (output: %s)", err, string(output))
+		log.Warnf("[FFMPEG THUMB] ✗ thumbnail extraction failed: %v (output: %s)", err, string(output))
 		return fmt.Errorf("extract thumbnail: %w", err)
 	}
 
+	log.Infof("[FFMPEG THUMB] ✓ thumbnail extracted successfully to %s", outputPath)
 	return nil
 }

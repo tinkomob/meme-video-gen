@@ -24,6 +24,7 @@ type MemeService interface {
 	EnsureMemes(ctx context.Context) error
 	GenerateOneMeme(ctx context.Context) (*model.Meme, error)
 	GetRandomMeme(ctx context.Context) (*model.Meme, error)
+	GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error)
 	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
 	DeleteMeme(ctx context.Context, memeID string) error
 }
@@ -232,6 +233,9 @@ func (r *realImpl) GenerateOneMeme(ctx context.Context) (*model.Meme, error) {
 func (r *realImpl) GetRandomMeme(ctx context.Context) (*model.Meme, error) {
 	return r.video.GetRandomMeme(ctx)
 }
+func (r *realImpl) GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error) {
+	return r.video.GetRandomMemes(ctx, count)
+}
 func (r *realImpl) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error) {
 	return r.video.DownloadMemeToTemp(ctx, meme)
 }
@@ -324,4 +328,61 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	log.Infof("resource monitor initialized")
 
 	return s, nil
+}
+
+// DeleteMemesOlderThan removes memes that were created more than duration ago
+func (s *Service) DeleteMemesOlderThan(ctx context.Context, duration time.Duration) error {
+	s.log.Infof("deleting memes older than %v", duration)
+
+	// Load memes index
+	var memesIdx model.MemesIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
+	if err != nil {
+		return err
+	}
+	if !found || len(memesIdx.Items) == 0 {
+		s.log.Infof("no memes found to cleanup")
+		return nil
+	}
+
+	now := time.Now()
+	var itemsToKeep []model.Meme
+	var deletedCount int
+
+	for _, meme := range memesIdx.Items {
+		age := now.Sub(meme.CreatedAt)
+		if age > duration {
+			// Delete meme files from S3
+			s.log.Infof("deleting old meme: %s (age: %v)", meme.ID, age)
+
+			if err := s.s3c.Delete(ctx, meme.VideoKey); err != nil {
+				s.log.Errorf("failed to delete meme video %s: %v", meme.VideoKey, err)
+			}
+
+			if err := s.s3c.Delete(ctx, meme.ThumbKey); err != nil {
+				s.log.Errorf("failed to delete meme thumb %s: %v", meme.ThumbKey, err)
+			}
+
+			deletedCount++
+		} else {
+			itemsToKeep = append(itemsToKeep, meme)
+		}
+	}
+
+	if deletedCount == 0 {
+		s.log.Infof("no old memes to delete")
+		return nil
+	}
+
+	// Update memes index
+	memesIdx.Items = itemsToKeep
+	memesIdx.UpdatedAt = now
+
+	if err := s.s3c.WriteJSON(ctx, s.cfg.MemesJSONKey, memesIdx); err != nil {
+		s.log.Errorf("failed to update memes index: %v", err)
+		return err
+	}
+
+	s.log.Infof("deleted %d old memes", deletedCount)
+	return nil
 }
