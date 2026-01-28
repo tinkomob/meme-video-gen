@@ -687,12 +687,12 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 	// Use ffmpeg to create video from image with audio
 	// Use -f lavfi to generate black background + scale+pad image on top (avoids -loop hanging)
 	// This is more stable than using -loop 1 with images
-	
+
 	// ffmpeg filter: 1. Create black background 2. Scale image 3. Pad to 1080x1920 4. Overlay on background
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]",
 	)
-	
+
 	cmd := exec.Command("ffmpeg",
 		"-hide_banner",
 		"-loglevel", "quiet",
