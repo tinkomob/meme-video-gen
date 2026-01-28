@@ -18,6 +18,27 @@ import (
 	"meme-video-gen/internal/s3"
 )
 
+func looksLikeImage(data []byte) (kind string, ok bool) {
+	if len(data) < 12 {
+		return "", false
+	}
+	// PNG: 89 50 4E 47 0D 0A 1A 0A
+	if data[0] == 0x89 && data[1] == 0x50 && data[2] == 0x4E && data[3] == 0x47 &&
+		data[4] == 0x0D && data[5] == 0x0A && data[6] == 0x1A && data[7] == 0x0A {
+		return "png", true
+	}
+	// JPEG: FF D8 FF
+	if data[0] == 0xFF && data[1] == 0xD8 && data[2] == 0xFF {
+		return "jpeg", true
+	}
+	// WebP: RIFF....WEBP
+	if data[0] == 'R' && data[1] == 'I' && data[2] == 'F' && data[3] == 'F' &&
+		data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P' {
+		return "webp", true
+	}
+	return "", false
+}
+
 type Scraper struct {
 	cfg internal.Config
 	s3  s3.Client
@@ -391,9 +412,21 @@ func (sc *Scraper) DownloadSourceToTemp(ctx context.Context, asset *model.Source
 		return "", fmt.Errorf("asset.MediaKey is empty (asset ID: %s)", asset.ID)
 	}
 
-	data, _, err := sc.s3.GetBytes(ctx, asset.MediaKey)
+	data, ct, err := sc.s3.GetBytes(ctx, asset.MediaKey)
 	if err != nil {
 		return "", fmt.Errorf("s3.GetBytes failed for key '%s': %w", asset.MediaKey, err)
+	}
+	if kind, ok := looksLikeImage(data); !ok {
+		head := data
+		if len(head) > 32 {
+			head = head[:32]
+		}
+		return "", fmt.Errorf("downloaded source is not a valid image (key=%s id=%s ct=%q size=%d head=% x)", asset.MediaKey, asset.ID, ct, len(data), head)
+	} else {
+		_ = kind
+	}
+	if len(data) < 1024 {
+		return "", fmt.Errorf("downloaded source too small (key=%s id=%s ct=%q size=%d)", asset.MediaKey, asset.ID, ct, len(data))
 	}
 	ext := filepath.Ext(asset.MediaKey)
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("source-%s%s", asset.ID, ext))

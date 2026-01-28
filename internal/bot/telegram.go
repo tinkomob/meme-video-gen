@@ -57,7 +57,13 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			b.schedulePosterDone <- struct{}{}
+			// Never block on shutdown: close channel once.
+			select {
+			case <-b.schedulePosterDone:
+				// already closed
+			default:
+				close(b.schedulePosterDone)
+			}
 			return nil
 		case upd := <-updates:
 			if upd.Message != nil && upd.Message.IsCommand() {
@@ -318,8 +324,6 @@ func tempFilePath(prefix, name string) string {
 
 // runSchedulePoster runs in background and sends memes at scheduled times
 func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
-	defer close(b.schedulePosterDone)
-
 	// Wait for schedule to load
 	time.Sleep(3 * time.Second)
 
