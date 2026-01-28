@@ -25,6 +25,7 @@ type MemeService interface {
 	GenerateOneMeme(ctx context.Context) (*model.Meme, error)
 	GetRandomMeme(ctx context.Context) (*model.Meme, error)
 	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
+	DeleteMeme(ctx context.Context, memeID string) error
 }
 
 type Service struct {
@@ -38,12 +39,25 @@ type Service struct {
 	scheduleMux sync.Mutex
 	schedule    *DailySchedule
 
-	cfgMux sync.Mutex
+	cfgMux  sync.Mutex
+	monitor *ResourceMonitor
 }
 
 func (s *Service) Run(ctx context.Context) error {
 	s.cron.Start()
+
+	// Start resource monitor
+	if s.monitor != nil {
+		s.monitor.Start(ctx)
+	}
+
 	<-ctx.Done()
+
+	// Stop resource monitor
+	if s.monitor != nil {
+		s.monitor.Stop()
+	}
+
 	ctxStop := s.cron.Stop()
 	select {
 	case <-ctxStop.Done():
@@ -67,6 +81,10 @@ func (s *Service) GetSchedule() *DailySchedule {
 	s.scheduleMux.Lock()
 	defer s.scheduleMux.Unlock()
 	return s.schedule
+}
+
+func (s *Service) GetMonitor() *ResourceMonitor {
+	return s.monitor
 }
 
 func (s *Service) SetSchedule(sched *DailySchedule) {
@@ -177,6 +195,24 @@ func (s *Service) ClearSources(ctx context.Context) error {
 	return nil
 }
 
+// SyncSources synchronizes sources.json with actual S3 sources/ folder
+func (s *Service) SyncSources(ctx context.Context) error {
+	s.log.Infof("syncing sources with S3")
+	if impl, ok := s.impl.(*realImpl); ok {
+		return impl.src.SyncWithS3(ctx)
+	}
+	return errors.New("sync not available for this implementation")
+}
+
+// SyncMemes synchronizes memes.json with actual S3 memes/ folder
+func (s *Service) SyncMemes(ctx context.Context) error {
+	s.log.Infof("syncing memes with S3")
+	if impl, ok := s.impl.(*realImpl); ok {
+		return impl.video.SyncWithS3(ctx)
+	}
+	return errors.New("sync not available for this implementation")
+}
+
 type realImpl struct {
 	cfg   internal.Config
 	s3    s3.Client
@@ -198,6 +234,17 @@ func (r *realImpl) GetRandomMeme(ctx context.Context) (*model.Meme, error) {
 }
 func (r *realImpl) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error) {
 	return r.video.DownloadMemeToTemp(ctx, meme)
+}
+
+func (r *realImpl) DeleteMeme(ctx context.Context, memeID string) error {
+	r.log.Infof("service.DeleteMeme: START - memeID=%s", memeID)
+	err := r.video.DeleteMeme(ctx, memeID)
+	if err != nil {
+		r.log.Errorf("service.DeleteMeme: FAILED - memeID=%s, err=%v", memeID, err)
+		return err
+	}
+	r.log.Infof("service.DeleteMeme: SUCCESS - memeID=%s", memeID)
+	return nil
 }
 
 func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
@@ -272,38 +319,9 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		}
 	}()
 
-	// Initial run - Start immediately without delay
-	go func() {
-		log.Infof("initial: ensuring songs")
-		if err := impl.EnsureSongs(context.Background()); err != nil {
-			log.Errorf("initial ensure songs failed: %v", err)
-		}
-		log.Infof("initial: ensuring sources")
-		if err := impl.EnsureSources(context.Background()); err != nil {
-			log.Errorf("initial ensure sources failed: %v", err)
-		}
-
-		// Wait for sources to be loaded before generating memes
-		maxRetries := 30
-		for i := 0; i < maxRetries; i++ {
-			sourcesCount, err := s.GetSourcesCount(context.Background())
-			if err == nil && sourcesCount > 0 {
-				log.Infof("sources ready (%d items), starting meme generation", sourcesCount)
-				break
-			}
-			if i == maxRetries-1 {
-				log.Warnf("sources not ready after %d retries, starting meme generation anyway", maxRetries)
-			} else {
-				log.Infof("waiting for sources to be loaded... (attempt %d/%d)", i+1, maxRetries)
-				time.Sleep(1 * time.Second)
-			}
-		}
-
-		log.Infof("initial: ensuring memes")
-		if err := impl.EnsureMemes(context.Background()); err != nil {
-			log.Errorf("initial ensure memes failed: %v", err)
-		}
-	}()
+	// Create and configure resource monitor
+	s.monitor = NewResourceMonitor(s, log)
+	log.Infof("resource monitor initialized")
 
 	return s, nil
 }

@@ -38,6 +38,12 @@ func (sc *Scraper) logf(format string, args ...interface{}) {
 
 func (sc *Scraper) EnsureSources(ctx context.Context) error {
 	sc.log.Infof("sources: ensuring sources index (max=%d)", sc.cfg.MaxSources)
+
+	// First, synchronize JSON with actual S3 files
+	if err := sc.SyncWithS3(ctx); err != nil {
+		sc.log.Errorf("sources: sync failed (continuing anyway): %v", err)
+	}
+
 	var sourcesIdx model.SourcesIndex
 	found, err := sc.s3.ReadJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx)
 	if err != nil {
@@ -200,6 +206,84 @@ func (sc *Scraper) trimExcess(ctx context.Context, idx *model.SourcesIndex) {
 	sc.log.Infof("sources: trimmed %d excess assets", len(toDelete))
 }
 
+// SyncWithS3 synchronizes sources.json with actual files in S3 sources/ folder
+func (sc *Scraper) SyncWithS3(ctx context.Context) error {
+	sc.log.Infof("sources: starting sync with S3 folder")
+
+	// Read current index
+	var sourcesIdx model.SourcesIndex
+	found, err := sc.s3.ReadJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx)
+	if err != nil {
+		return fmt.Errorf("read sources.json: %w", err)
+	}
+	if !found {
+		sourcesIdx = model.SourcesIndex{Items: []model.SourceAsset{}}
+	}
+
+	// List all files in sources/ folder
+	objects, err := sc.s3.List(ctx, sc.cfg.SourcesPrefix)
+	if err != nil {
+		return fmt.Errorf("list S3 sources: %w", err)
+	}
+
+	// Create map of existing keys in JSON
+	existingKeys := make(map[string]bool)
+	for _, item := range sourcesIdx.Items {
+		existingKeys[item.MediaKey] = true
+	}
+
+	// Create map of actual keys in S3
+	actualKeys := make(map[string]bool)
+	for _, obj := range objects {
+		actualKeys[obj.Key] = true
+	}
+
+	// Remove entries from JSON that don't exist in S3
+	originalCount := len(sourcesIdx.Items)
+	filtered := make([]model.SourceAsset, 0)
+	for _, item := range sourcesIdx.Items {
+		if actualKeys[item.MediaKey] {
+			filtered = append(filtered, item)
+		} else {
+			sc.log.Infof("sources: removing orphaned entry from JSON: %s", item.MediaKey)
+		}
+	}
+	sourcesIdx.Items = filtered
+
+	removedCount := originalCount - len(filtered)
+	if removedCount > 0 {
+		sc.log.Infof("sources: removed %d orphaned entries from JSON", removedCount)
+	}
+
+	// Delete orphaned files in S3 that are not tracked in JSON
+	orphanedFiles := 0
+	deletedFiles := 0
+	for key := range actualKeys {
+		if !existingKeys[key] {
+			orphanedFiles++
+			sc.log.Infof("sources: deleting orphaned file from S3: %s", key)
+			if err := sc.s3.Delete(ctx, key); err != nil {
+				sc.log.Errorf("sources: failed to delete orphaned file %s: %v", key, err)
+			} else {
+				deletedFiles++
+			}
+		}
+	}
+	if orphanedFiles > 0 {
+		sc.log.Infof("sources: deleted %d/%d orphaned files from S3", deletedFiles, orphanedFiles)
+	}
+
+	// Update JSON
+	sourcesIdx.UpdatedAt = time.Now()
+	if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
+		return fmt.Errorf("write sources.json: %w", err)
+	}
+
+	sc.log.Infof("sources: sync complete - JSON entries: %d, S3 files: %d, removed: %d, orphaned: %d",
+		len(sourcesIdx.Items), len(objects), removedCount, orphanedFiles)
+	return nil
+}
+
 func (sc *Scraper) assetExists(idx model.SourcesIndex, sha256 string) bool {
 	return lo.ContainsBy(idx.Items, func(a model.SourceAsset) bool { return a.SHA256 == sha256 })
 }
@@ -232,12 +316,37 @@ func (sc *Scraper) GetRandomUnusedSource(ctx context.Context) (*model.SourceAsse
 	i := randomIndex(len(unused))
 	selected := unused[i]
 
-	// Immediately mark this source as used and update sources.json
-	if err := sc.MarkSourceUsed(ctx, selected.ID); err != nil {
-		sc.log.Errorf("sources: failed to mark source as used: %v", err)
+	// Don't mark as used here - will be marked after successful download in generateOne
+	return &selected, nil
+}
+
+func (sc *Scraper) RemoveSourceFromIndex(ctx context.Context, id string) error {
+	var idx model.SourcesIndex
+	found, err := sc.s3.ReadJSON(ctx, sc.cfg.SourcesJSONKey, &idx)
+	if err != nil || !found {
+		return fmt.Errorf("no sources.json")
 	}
 
-	return &selected, nil
+	newItems := make([]model.SourceAsset, 0, len(idx.Items))
+	for _, item := range idx.Items {
+		if item.ID != id {
+			newItems = append(newItems, item)
+		}
+	}
+
+	if len(newItems) == len(idx.Items) {
+		return fmt.Errorf("source %s not found", id)
+	}
+
+	idx.Items = newItems
+	idx.UpdatedAt = time.Now()
+
+	if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &idx); err != nil {
+		return fmt.Errorf("failed to update sources.json: %w", err)
+	}
+
+	sc.log.Infof("sources: removed source %s from index", id)
+	return nil
 }
 
 func (sc *Scraper) MarkSourceUsed(ctx context.Context, id string) error {
@@ -264,6 +373,14 @@ func (sc *Scraper) MarkSourceUsed(ctx context.Context, id string) error {
 	}
 
 	return fmt.Errorf("source %s not found", id)
+}
+
+func (sc *Scraper) SourceExistsInS3(ctx context.Context, asset *model.SourceAsset) bool {
+	if asset == nil || asset.MediaKey == "" {
+		return false
+	}
+	_, _, err := sc.s3.GetBytes(ctx, asset.MediaKey)
+	return err == nil
 }
 
 func (sc *Scraper) DownloadSourceToTemp(ctx context.Context, asset *model.SourceAsset) (string, error) {
