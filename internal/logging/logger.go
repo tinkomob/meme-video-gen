@@ -50,6 +50,10 @@ func (l *Logger) Infof(format string, args ...any) {
 	l.info.Printf(format, args...)
 }
 
+func (l *Logger) Warnf(format string, args ...any) {
+	l.info.Printf(format, args...)
+}
+
 func (l *Logger) Errorf(format string, args ...any) {
 	l.errMu.Lock()
 	defer l.errMu.Unlock()

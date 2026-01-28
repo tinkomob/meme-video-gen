@@ -22,15 +22,8 @@ func (sc *Scraper) ScrapePinterest(ctx context.Context, boardURL string) (*model
 	// Try Chrome-based scraping first
 	imgURL, err := sc.scrapePinterestChrome(boardURL)
 	if err == nil && imgURL != "" {
-		sc.logf("[SCRAPER] ✓ Chrome scraping successful")
-		return &model.SourceAsset{
-			ID:        fmt.Sprintf("pinterest-%d", time.Now().UnixNano()),
-			Kind:      model.SourceKindPinterest,
-			SourceURL: boardURL,
-			MediaKey:  imgURL,
-			MimeType:  "image/jpeg",
-			AddedAt:   time.Now(),
-		}, nil
+		sc.logf("[SCRAPER] ✓ Chrome scraping successful, downloading and deduplicating...")
+		return sc.downloadAsset(ctx, imgURL, model.SourceKindPinterest, boardURL)
 	}
 
 	if err != nil {
@@ -370,20 +363,13 @@ func (sc *Scraper) scrapePinterestColly(ctx context.Context, boardURL string) (*
 		}
 
 		if bestImgURL != "" {
-			sc.logf("[COLLY] ✓ Found image from Colly")
+			sc.logf("[COLLY] ✓ Found image from Colly, downloading and deduplicating...")
 			finalURL := bestImgURL
 			if !strings.Contains(finalURL, "fit=") && !strings.Contains(finalURL, "?") {
 				sc.logf("[COLLY] Adding quality parameters: fit=1200x1200")
 				finalURL += "?fit=1200x1200"
 			}
-			return &model.SourceAsset{
-				ID:        fmt.Sprintf("pinterest-%d", time.Now().UnixNano()),
-				Kind:      model.SourceKindPinterest,
-				SourceURL: boardURL,
-				MediaKey:  finalURL,
-				MimeType:  "image/jpeg",
-				AddedAt:   time.Now(),
-			}, nil
+			return sc.downloadAsset(ctx, finalURL, model.SourceKindPinterest, boardURL)
 		}
 	}
 

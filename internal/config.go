@@ -59,7 +59,7 @@ func LoadConfig() (Config, error) {
 		TokensPrefix:  "tokens/",
 		PayloadPrefix: "payload/",
 
-		MaxSources:       50,
+		MaxSources:       10,
 		MaxMemes:         10,
 		MaxAge:           24 * time.Hour,
 		DailyGenerations: 3,

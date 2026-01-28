@@ -22,6 +22,7 @@ type MemeService interface {
 	EnsureSongs(ctx context.Context) error
 	EnsureSources(ctx context.Context) error
 	EnsureMemes(ctx context.Context) error
+	GenerateOneMeme(ctx context.Context) (*model.Meme, error)
 	GetRandomMeme(ctx context.Context) (*model.Meme, error)
 	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
 }
@@ -102,6 +103,80 @@ func (s *Service) LoadPostsChatID(ctx context.Context) error {
 	return nil
 }
 
+// GetSourcesCount returns the number of loaded sources
+func (s *Service) GetSourcesCount(ctx context.Context) (int, error) {
+	var sourcesIdx model.SourcesIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, nil
+	}
+	return len(sourcesIdx.Items), nil
+}
+
+// GetMemesCount returns the number of generated meme videos
+func (s *Service) GetMemesCount(ctx context.Context) (int, error) {
+	var memesIdx model.MemesIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, nil
+	}
+	return len(memesIdx.Items), nil
+}
+
+// GetSongsCount returns the number of loaded audio songs
+func (s *Service) GetSongsCount(ctx context.Context) (int, error) {
+	var songsIdx model.SongsIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.SongsJSONKey, &songsIdx)
+	if err != nil {
+		return 0, err
+	}
+	if !found {
+		return 0, nil
+	}
+	return len(songsIdx.Items), nil
+}
+
+// ClearSources removes all sources from the index and deletes source files from S3
+func (s *Service) ClearSources(ctx context.Context) error {
+	s.log.Infof("clearing all sources")
+
+	// Read current sources index
+	var sourcesIdx model.SourcesIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx)
+	if err != nil {
+		return err
+	}
+
+	if !found || len(sourcesIdx.Items) == 0 {
+		s.log.Infof("no sources to clear")
+		return nil
+	}
+
+	// Delete all source files from S3
+	for _, source := range sourcesIdx.Items {
+		if err := s.s3c.Delete(ctx, source.MediaKey); err != nil {
+			s.log.Errorf("failed to delete source %s: %v", source.ID, err)
+		}
+	}
+
+	// Clear the sources index
+	sourcesIdx.Items = []model.SourceAsset{}
+	sourcesIdx.UpdatedAt = time.Now()
+
+	if err := s.s3c.WriteJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
+		return err
+	}
+
+	s.log.Infof("sources cleared successfully")
+	return nil
+}
+
 type realImpl struct {
 	cfg   internal.Config
 	s3    s3.Client
@@ -115,6 +190,9 @@ type realImpl struct {
 func (r *realImpl) EnsureSongs(ctx context.Context) error   { return r.audio.EnsureSongs(ctx) }
 func (r *realImpl) EnsureSources(ctx context.Context) error { return r.src.EnsureSources(ctx) }
 func (r *realImpl) EnsureMemes(ctx context.Context) error   { return r.video.EnsureMemes(ctx) }
+func (r *realImpl) GenerateOneMeme(ctx context.Context) (*model.Meme, error) {
+	return r.video.GenerateOneMeme(ctx)
+}
 func (r *realImpl) GetRandomMeme(ctx context.Context) (*model.Meme, error) {
 	return r.video.GetRandomMeme(ctx)
 }
@@ -204,6 +282,23 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		if err := impl.EnsureSources(context.Background()); err != nil {
 			log.Errorf("initial ensure sources failed: %v", err)
 		}
+
+		// Wait for sources to be loaded before generating memes
+		maxRetries := 30
+		for i := 0; i < maxRetries; i++ {
+			sourcesCount, err := s.GetSourcesCount(context.Background())
+			if err == nil && sourcesCount > 0 {
+				log.Infof("sources ready (%d items), starting meme generation", sourcesCount)
+				break
+			}
+			if i == maxRetries-1 {
+				log.Warnf("sources not ready after %d retries, starting meme generation anyway", maxRetries)
+			} else {
+				log.Infof("waiting for sources to be loaded... (attempt %d/%d)", i+1, maxRetries)
+				time.Sleep(1 * time.Second)
+			}
+		}
+
 		log.Infof("initial: ensuring memes")
 		if err := impl.EnsureMemes(context.Background()); err != nil {
 			log.Errorf("initial ensure memes failed: %v", err)

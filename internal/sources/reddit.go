@@ -49,7 +49,7 @@ func (sc *Scraper) scrapeReddit(ctx context.Context, subredditURL string) (*mode
 	}
 
 	// Construct Reddit API URL with JSON format
-	apiURL := fmt.Sprintf("https://www.reddit.com/r/%s/hot.json?limit=50", url.QueryEscape(subredditName))
+	apiURL := fmt.Sprintf("https://www.reddit.com/r/%s/new.json?limit=50", url.QueryEscape(subredditName))
 
 	// Create HTTP request with proper User-Agent
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, apiURL, nil)

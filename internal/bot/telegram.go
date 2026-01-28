@@ -93,6 +93,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdScheduleInfo(chatID)
 	case "runscheduled":
 		b.cmdRunScheduled(ctx, chatID)
+	case "clearsources":
+		b.cmdClearSources(ctx, chatID)
 	default:
 		b.replyText(chatID, "Неизвестная команда. Используйте /help")
 	}
@@ -111,8 +113,22 @@ func (b *TelegramBot) replyText(chatID int64, text string) {
 func (b *TelegramBot) handleMeme(ctx context.Context, chatID int64) {
 	meme, err := b.svc.Impl().GetRandomMeme(ctx)
 	if err != nil {
-		b.log.Errorf("get random meme: %v", err)
-		b.replyText(chatID, "Мемы ещё не сгенерированы. Подожди пару минут.")
+		b.log.Infof("no memes available, starting generation: %v", err)
+		b.replyText(chatID, "🚀 Нет готовых мемов, запускаю генерацию...")
+
+		// Generate one meme
+		go func() {
+			newMeme, genErr := b.svc.Impl().GenerateOneMeme(ctx)
+			if genErr != nil {
+				b.log.Errorf("generate meme: %v", genErr)
+				b.replyText(chatID, fmt.Sprintf("❌ Ошибка генерации: %v", genErr))
+				return
+			}
+
+			b.log.Infof("meme generated, sending to chat")
+			time.Sleep(2 * time.Second) // Brief delay for S3 sync
+			b.sendMemeVideo(ctx, chatID, newMeme)
+		}()
 		return
 	}
 
@@ -254,6 +270,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /chatid — показать текущий chat ID
 /scheduleinfo — расписание отправок мемов на сегодня
 /runscheduled — отправить 3 мема в чат сейчас
+/clearsources — очистить папку источников
 
 Бот работает в режиме расписания: мемы отправляются N раз в день.
 Команда /meme отправляет случайное видео из уже сгенерированных.`
@@ -275,8 +292,38 @@ func (b *TelegramBot) cmdErrors(chatID int64) {
 }
 
 func (b *TelegramBot) cmdStatus(ctx context.Context, chatID int64) {
-	// Stub: show scheduler status, memory usage, etc.
-	b.replyText(chatID, "📊 Статус системы:\n\nScheduler: работает\nErrors.log: доступен\nПамять: N/A")
+	sourcesCount, err := b.svc.GetSourcesCount(ctx)
+	if err != nil {
+		b.log.Errorf("get sources count: %v", err)
+		sourcesCount = -1
+	}
+
+	songsCount, err := b.svc.GetSongsCount(ctx)
+	if err != nil {
+		b.log.Errorf("get songs count: %v", err)
+		songsCount = -1
+	}
+
+	memesCount, err := b.svc.GetMemesCount(ctx)
+	if err != nil {
+		b.log.Errorf("get memes count: %v", err)
+		memesCount = -1
+	}
+
+	var sourcesStr, songsStr string
+	if sourcesCount == -1 {
+		sourcesStr = "Ошибка"
+	} else {
+		sourcesStr = fmt.Sprintf("%d", sourcesCount)
+	}
+	if songsCount == -1 {
+		songsStr = "Ошибка"
+	} else {
+		songsStr = fmt.Sprintf("%d", songsCount)
+	}
+
+	status := fmt.Sprintf("📊 Статус системы:\n\n✅ Scheduler: работает\n✅ Errors.log: доступен\n📁 Загруженных источников: %s\n🎵 Загруженных аудио: %s\n🎥 Сгенерировано мемов: %d", sourcesStr, songsStr, memesCount)
+	b.replyText(chatID, status)
 }
 
 func (b *TelegramBot) cmdChatID(chatID int64) {
@@ -351,4 +398,16 @@ func (b *TelegramBot) cmdRunScheduled(ctx context.Context, chatID int64) {
 			}
 		}()
 	}
+}
+
+func (b *TelegramBot) cmdClearSources(ctx context.Context, chatID int64) {
+	b.replyText(chatID, "🗑️ Очищаю папку источников...")
+
+	if err := b.svc.ClearSources(ctx); err != nil {
+		b.log.Errorf("clear sources: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка при очистке: %v", err))
+		return
+	}
+
+	b.replyText(chatID, "✅ Папка источников успешно очищена")
 }

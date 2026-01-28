@@ -37,7 +37,7 @@ func (sc *Scraper) logf(format string, args ...interface{}) {
 }
 
 func (sc *Scraper) EnsureSources(ctx context.Context) error {
-	sc.log.Infof("sources: ensuring sources index")
+	sc.log.Infof("sources: ensuring sources index (max=%d)", sc.cfg.MaxSources)
 	var sourcesIdx model.SourcesIndex
 	found, err := sc.s3.ReadJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx)
 	if err != nil {
@@ -51,7 +51,7 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 	sc.trimExcess(ctx, &sourcesIdx)
 
 	if len(sourcesIdx.Items) >= sc.cfg.MaxSources {
-		sc.log.Infof("sources: already at max (%d)", len(sourcesIdx.Items))
+		sc.log.Infof("sources: already at max capacity (%d/%d)", len(sourcesIdx.Items), sc.cfg.MaxSources)
 		sourcesIdx.UpdatedAt = time.Now()
 		_ = sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx)
 		return nil
@@ -149,7 +149,12 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 			continue
 		}
 
-		if asset != nil && !sc.assetExists(sourcesIdx, asset.SHA256) {
+		if asset != nil {
+			if sc.assetExists(sourcesIdx, asset.SHA256) {
+				sc.log.Infof("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
+				continue
+			}
+			
 			newAssets = append(newAssets, *asset)
 			sourcesIdx.Items = append(sourcesIdx.Items, *asset)
 			sourcesIdx.UpdatedAt = time.Now()
@@ -158,7 +163,7 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 			if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
 				sc.log.Errorf("sources: failed to update sources.json after upload: %v", err)
 			} else {
-				sc.log.Infof("sources: updated sources.json after adding %s asset (%d/%d)", src.name, len(newAssets), needed)
+				sc.log.Infof("sources: ✓ updated sources.json after adding %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
 			}
 		}
 	}

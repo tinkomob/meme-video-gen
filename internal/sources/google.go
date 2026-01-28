@@ -221,24 +221,67 @@ func (sc *Scraper) scrapeGoogleImages(ctx context.Context) (*model.SourceAsset, 
 
 // downloadGoogleImage downloads an image from the given URL and creates a SourceAsset
 func (sc *Scraper) downloadGoogleImage(ctx context.Context, imageURL, source, query string) (*model.SourceAsset, error) {
-	// Download image
-	req, err := http.NewRequestWithContext(ctx, "GET", imageURL, nil)
-	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
-	}
+	// Retry logic for download attempts (to handle 403, 429, etc)
+	maxRetries := 3
+	var lastErr error
+	var resp *http.Response
 
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
-	req.Header.Set("Referer", "https://www.google.com/")
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Exponential backoff: 2s, 5s, 10s
+			backoff := time.Duration((attempt)*3+2) * time.Second
+			sc.log.Infof("Google: retry attempt %d/%d after %v", attempt+1, maxRetries, backoff)
+			time.Sleep(backoff)
+		}
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("download request: %w", err)
-	}
-	defer resp.Body.Close()
+		// Download image
+		req, err := http.NewRequestWithContext(ctx, "GET", imageURL, nil)
+		if err != nil {
+			return nil, fmt.Errorf("create request: %w", err)
+		}
 
-	if resp.StatusCode != 200 {
+		// Set comprehensive headers to mimic browser
+		req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+		req.Header.Set("Referer", "https://www.google.com/")
+		req.Header.Set("Accept", "image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8")
+		req.Header.Set("Accept-Language", "en-US,en;q=0.9")
+		req.Header.Set("Accept-Encoding", "gzip, deflate, br")
+		req.Header.Set("DNT", "1")
+		req.Header.Set("Connection", "keep-alive")
+		req.Header.Set("Upgrade-Insecure-Requests", "1")
+		req.Header.Set("Sec-Fetch-Dest", "image")
+		req.Header.Set("Sec-Fetch-Mode", "no-cors")
+		req.Header.Set("Sec-Fetch-Site", "cross-site")
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		var err2 error
+		resp, err2 = client.Do(req)
+		if err2 != nil {
+			lastErr = fmt.Errorf("download request: %w", err2)
+			sc.log.Errorf("Google: attempt %d failed: %v", attempt+1, lastErr)
+			continue
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == 200 {
+			// Success - continue with processing this response
+			lastErr = nil
+			break
+		}
+
+		// For 403/429, retry; for others, fail immediately
+		if resp.StatusCode == 403 || resp.StatusCode == 429 {
+			lastErr = fmt.Errorf("download returned status %d", resp.StatusCode)
+			sc.log.Infof("Google: attempt %d got status %d, will retry", attempt+1, resp.StatusCode)
+			continue
+		}
+
+		// For other errors, fail immediately
 		return nil, fmt.Errorf("download returned status %d", resp.StatusCode)
+	}
+
+	if lastErr != nil {
+		return nil, lastErr
 	}
 
 	// Read image data
