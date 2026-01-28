@@ -46,8 +46,8 @@ type Service struct {
 	scheduleMux sync.Mutex
 	schedule    *DailySchedule
 
-	cfgMux          sync.Mutex
-	monitor         *ResourceMonitor
+	cfgMux           sync.Mutex
+	monitor          *ResourceMonitor
 	uploadersManager *uploaders.Manager
 }
 
@@ -591,7 +591,7 @@ func (s *Service) InitializeYouTubeUploaderFromS3(ctx context.Context) error {
 		s.log.Errorf("InitializeYouTubeUploaderFromS3: failed to read token.json: %v", err)
 		return err
 	}
-	
+
 	var tokenObj map[string]interface{}
 	if err := json.Unmarshal(tokenData, &tokenObj); err != nil {
 		s.log.Errorf("InitializeYouTubeUploaderFromS3: token.json is not valid JSON: %v", err)
@@ -606,4 +606,3 @@ func (s *Service) InitializeYouTubeUploaderFromS3(ctx context.Context) error {
 	s.log.Infof("InitializeYouTubeUploaderFromS3: YouTube uploader initialized successfully")
 	return nil
 }
-
