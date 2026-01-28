@@ -26,6 +26,11 @@ func NewTelegramUploader(botToken, chatID string) *TelegramUploader {
 	}
 }
 
+// SetChatID updates the chat ID (for dynamic loading from S3)
+func (t *TelegramUploader) SetChatID(chatID string) {
+	t.chatID = chatID
+}
+
 // Platform returns the platform name
 func (t *TelegramUploader) Platform() string {
 	return "telegram"
@@ -135,11 +140,11 @@ func (t *TelegramUploader) Upload(ctx context.Context, req *UploadRequest) (*Upl
 
 	// Parse response
 	var result struct {
-		Ok          bool   `json:"ok"`
-		Description string `json:"description"`
-		Result      struct {
-			MessageID int `json:"message_id"`
-		} `json:"result"`
+		Ok          bool        `json:"ok"`
+		Description string      `json:"description"`
+		Error       string      `json:"error"`
+		ErrorCode   int         `json:"error_code"`
+		Result      interface{} `json:"result"`
 	}
 
 	err = json.NewDecoder(resp.Body).Decode(&result)
@@ -152,19 +157,26 @@ func (t *TelegramUploader) Upload(ctx context.Context, req *UploadRequest) (*Upl
 	}
 
 	if !result.Ok {
+		errMsg := result.Description
+		if errMsg == "" {
+			errMsg = result.Error
+		}
+		if result.ErrorCode != 0 {
+			errMsg = fmt.Sprintf("Error %d: %s", result.ErrorCode, errMsg)
+		}
 		return &UploadResult{
 			Success:  false,
 			Platform: "telegram",
-			Error:    "Post failed",
-			Details:  map[string]string{"error": result.Description},
-		}, fmt.Errorf("telegram post failed: %s", result.Description)
+			Error:    errMsg,
+			Details:  map[string]string{"chat_id": t.chatID, "error": errMsg},
+		}, fmt.Errorf("telegram post failed: %s", errMsg)
 	}
 
 	return &UploadResult{
 		Success:  true,
 		Platform: "telegram",
 		Details: map[string]string{
-			"message_id": fmt.Sprintf("%d", result.Result.MessageID),
+			"status": "video sent to channel",
 		},
 	}, nil
 }

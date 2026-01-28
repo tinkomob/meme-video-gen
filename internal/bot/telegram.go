@@ -17,6 +17,7 @@ import (
 	"meme-video-gen/internal/logging"
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/scheduler"
+	uploaders_types "meme-video-gen/internal/uploaders"
 )
 
 type TelegramBot struct {
@@ -204,8 +205,102 @@ func splitCallback(data string) []string {
 
 func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID string, msgID int) {
 	b.replyText(chatID, "📤 Загружаю видео во все платформы...")
-	// TODO: Implement actual upload logic using uploaders package
-	b.replyText(chatID, "✅ Видео опубликовано (заглушка)")
+
+	go func() {
+		b.log.Infof("handlePublish: START - memeID=%s, chatID=%d", memeID, chatID)
+
+		// Initialize YouTube uploader from S3 if not already done
+		if _, err := b.svc.GetUploadersManager().GetUploader("youtube"); err != nil {
+			b.log.Infof("handlePublish: YouTube uploader not found, attempting to load from S3")
+			if err := b.svc.InitializeYouTubeUploaderFromS3(context.Background()); err != nil {
+				b.log.Warnf("handlePublish: failed to load YouTube uploader from S3: %v", err)
+			} else {
+				b.log.Infof("handlePublish: YouTube uploader loaded successfully from S3")
+			}
+		} else {
+			b.log.Infof("handlePublish: YouTube uploader already initialized")
+		}
+
+		// Get meme from storage
+		meme, err := b.svc.GetMemeByID(context.Background(), memeID)
+		if err != nil {
+			b.log.Errorf("handlePublish: failed to get meme: %v", err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка: мем не найден - %v", err))
+			return
+		}
+
+		// Download video and thumbnail from S3
+		videoPath, err := b.svc.Impl().DownloadMemeToTemp(context.Background(), meme)
+		if err != nil {
+			b.log.Errorf("handlePublish: failed to download video: %v", err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка загрузки видео: %v", err))
+			return
+		}
+		defer os.Remove(videoPath)
+
+		// Download thumbnail
+		thumbPath, err := b.svc.DownloadFileToTemp(context.Background(), meme.ThumbKey, "thumb")
+		if err != nil {
+			b.log.Warnf("handlePublish: failed to download thumbnail: %v (continuing without thumb)", err)
+			thumbPath = ""
+		}
+		if thumbPath != "" {
+			defer os.Remove(thumbPath)
+		}
+
+		// Prepare upload request
+		uploaders := b.svc.GetUploadersManager()
+		if uploaders == nil {
+			b.log.Errorf("handlePublish: uploaders manager is nil")
+			b.replyText(chatID, "❌ Ошибка: менеджер загрузчиков не инициализирован")
+			return
+		}
+
+		uploadReq := &uploaders_types.UploadRequest{
+			VideoPath:     videoPath,
+			ThumbnailPath: thumbPath,
+			Title:         meme.Title,
+			Description:   fmt.Sprintf("Мем видео\nИД: %s", meme.ID),
+			Caption:       meme.Title,
+			Privacy:       "public",
+		}
+
+		// Upload to all platforms
+		b.log.Infof("handlePublish: uploading to all platforms")
+		results := uploaders.UploadToAll(context.Background(), uploadReq)
+
+		// Build result message
+		success := 0
+		failed := 0
+		var resultLines []string
+
+		for platform, result := range results {
+			if result.Success {
+				success++
+				if result.URL != "" {
+					resultLines = append(resultLines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", strings.ToUpper(platform), result.URL))
+				} else {
+					resultLines = append(resultLines, fmt.Sprintf("✅ %s: загружено", strings.ToUpper(platform)))
+				}
+				b.log.Infof("handlePublish: ✓ %s uploaded successfully", platform)
+			} else {
+				failed++
+				resultLines = append(resultLines, fmt.Sprintf("❌ %s: %s", strings.ToUpper(platform), result.Error))
+				b.log.Errorf("handlePublish: ✗ %s failed: %s", platform, result.Error)
+			}
+		}
+
+		// Send results
+		if success > 0 {
+			msg := fmt.Sprintf("📤 Результаты публикации:\n\n%s", strings.Join(resultLines, "\n"))
+			b.replyHTML(chatID, msg)
+			b.log.Infof("handlePublish: COMPLETE - success=%d, failed=%d", success, failed)
+		} else {
+			msg := fmt.Sprintf("❌ Ошибка публикации:\n\n%s", strings.Join(resultLines, "\n"))
+			b.replyText(chatID, msg)
+			b.log.Errorf("handlePublish: FAILED - all platforms failed")
+		}
+	}()
 }
 
 func (b *TelegramBot) handleChoosePlatforms(ctx context.Context, chatID int64, memeID string, msgID int) {
@@ -1425,6 +1520,13 @@ func (b *TelegramBot) cmdEenfinit(ctx context.Context, chatID int64, args string
 
 func (b *TelegramBot) replyText(chatID int64, text string) int {
 	m := tgbotapi.NewMessage(chatID, text)
+	sent, _ := b.tg.Send(m)
+	return sent.MessageID
+}
+
+func (b *TelegramBot) replyHTML(chatID int64, text string) int {
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ParseMode = tgbotapi.ModeHTML
 	sent, _ := b.tg.Send(m)
 	return sent.MessageID
 }

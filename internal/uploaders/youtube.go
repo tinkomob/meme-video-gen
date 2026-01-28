@@ -119,7 +119,7 @@ func (y *YouTubeUploader) authenticate(ctx context.Context) (*youtube.Service, e
 	// Read credentials file
 	credBytes, err := os.ReadFile(y.credentialsPath)
 	if err != nil {
-		return nil, fmt.Errorf("unable to read credentials file: %v", err)
+		return nil, fmt.Errorf("unable to read credentials file %s: %v", y.credentialsPath, err)
 	}
 
 	config, err := google.ConfigFromJSON(credBytes, youtube.YoutubeUploadScope, youtube.YoutubeScope)
@@ -129,7 +129,11 @@ func (y *YouTubeUploader) authenticate(ctx context.Context) (*youtube.Service, e
 
 	// Load token from file if exists
 	token, err := y.loadToken()
-	if err != nil || token == nil || !token.Valid() {
+	if err != nil {
+		return nil, fmt.Errorf("failed to load token: %v", err)
+	}
+
+	if token == nil || !token.Valid() {
 		// Token doesn't exist or is invalid, need to get new one
 		// For now, return error - in production you'd implement full OAuth flow
 		return nil, fmt.Errorf("token not found or invalid. Please authenticate first")
@@ -151,13 +155,22 @@ func (y *YouTubeUploader) authenticate(ctx context.Context) (*youtube.Service, e
 func (y *YouTubeUploader) loadToken() (*oauth2.Token, error) {
 	f, err := os.Open(y.tokenPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to open token file %s: %w", y.tokenPath, err)
 	}
 	defer f.Close()
 
 	token := &oauth2.Token{}
 	err = json.NewDecoder(f).Decode(token)
-	return token, err
+	if err != nil {
+		return nil, fmt.Errorf("failed to decode token from %s: %w", y.tokenPath, err)
+	}
+
+	// Validate token has required fields
+	if token.AccessToken == "" {
+		return nil, fmt.Errorf("token missing AccessToken field")
+	}
+
+	return token, nil
 }
 
 // saveToken saves OAuth token to file

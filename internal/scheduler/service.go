@@ -2,7 +2,11 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
+	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -15,6 +19,7 @@ import (
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/s3"
 	"meme-video-gen/internal/sources"
+	"meme-video-gen/internal/uploaders"
 	"meme-video-gen/internal/video"
 )
 
@@ -41,8 +46,9 @@ type Service struct {
 	scheduleMux sync.Mutex
 	schedule    *DailySchedule
 
-	cfgMux  sync.Mutex
-	monitor *ResourceMonitor
+	cfgMux          sync.Mutex
+	monitor         *ResourceMonitor
+	uploadersManager *uploaders.Manager
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -377,6 +383,9 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	s.monitor = NewResourceMonitor(s, log)
 	log.Infof("resource monitor initialized")
 
+	// Initialize uploaders manager
+	s.InitializeUploadersManager()
+
 	return s, nil
 }
 
@@ -436,3 +445,165 @@ func (s *Service) DeleteMemesOlderThan(ctx context.Context, duration time.Durati
 	s.log.Infof("deleted %d old memes", deletedCount)
 	return nil
 }
+
+// GetMemeByID retrieves a specific meme by ID
+func (s *Service) GetMemeByID(ctx context.Context, memeID string) (*model.Meme, error) {
+	s.log.Infof("GetMemeByID: searching for meme %s", memeID)
+
+	// Load memes index
+	var memesIdx model.MemesIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
+	if err != nil {
+		return nil, err
+	}
+	if !found || len(memesIdx.Items) == 0 {
+		return nil, fmt.Errorf("no memes found in index")
+	}
+
+	// Find meme by ID
+	for _, meme := range memesIdx.Items {
+		if meme.ID == memeID {
+			s.log.Infof("GetMemeByID: found meme %s", memeID)
+			return &meme, nil
+		}
+	}
+
+	return nil, fmt.Errorf("meme not found: %s", memeID)
+}
+
+// DownloadFileToTemp downloads a file from S3 to a temporary location
+func (s *Service) DownloadFileToTemp(ctx context.Context, s3Key string, prefix string) (string, error) {
+	s.log.Infof("DownloadFileToTemp: downloading %s with prefix %s", s3Key, prefix)
+
+	// Determine file extension from S3 key
+	ext := ""
+	if strings.Contains(s3Key, ".") {
+		parts := strings.Split(s3Key, ".")
+		ext = "." + parts[len(parts)-1]
+	}
+
+	// Create temp file with proper extension
+	tempFile, err := os.CreateTemp(os.TempDir(), fmt.Sprintf("%s-*%s", prefix, ext))
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+	defer tempFile.Close()
+
+	tempPath := tempFile.Name()
+
+	// Download from S3
+	reader, err := s.s3c.GetReader(ctx, s3Key)
+	if err != nil {
+		os.Remove(tempPath)
+		return "", fmt.Errorf("failed to open S3 file: %w", err)
+	}
+	defer reader.Reader.Close()
+
+	// Copy to temp file
+	_, err = tempFile.ReadFrom(reader.Reader)
+	if err != nil {
+		os.Remove(tempPath)
+		return "", fmt.Errorf("failed to download file: %w", err)
+	}
+
+	s.log.Infof("DownloadFileToTemp: successfully downloaded to %s", tempPath)
+	return tempPath, nil
+}
+
+// GetUploadersManager returns the uploaders manager
+func (s *Service) GetUploadersManager() *uploaders.Manager {
+	return s.uploadersManager
+}
+
+// InitializeUploadersManager initializes the uploaders manager
+func (s *Service) InitializeUploadersManager() {
+	s.uploadersManager = uploaders.NewManager()
+	s.log.Infof("uploaders manager initialized with %d platforms", len(s.uploadersManager.AvailablePlatforms()))
+}
+
+// InitializeYouTubeUploaderFromS3 loads YouTube credentials from S3 and initializes YouTube uploader
+func (s *Service) InitializeYouTubeUploaderFromS3(ctx context.Context) error {
+	s.log.Infof("InitializeYouTubeUploaderFromS3: loading YouTube credentials from S3")
+
+	// Try different possible paths for credentials in S3
+	possibleClientSecrets := []string{
+		"client_secrets.json",
+		"tokens/client_secrets.json",
+		"bot-uploads/client_secrets.json",
+		s.cfg.TokensPrefix + "client_secrets.json",
+	}
+
+	possibleTokens := []string{
+		"token.json",
+		"tokens/token.json",
+		"bot-uploads/token.json",
+		s.cfg.TokensPrefix + "token.json",
+	}
+
+	var clientSecretsPath, tokenPath string
+
+	// Try to find and download client_secrets.json
+	for _, key := range possibleClientSecrets {
+		s.log.Infof("InitializeYouTubeUploaderFromS3: trying to download %s from S3", key)
+		path, err := s.DownloadFileToTemp(ctx, key, "client_secrets")
+		if err == nil {
+			clientSecretsPath = path
+			s.log.Infof("InitializeYouTubeUploaderFromS3: found client_secrets.json at %s", key)
+			break
+		}
+	}
+
+	if clientSecretsPath == "" {
+		s.log.Errorf("InitializeYouTubeUploaderFromS3: could not find client_secrets.json in any location")
+		return fmt.Errorf("client_secrets.json not found in S3")
+	}
+
+	// Try to find and download token.json
+	for _, key := range possibleTokens {
+		s.log.Infof("InitializeYouTubeUploaderFromS3: trying to download %s from S3", key)
+		path, err := s.DownloadFileToTemp(ctx, key, "token")
+		if err == nil {
+			tokenPath = path
+			s.log.Infof("InitializeYouTubeUploaderFromS3: found token.json at %s", key)
+			break
+		}
+	}
+
+	if tokenPath == "" {
+		os.Remove(clientSecretsPath)
+		s.log.Errorf("InitializeYouTubeUploaderFromS3: could not find token.json in any location")
+		return fmt.Errorf("token.json not found in S3")
+	}
+
+	// Verify files exist and are readable
+	if _, err := os.Stat(clientSecretsPath); err != nil {
+		s.log.Errorf("InitializeYouTubeUploaderFromS3: client_secrets.json not accessible: %v", err)
+		return err
+	}
+	if _, err := os.Stat(tokenPath); err != nil {
+		s.log.Errorf("InitializeYouTubeUploaderFromS3: token.json not accessible: %v", err)
+		return err
+	}
+
+	// Try to read and validate token file
+	tokenData, err := os.ReadFile(tokenPath)
+	if err != nil {
+		s.log.Errorf("InitializeYouTubeUploaderFromS3: failed to read token.json: %v", err)
+		return err
+	}
+	
+	var tokenObj map[string]interface{}
+	if err := json.Unmarshal(tokenData, &tokenObj); err != nil {
+		s.log.Errorf("InitializeYouTubeUploaderFromS3: token.json is not valid JSON: %v", err)
+		return err
+	}
+	s.log.Infof("InitializeYouTubeUploaderFromS3: token.json fields: %v", tokenObj)
+
+	// Add YouTube uploader to manager
+	ytUploader := uploaders.NewYouTubeUploader(clientSecretsPath, tokenPath)
+	s.uploadersManager.AddUploader("youtube", ytUploader)
+
+	s.log.Infof("InitializeYouTubeUploaderFromS3: YouTube uploader initialized successfully")
+	return nil
+}
+

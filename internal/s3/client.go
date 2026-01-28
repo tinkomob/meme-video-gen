@@ -21,6 +21,7 @@ import (
 type Client interface {
 	PutBytes(ctx context.Context, key string, b []byte, contentType string) error
 	GetBytes(ctx context.Context, key string) ([]byte, string, error)
+	GetReader(ctx context.Context, key string) (*ObjectReader, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
 
@@ -33,6 +34,11 @@ type ObjectInfo struct {
 	Size         int64
 	LastModified *string
 	ETag         string
+}
+
+type ObjectReader struct {
+	Reader io.ReadCloser
+	Size   int64
 }
 
 type s3Client struct {
@@ -99,6 +105,27 @@ func (c *s3Client) GetBytes(ctx context.Context, key string) ([]byte, string, er
 		ct = *out.ContentType
 	}
 	return b, ct, nil
+}
+
+func (c *s3Client) GetReader(ctx context.Context, key string) (*ObjectReader, error) {
+	out, err := c.api.GetObject(ctx, &awss3.GetObjectInput{Bucket: &c.bucket, Key: &key})
+	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return nil, osErrNotExist(err)
+		}
+		return nil, err
+	}
+
+	size := int64(0)
+	if out.ContentLength != nil {
+		size = *out.ContentLength
+	}
+
+	return &ObjectReader{
+		Reader: out.Body,
+		Size:   size,
+	}, nil
 }
 
 func (c *s3Client) Delete(ctx context.Context, key string) error {

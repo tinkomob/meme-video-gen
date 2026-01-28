@@ -17,30 +17,18 @@ func NewManager() *Manager {
 		uploaders: make(map[string]Uploader),
 	}
 
-	// Initialize YouTube uploader
-	if credPath := os.Getenv("CLIENT_SECRETS"); credPath != "" {
-		tokenPath := os.Getenv("TOKEN_PICKLE")
-		if tokenPath == "" {
-			tokenPath = "token.pickle"
-		}
-		m.uploaders["youtube"] = NewYouTubeUploader(credPath, tokenPath)
+	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
+	chatIDStr := os.Getenv("POSTS_CHATID") // Load from env directly (not POSTS_CHAT_ID)
+	if chatIDStr == "" {
+		chatIDStr = os.Getenv("POSTS_CHAT_ID") // Fallback to POSTS_CHAT_ID
 	}
+
+	// YouTube uploader will be initialized on-demand from S3 via InitializeYouTubeUploaderFromS3
+	// (not initialized here because credentials are on S3, not in env vars or local files)
 
 	// Initialize Telegram uploader
-	if botToken := os.Getenv("TELEGRAM_BOT_TOKEN"); botToken != "" {
-		chatID := os.Getenv("POSTS_CHAT_ID")
-		m.uploaders["telegram"] = NewTelegramUploader(botToken, chatID)
-	}
-
-	// Initialize Instagram uploader (sends to Telegram POSTS_CHAT_ID)
-	if botToken := os.Getenv("TELEGRAM_BOT_TOKEN"); botToken != "" {
-		if chatIDStr := os.Getenv("POSTS_CHAT_ID"); chatIDStr != "" {
-			var chatID int64
-			fmt.Sscanf(chatIDStr, "%d", &chatID)
-			if chatID != 0 {
-				m.uploaders["instagram"] = NewInstagramUploader(botToken, chatID)
-			}
-		}
+	if botToken != "" && chatIDStr != "" {
+		m.uploaders["telegram"] = NewTelegramUploader(botToken, chatIDStr)
 	}
 
 	// Initialize X uploader
@@ -51,6 +39,9 @@ func NewManager() *Manager {
 	if consumerKey != "" && consumerSecret != "" && accessToken != "" && accessTokenSecret != "" {
 		m.uploaders["x"] = NewXUploader(consumerKey, consumerSecret, accessToken, accessTokenSecret)
 	}
+
+	// Note: Instagram is removed to avoid duplicate uploads (Telegram already handles it)
+	// If you want Instagram uploads separately, implement proper Instagram API integration
 
 	return m
 }
@@ -109,4 +100,18 @@ func (m *Manager) AvailablePlatforms() []string {
 		platforms = append(platforms, platform)
 	}
 	return platforms
+}
+
+// UpdateTelegramChatID updates the chat ID for Telegram uploader
+func (m *Manager) UpdateTelegramChatID(chatID string) {
+	if uploader, ok := m.uploaders["telegram"]; ok {
+		if tgUploader, ok := uploader.(*TelegramUploader); ok {
+			tgUploader.SetChatID(chatID)
+		}
+	}
+}
+
+// AddUploader adds or replaces an uploader for a platform
+func (m *Manager) AddUploader(platform string, uploader Uploader) {
+	m.uploaders[platform] = uploader
 }

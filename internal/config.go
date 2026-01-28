@@ -59,7 +59,7 @@ func LoadConfig() (Config, error) {
 		TokensPrefix:  "tokens/",
 		PayloadPrefix: "payload/",
 
-		MaxSources:       50,
+		MaxSources:       20,
 		MaxMemes:         10,
 		MaxAge:           16 * time.Hour,
 		DailyGenerations: 3,
@@ -95,7 +95,7 @@ func LoadConfig() (Config, error) {
 	}
 
 	// Load PostsChatID from env
-	if v := os.Getenv("POSTS_CHAT_ID"); v != "" {
+	if v := os.Getenv("POSTS_CHATID"); v != "" {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.PostsChatID = n
 		}
