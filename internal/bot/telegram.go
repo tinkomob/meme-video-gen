@@ -101,6 +101,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdRunScheduled(ctx, chatID)
 	case "clearsources":
 		b.cmdClearSources(ctx, chatID)
+	case "clearmemes":
+		b.cmdClearMemes(ctx, chatID)
 	case "eenfinit":
 		b.cmdEenfinit(ctx, chatID, msg.CommandArguments())
 	case "sync":
@@ -476,6 +478,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /scheduleinfo — расписание отправок мемов на сегодня
 /runscheduled — отправить 3 мема в чат сейчас (с кнопками действий)
 /clearsources — очистить папку источников
+/clearmemes — очистить папку мемов и memes.json
 /sync — синхронизировать sources.json и memes.json с S3
 /forcecheck — принудительно проверить и восстановить ресурсы
 /eenfinit — генерация мемов ТОЛЬКО для аккаунта eenfinit на YouTube
@@ -629,6 +632,18 @@ func (b *TelegramBot) cmdClearSources(ctx context.Context, chatID int64) {
 	}
 
 	b.replyText(chatID, "✅ Папка источников успешно очищена")
+}
+
+func (b *TelegramBot) cmdClearMemes(ctx context.Context, chatID int64) {
+	b.replyText(chatID, "🗑️ Очищаю папку мемов...")
+
+	if err := b.svc.ClearMemes(ctx); err != nil {
+		b.log.Errorf("clear memes: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка при очистке: %v", err))
+		return
+	}
+
+	b.replyText(chatID, "✅ Папка мемов и memes.json успешно очищены")
 }
 
 func (b *TelegramBot) cmdSync(ctx context.Context, chatID int64) {

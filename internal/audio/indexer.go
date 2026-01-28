@@ -159,7 +159,7 @@ func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Cl
 	songsIdx.Items = append(songsIdx.Items, model.Song{
 		ID:         entry.ID,
 		Title:      entry.Title,
-		Author:     video.Author,
+		Author:     cleanAuthorName(video.Author),
 		SourceURL:  "https://www.youtube.com/watch?v=" + entry.ID,
 		AudioKey:   key,
 		DurationS:  float64(entry.Duration.Seconds()),
@@ -168,6 +168,11 @@ func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Cl
 		SHA256:     hash,
 	})
 	return nil
+}
+
+func cleanAuthorName(author string) string {
+	// Remove " - Topic" suffix that YouTube adds to official audio channels
+	return strings.TrimSuffix(author, " - Topic")
 }
 
 func (idx *Indexer) songExists(songsIdx model.SongsIndex, id string) bool {

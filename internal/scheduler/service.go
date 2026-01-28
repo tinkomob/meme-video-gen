@@ -196,6 +196,44 @@ func (s *Service) ClearSources(ctx context.Context) error {
 	return nil
 }
 
+// ClearMemes removes all memes from the index and deletes meme files from S3
+func (s *Service) ClearMemes(ctx context.Context) error {
+	s.log.Infof("clearing all memes")
+
+	// Read current memes index
+	var memesIdx model.MemesIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
+	if err != nil {
+		return err
+	}
+
+	if !found || len(memesIdx.Items) == 0 {
+		s.log.Infof("no memes to clear")
+		return nil
+	}
+
+	// Delete all meme files from S3
+	for _, meme := range memesIdx.Items {
+		if err := s.s3c.Delete(ctx, meme.VideoKey); err != nil {
+			s.log.Errorf("failed to delete meme video %s: %v", meme.ID, err)
+		}
+		if err := s.s3c.Delete(ctx, meme.ThumbKey); err != nil {
+			s.log.Errorf("failed to delete meme thumbnail %s: %v", meme.ID, err)
+		}
+	}
+
+	// Clear the memes index
+	memesIdx.Items = []model.Meme{}
+	memesIdx.UpdatedAt = time.Now()
+
+	if err := s.s3c.WriteJSON(ctx, s.cfg.MemesJSONKey, &memesIdx); err != nil {
+		return err
+	}
+
+	s.log.Infof("memes cleared successfully")
+	return nil
+}
+
 // SyncSources synchronizes sources.json with actual S3 sources/ folder
 func (s *Service) SyncSources(ctx context.Context) error {
 	s.log.Infof("syncing sources with S3")
