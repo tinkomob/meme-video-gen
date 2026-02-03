@@ -133,13 +133,13 @@ func (y *YouTubeUploader) authenticate(ctx context.Context) (*youtube.Service, e
 		return nil, fmt.Errorf("failed to load token: %v", err)
 	}
 
-	if token == nil || !token.Valid() {
-		// Token doesn't exist or is invalid, need to get new one
+	if token == nil || (token.AccessToken == "" && token.RefreshToken == "") {
+		// Token doesn't exist or has no credentials, need to get new one
 		// For now, return error - in production you'd implement full OAuth flow
 		return nil, fmt.Errorf("token not found or invalid. Please authenticate first")
 	}
 
-	// Create HTTP client with token
+	// Create HTTP client with token - it will refresh automatically if needed
 	client := config.Client(ctx, token)
 
 	// Create YouTube service

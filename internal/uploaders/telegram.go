@@ -38,6 +38,7 @@ func (t *TelegramUploader) Platform() string {
 
 // Upload uploads a video to Telegram channel
 func (t *TelegramUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResult, error) {
+
 	if t.botToken == "" {
 		return &UploadResult{
 			Success:  false,

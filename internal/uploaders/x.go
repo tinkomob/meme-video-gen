@@ -8,6 +8,7 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -79,23 +80,17 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 	}
 
 	// Step 1: INIT - Initialize chunked upload
-	initURL := "https://upload.x.com/1.1/media/upload.json"
+	initURL := "https://upload.twitter.com/1.1/media/upload.json"
 
-	fileInfo, err := os.Stat(videoPath)
-	if err != nil {
-		return "", fmt.Errorf("failed to get file size: %w", err)
-	}
+	// Use form data as per API docs
+	initData := url.Values{}
+	initData.Set("command", "INIT")
+	initData.Set("total_bytes", strconv.Itoa(len(fileData)))
+	initData.Set("media_type", "video/mp4")
+	initData.Set("media_category", "tweet_video")
 
-	initBody := map[string]interface{}{
-		"command":        "INIT",
-		"total_bytes":    fileInfo.Size(),
-		"media_type":     "video/mp4",
-		"media_category": "tweet_video",
-	}
-
-	initBodyJSON, _ := json.Marshal(initBody)
-	initReq, _ := http.NewRequestWithContext(ctx, "POST", initURL, bytes.NewBuffer(initBodyJSON))
-	initReq.Header.Set("Content-Type", "application/json")
+	initReq, _ := http.NewRequestWithContext(ctx, "POST", initURL, strings.NewReader(initData.Encode()))
+	initReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	initResp, err := x.httpClient.Do(initReq)
 	if err != nil {
@@ -103,13 +98,15 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 	}
 	defer initResp.Body.Close()
 
+	if initResp.StatusCode != http.StatusOK && initResp.StatusCode != http.StatusAccepted {
+		bodyBytes, _ := io.ReadAll(initResp.Body)
+		bodyStr := string(bodyBytes)
+		return "", fmt.Errorf("INIT request failed with status %d: %s", initResp.StatusCode, bodyStr)
+	}
+
 	var initRes mediaUploadResponse
 	if err := json.NewDecoder(initResp.Body).Decode(&initRes); err != nil {
 		return "", fmt.Errorf("failed to parse INIT response: %w", err)
-	}
-
-	if initResp.StatusCode != http.StatusOK && initResp.StatusCode != http.StatusAccepted {
-		return "", fmt.Errorf("INIT request failed with status %d", initResp.StatusCode)
 	}
 
 	mediaID := strconv.FormatInt(initRes.MediaID, 10)
@@ -124,7 +121,7 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 
 		chunk := fileData[i:end]
 
-		appendURL := "https://upload.x.com/1.1/media/upload.json"
+		appendURL := "https://upload.twitter.com/1.1/media/upload.json"
 
 		// Create multipart form
 		var appendBody bytes.Buffer
@@ -134,7 +131,7 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 		writer.WriteField("media_id", mediaID)
 		writer.WriteField("segment_index", strconv.Itoa(i/chunkSize))
 
-		mediaField, _ := writer.CreateFormFile("media_data", "chunk.bin")
+		mediaField, _ := writer.CreateFormFile("media", "chunk.bin")
 		mediaField.Write(chunk)
 
 		writer.Close()
@@ -146,24 +143,23 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 		if err != nil {
 			return "", fmt.Errorf("failed to append media chunk: %w", err)
 		}
-		appendResp.Body.Close()
+		defer appendResp.Body.Close()
 
 		if appendResp.StatusCode != http.StatusNoContent && appendResp.StatusCode != http.StatusOK {
-			return "", fmt.Errorf("APPEND request failed with status %d", appendResp.StatusCode)
+			bodyBytes, _ := io.ReadAll(appendResp.Body)
+			return "", fmt.Errorf("APPEND request failed with status %d: %s", appendResp.StatusCode, string(bodyBytes))
 		}
 	}
 
 	// Step 3: FINALIZE - Complete upload
-	finalizeURL := "https://upload.x.com/1.1/media/upload.json"
+	finalizeURL := "https://upload.twitter.com/1.1/media/upload.json"
 
-	finalizeBody := map[string]interface{}{
-		"command":  "FINALIZE",
-		"media_id": mediaID,
-	}
+	finalizeData := url.Values{}
+	finalizeData.Set("command", "FINALIZE")
+	finalizeData.Set("media_id", mediaID)
 
-	finalizeBodyJSON, _ := json.Marshal(finalizeBody)
-	finalizeReq, _ := http.NewRequestWithContext(ctx, "POST", finalizeURL, bytes.NewBuffer(finalizeBodyJSON))
-	finalizeReq.Header.Set("Content-Type", "application/json")
+	finalizeReq, _ := http.NewRequestWithContext(ctx, "POST", finalizeURL, strings.NewReader(finalizeData.Encode()))
+	finalizeReq.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	finalizeResp, err := x.httpClient.Do(finalizeReq)
 	if err != nil {
@@ -171,13 +167,15 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 	}
 	defer finalizeResp.Body.Close()
 
+	if finalizeResp.StatusCode != http.StatusOK && finalizeResp.StatusCode != http.StatusAccepted {
+		bodyBytes, _ := io.ReadAll(finalizeResp.Body)
+		bodyStr := string(bodyBytes)
+		return "", fmt.Errorf("FINALIZE request failed with status %d: %s", finalizeResp.StatusCode, bodyStr)
+	}
+
 	var finalizeRes mediaUploadResponse
 	if err := json.NewDecoder(finalizeResp.Body).Decode(&finalizeRes); err != nil {
 		return "", fmt.Errorf("failed to parse FINALIZE response: %w", err)
-	}
-
-	if finalizeResp.StatusCode != http.StatusOK && finalizeResp.StatusCode != http.StatusAccepted {
-		return "", fmt.Errorf("FINALIZE request failed with status %d", finalizeResp.StatusCode)
 	}
 
 	return mediaID, nil

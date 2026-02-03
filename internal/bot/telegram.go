@@ -287,6 +287,11 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 				failed++
 				resultLines = append(resultLines, fmt.Sprintf("❌ %s: %s", strings.ToUpper(platform), result.Error))
 				b.log.Errorf("handlePublish: ✗ %s failed: %s", platform, result.Error)
+				if len(result.Details) > 0 {
+					for k, v := range result.Details {
+						b.log.Errorf("handlePublish: ✗ %s detail %s: %s", platform, k, v)
+					}
+				}
 			}
 		}
 
@@ -593,8 +598,14 @@ func (b *TelegramBot) sendMemeVideo(ctx context.Context, chatID int64, meme *mod
 	)
 	msg.ReplyMarkup = keyboard
 
-	if _, err := b.tg.Send(msg); err != nil {
+	sentMsg, err := b.tg.Send(msg)
+	if err != nil {
 		b.log.Errorf("send meme: %v", err)
+		b.replyText(chatID, "Ошибка отправки видео")
+		return false
+	}
+	if sentMsg.Video == nil {
+		b.log.Errorf("send meme: sentMsg.Video is nil")
 		b.replyText(chatID, "Ошибка отправки видео")
 		return false
 	}

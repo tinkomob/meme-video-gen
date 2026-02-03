@@ -1,1 +1,0 @@
-# Meme Video Generator Package
