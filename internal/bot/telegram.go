@@ -14,6 +14,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
+	"meme-video-gen/internal/ai"
 	"meme-video-gen/internal/logging"
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/scheduler"
@@ -167,6 +168,10 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 		b.handleChangeAudio(ctx, chatID, memeID, cb.Message.MessageID)
 	case "delete":
 		b.handleDeleteMeme(ctx, chatID, memeID, cb.Message.MessageID)
+	case "dislike":
+		b.handleDislike(ctx, chatID, memeID, cb.Message.MessageID)
+	case "dislikeslider":
+		b.handleDislikeSlider(ctx, chatID, cb.Message.MessageID)
 	case "toggle":
 		if len(parts) >= 3 {
 			platform := parts[1]
@@ -204,8 +209,6 @@ func splitCallback(data string) []string {
 }
 
 func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID string, msgID int) {
-	b.replyText(chatID, "📤 Загружаю видео во все платформы...")
-
 	go func() {
 		b.log.Infof("handlePublish: START - memeID=%s, chatID=%d", memeID, chatID)
 
@@ -260,7 +263,7 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 			VideoPath:     videoPath,
 			ThumbnailPath: thumbPath,
 			Title:         meme.Title,
-			Description:   fmt.Sprintf("Мем видео\nИД: %s", meme.ID),
+			Description:   ai.GetRandomFact(context.Background()),
 			Caption:       meme.Title,
 			Privacy:       "public",
 		}
@@ -295,14 +298,29 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 			}
 		}
 
-		// Send results
+		// Build final message with all information
+		var finalMsg string
 		if success > 0 {
-			msg := fmt.Sprintf("📤 Результаты публикации:\n\n%s", strings.Join(resultLines, "\n"))
-			b.replyHTML(chatID, msg)
 			b.log.Infof("handlePublish: COMPLETE - success=%d, failed=%d", success, failed)
+
+			// Delete meme from S3 after successful publish
+			b.log.Infof("handlePublish: deleting meme from S3 after publish: %s", memeID)
+			deleteErr := b.svc.Impl().DeleteMeme(context.Background(), memeID)
+
+			deleteStatus := ""
+			if deleteErr != nil {
+				b.log.Errorf("handlePublish: failed to delete meme from S3: %v", deleteErr)
+				deleteStatus = fmt.Sprintf("\n\n⚠️ Мем опубликован, но не удален из S3: %v", deleteErr)
+			} else {
+				b.log.Infof("handlePublish: meme successfully deleted from S3: %s", memeID)
+				deleteStatus = "\n\n✅ Мем также удален из S3"
+			}
+
+			finalMsg = fmt.Sprintf("📤 Результаты публикации:\n\n%s%s", strings.Join(resultLines, "\n"), deleteStatus)
+			b.replyHTML(chatID, finalMsg)
 		} else {
-			msg := fmt.Sprintf("❌ Ошибка публикации:\n\n%s", strings.Join(resultLines, "\n"))
-			b.replyText(chatID, msg)
+			finalMsg = fmt.Sprintf("❌ Ошибка публикации:\n\n%s", strings.Join(resultLines, "\n"))
+			b.replyText(chatID, finalMsg)
 			b.log.Errorf("handlePublish: FAILED - all platforms failed")
 		}
 	}()
@@ -411,6 +429,172 @@ func (b *TelegramBot) handleDeleteMeme(ctx context.Context, chatID int64, memeID
 		b.log.Infof("handleDeleteMeme: SUCCESS - meme deleted: %s", memeID)
 		b.replyText(chatID, "✅ Мем успешно удален")
 	}()
+}
+
+// handleDislike deletes the disliked meme and sends a new one
+func (b *TelegramBot) handleDislike(ctx context.Context, chatID int64, memeID string, msgID int) {
+	b.log.Infof("handleDislike: START - memeID=%s, chatID=%d", memeID, chatID)
+	b.replyText(chatID, "👎 Удаляю этот мем и ищу новый...")
+
+	go func() {
+		deleteCtx := context.Background()
+
+		// Delete the disliked meme
+		if err := b.svc.Impl().DeleteMeme(deleteCtx, memeID); err != nil {
+			b.log.Errorf("handleDislike: failed to delete meme %s: %v", memeID, err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка удаления: %v", err))
+			return
+		}
+
+		b.log.Infof("handleDislike: meme deleted successfully: %s", memeID)
+
+		// Get a new random meme
+		newMeme, err := b.svc.Impl().GetRandomMeme(deleteCtx)
+		if err != nil {
+			b.log.Errorf("handleDislike: failed to get new meme: %v", err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка получения нового мема: %v", err))
+			return
+		}
+
+		b.log.Infof("handleDislike: got new meme %s, sending to chat", newMeme.ID)
+
+		// Brief delay for S3 sync
+		time.Sleep(1 * time.Second)
+
+		// Send the new meme
+		b.sendMemeVideo(deleteCtx, chatID, newMeme)
+	}()
+}
+
+// handleDislikeSlider deletes all memes in the slider and sends a new batch
+func (b *TelegramBot) handleDislikeSlider(ctx context.Context, chatID int64, msgID int) {
+	b.log.Infof("handleDislikeSlider: START - chatID=%d", chatID)
+	b.replyText(chatID, "👎 Удаляю слайдер мемов и ищу новый набор...")
+
+	go func() {
+		deleteCtx := context.Background()
+
+		// Get the cached memes for this slider
+		memes, ok := b.sliderMemes[chatID]
+		if !ok || len(memes) == 0 {
+			b.log.Warnf("handleDislikeSlider: no cached memes found for chatID=%d", chatID)
+			b.replyText(chatID, "❌ Кэш мемов слайдера не найден")
+			return
+		}
+
+		b.log.Infof("handleDislikeSlider: deleting %d memes from slider...", len(memes))
+
+		// Delete all memes in the slider
+		for _, meme := range memes {
+			if err := b.svc.Impl().DeleteMeme(deleteCtx, meme.ID); err != nil {
+				b.log.Errorf("handleDislikeSlider: failed to delete meme %s: %v", meme.ID, err)
+				// Continue deleting others
+				continue
+			}
+			b.log.Infof("handleDislikeSlider: meme deleted: %s", meme.ID)
+		}
+
+		// Clear the cache
+		delete(b.sliderMemes, chatID)
+
+		b.log.Infof("handleDislikeSlider: all memes deleted from slider, fetching new batch...")
+
+		// Get new batch of memes (same count as before)
+		count := len(memes)
+		newMemes, err := b.svc.Impl().GetRandomMemes(deleteCtx, count)
+		if err != nil {
+			b.log.Errorf("handleDislikeSlider: failed to get new memes: %v", err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка получения новых мемов: %v", err))
+			return
+		}
+
+		if len(newMemes) == 0 {
+			b.log.Errorf("handleDislikeSlider: no new memes available")
+			b.replyText(chatID, "❌ Нет доступных мемов")
+			return
+		}
+
+		b.log.Infof("handleDislikeSlider: got %d new memes, sending slider...", len(newMemes))
+
+		// Brief delay for S3 sync
+		time.Sleep(1 * time.Second)
+
+		// Send the new batch (using same logic as handleMultipleMemes)
+		b.handleMultipleMemesWithMemes(deleteCtx, chatID, newMemes)
+	}()
+}
+
+// Helper function to send multiple memes directly (without fetching new ones)
+func (b *TelegramBot) handleMultipleMemesWithMemes(ctx context.Context, chatID int64, memes []*model.Meme) {
+	if len(memes) == 0 {
+		b.log.Errorf("handleMultipleMemesWithMemes: no memes provided")
+		b.replyText(chatID, "❌ Нет доступных мемов")
+		return
+	}
+
+	// Cache memes for this chat
+	b.sliderMemes[chatID] = memes
+
+	b.log.Infof("handleMultipleMemesWithMemes: sending %d memes as media group to chat", len(memes))
+
+	// Download all memes first
+	videos := make([]string, 0, len(memes))
+	for _, meme := range memes {
+		videoPath, err := b.svc.Impl().DownloadMemeToTemp(ctx, meme)
+		if err != nil {
+			b.log.Errorf("handleMultipleMemesWithMemes: download meme %s: %v", meme.ID, err)
+			continue
+		}
+		videos = append(videos, videoPath)
+	}
+
+	if len(videos) == 0 {
+		b.log.Errorf("handleMultipleMemesWithMemes: failed to download any memes")
+		b.replyText(chatID, "❌ Не удалось загрузить мемы")
+		return
+	}
+
+	defer func() {
+		for _, v := range videos {
+			os.Remove(v)
+		}
+	}()
+
+	// Build media group (up to 10 videos as slider)
+	mediaGroup := make([]interface{}, 0, len(videos))
+	for idx, videoPath := range videos {
+		meme := memes[idx]
+
+		f, err := os.Open(videoPath)
+		if err != nil {
+			b.log.Errorf("handleMultipleMemesWithMemes: open meme file %d: %v", idx+1, err)
+			continue
+		}
+		defer f.Close()
+
+		// Create caption with slider counter and title
+		caption := fmt.Sprintf("%d/%d — %s", idx+1, len(videos), meme.Title)
+
+		video := tgbotapi.NewInputMediaVideo(tgbotapi.FileReader{
+			Name:   fmt.Sprintf("meme_%d.mp4", idx+1),
+			Reader: f,
+		})
+		video.Caption = caption
+		mediaGroup = append(mediaGroup, video)
+	}
+
+	if len(mediaGroup) > 0 {
+		msg := tgbotapi.NewMediaGroup(chatID, mediaGroup)
+		if _, err := b.tg.SendMediaGroup(msg); err != nil {
+			b.log.Errorf("handleMultipleMemesWithMemes: send media group: %v", err)
+			b.replyText(chatID, "❌ Ошибка отправки видео")
+			return
+		}
+		b.log.Infof("✓ handleMultipleMemesWithMemes: sent %d memes as media group/slider", len(mediaGroup))
+	}
+
+	// Send selection buttons
+	b.sendMemeSelectionButtons(chatID, memes)
 }
 
 func (b *TelegramBot) handleTogglePlatform(ctx context.Context, chatID int64, platform, memeID string, msgID int) {
@@ -594,6 +778,7 @@ func (b *TelegramBot) sendMemeVideo(ctx context.Context, chatID int64, meme *mod
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🗑️ Удалить", fmt.Sprintf("delete:%s", meme.ID)),
+			tgbotapi.NewInlineKeyboardButtonData("👎 Не нравится", fmt.Sprintf("dislike:%s", meme.ID)),
 		),
 	)
 	msg.ReplyMarkup = keyboard
@@ -646,6 +831,11 @@ func (b *TelegramBot) sendMemeSelectionButtons(chatID int64, memes []*model.Meme
 	if len(row) > 0 {
 		rows = append(rows, row)
 	}
+
+	// Add dislike button for the entire slider on a new row
+	rows = append(rows, []tgbotapi.InlineKeyboardButton{
+		tgbotapi.NewInlineKeyboardButtonData("👎 Не нравится слайдер", fmt.Sprintf("dislikeslider:%d", chatID)),
+	})
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
 	msg := tgbotapi.NewMessage(chatID, "🎬 Выберите мем для работы:")

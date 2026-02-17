@@ -17,12 +17,12 @@ import (
 
 // ScrapePinterest extracts a single high-quality image from a Pinterest board URL.
 func (sc *Scraper) ScrapePinterest(ctx context.Context, boardURL string) (*model.SourceAsset, error) {
-	sc.logf("[SCRAPER] 📍 Attempting Chrome-based scraping (with JavaScript)...")
+	sc.logfIfNotSilent("[SCRAPER] 📍 Attempting Chrome-based scraping (with JavaScript)...")
 
 	// Try Chrome-based scraping first
 	imgURL, err := sc.scrapePinterestChrome(boardURL)
 	if err == nil && imgURL != "" {
-		sc.logf("[SCRAPER] ✓ Chrome scraping successful, downloading and deduplicating...")
+		sc.logfIfNotSilent("[SCRAPER] ✓ Chrome scraping successful, downloading and deduplicating...")
 		return sc.downloadAsset(ctx, imgURL, model.SourceKindPinterest, boardURL)
 	}
 
@@ -32,7 +32,7 @@ func (sc *Scraper) ScrapePinterest(ctx context.Context, boardURL string) (*model
 		sc.logf("[SCRAPER] ⚠️ Chrome returned no image")
 	}
 
-	sc.logf("[SCRAPER] Attempting fallback Colly scraping (HTTP-only)...")
+	sc.logfIfNotSilent("[SCRAPER] Attempting fallback Colly scraping (HTTP-only)...")
 	return sc.scrapePinterestColly(ctx, boardURL)
 }
 
@@ -46,7 +46,7 @@ func (sc *Scraper) scrapePinterestChrome(boardURL string) (string, error) {
 		chromedp.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"),
 	)
 
-	sc.logf("[CHROME] Starting Chrome instance...")
+	sc.logfIfNotSilent("[CHROME] Starting Chrome instance...")
 	allocCtx, cancel := chromedp.NewExecAllocator(context.Background(), opts...)
 	defer cancel()
 
@@ -58,7 +58,7 @@ func (sc *Scraper) scrapePinterestChrome(boardURL string) (string, error) {
 
 	pinHref := ""
 
-	sc.logf("[CHROME] Navigating to board: %s", boardURL)
+	sc.logfIfNotSilent("[CHROME] Navigating to board: %s", boardURL)
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(boardURL),
 		chromedp.Sleep(3*time.Second),
@@ -85,10 +85,10 @@ func (sc *Scraper) scrapePinterestChrome(boardURL string) (string, error) {
 	}
 
 	if pinHref != "" {
-		sc.logf("[CHROME] ✓ Found pin link: %s", pinHref)
+		sc.logfIfNotSilent("[CHROME] ✓ Found pin link: %s", pinHref)
 		imgURL, err := sc.scrapePinPage(ctx, pinHref)
 		if err == nil && imgURL != "" {
-			sc.logf("[CHROME] ✓ Successfully got image from pin page")
+			sc.logfIfNotSilent("[CHROME] ✓ Successfully got image from pin page")
 			return imgURL, nil
 		}
 		sc.logf("[CHROME] ⚠ Failed to scrape pin page: %v, falling back to board images", err)
@@ -96,13 +96,13 @@ func (sc *Scraper) scrapePinterestChrome(boardURL string) (string, error) {
 		sc.logf("[CHROME] ⚠ No pin links found on board")
 	}
 
-	sc.logf("[CHROME] Falling back to board image scraping...")
+	sc.logfIfNotSilent("[CHROME] Falling back to board image scraping...")
 	return sc.scrapeBoardImages(ctx)
 }
 
 // scrapePinPage navigates to individual pin page and extracts high-quality image
 func (sc *Scraper) scrapePinPage(ctx context.Context, pinURL string) (string, error) {
-	sc.logf("[PIN] Navigating to pin page...")
+	sc.logfIfNotSilent("[PIN] Navigating to pin page...")
 
 	var imgURL string
 	var debugInfo map[string]interface{}
@@ -224,7 +224,7 @@ func (sc *Scraper) scrapePinPage(ctx context.Context, pinURL string) (string, er
 
 	if debugInfo != nil {
 		if source, ok := debugInfo["source"].(string); ok {
-			sc.logf("[PIN] 📍 Image source: %s", source)
+			sc.logfIfNotSilent("[PIN] 📍 Image source: %s", source)
 		}
 		if url, ok := debugInfo["url"].(string); ok && url != "" {
 			imgURL = url
@@ -236,14 +236,14 @@ func (sc *Scraper) scrapePinPage(ctx context.Context, pinURL string) (string, er
 		return "", fmt.Errorf("no image found on pin page")
 	}
 
-	sc.logf("[PIN] ✓ Found image URL (length: %d)", len(imgURL))
+	sc.logfIfNotSilent("[PIN] ✓ Found image URL (length: %d)", len(imgURL))
 
 	if !strings.Contains(imgURL, "?") {
-		sc.logf("[PIN] Adding quality parameters: fit=1200x1200")
+		sc.logfIfNotSilent("[PIN] Adding quality parameters: fit=1200x1200")
 		imgURL += "?fit=1200x1200"
 	}
 
-	sc.logf("[PIN] ✓ Successfully extracted image from pin page")
+	sc.logfIfNotSilent("[PIN] ✓ Successfully extracted image from pin page")
 	return imgURL, nil
 }
 
@@ -253,7 +253,7 @@ func (sc *Scraper) scrapeBoardImages(ctx context.Context) (string, error) {
 	defer cancel()
 
 	var imageURLs []interface{}
-	sc.logf("[BOARD] Attempting to scrape images from board...")
+	sc.logfIfNotSilent("[BOARD] Attempting to scrape images from board...")
 	err := chromedp.Run(ctx,
 		chromedp.Evaluate(`
 			(function() {
@@ -272,7 +272,7 @@ func (sc *Scraper) scrapeBoardImages(ctx context.Context) (string, error) {
 		return "", fmt.Errorf("failed to get board images: %w", err)
 	}
 
-	sc.logf("[BOARD] Found %d pinimg images", len(imageURLs))
+	sc.logfIfNotSilent("[BOARD] Found %d pinimg images", len(imageURLs))
 	if len(imageURLs) == 0 {
 		sc.logf("[BOARD] ❌ No images found on board")
 		return "", fmt.Errorf("no images found on board")
@@ -283,18 +283,18 @@ func (sc *Scraper) scrapeBoardImages(ctx context.Context) (string, error) {
 	imgURL := selectedImg["src"].(string)
 
 	if !strings.Contains(imgURL, "fit=") {
-		sc.logf("[BOARD] Adding quality parameters: fit=1200x1200")
+		sc.logfIfNotSilent("[BOARD] Adding quality parameters: fit=1200x1200")
 		imgURL += "?fit=1200x1200"
 	}
 
-	sc.logf("[BOARD] ✓ Selected image %d/%d", randomIdx+1, len(imageURLs))
+	sc.logfIfNotSilent("[BOARD] ✓ Selected image %d/%d", randomIdx+1, len(imageURLs))
 	return imgURL, nil
 }
 
 // scrapePinterestColly uses Colly as fallback method
 func (sc *Scraper) scrapePinterestColly(ctx context.Context, boardURL string) (*model.SourceAsset, error) {
 	for attempt := 1; attempt <= 2; attempt++ {
-		sc.logf("[COLLY] Attempt %d/2: Fetching %s", attempt, boardURL)
+		sc.logfIfNotSilent("[COLLY] Attempt %d/2: Fetching %s", attempt, boardURL)
 
 		c := colly.NewCollector(
 			colly.UserAgent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"),
@@ -356,17 +356,17 @@ func (sc *Scraper) scrapePinterestColly(ctx context.Context, boardURL string) (*
 		if err := c.Visit(boardURL); err != nil {
 			sc.logf("[COLLY] ❌ Attempt %d failed: %v", attempt, err)
 			if attempt < 2 {
-				sc.logf("[COLLY] Waiting 2s before retry...")
+				sc.logfIfNotSilent("[COLLY] Waiting 2s before retry...")
 				time.Sleep(2 * time.Second)
 			}
 			continue
 		}
 
 		if bestImgURL != "" {
-			sc.logf("[COLLY] ✓ Found image from Colly, downloading and deduplicating...")
+			sc.logfIfNotSilent("[COLLY] ✓ Found image from Colly, downloading and deduplicating...")
 			finalURL := bestImgURL
 			if !strings.Contains(finalURL, "fit=") && !strings.Contains(finalURL, "?") {
-				sc.logf("[COLLY] Adding quality parameters: fit=1200x1200")
+				sc.logfIfNotSilent("[COLLY] Adding quality parameters: fit=1200x1200")
 				finalURL += "?fit=1200x1200"
 			}
 			return sc.downloadAsset(ctx, finalURL, model.SourceKindPinterest, boardURL)

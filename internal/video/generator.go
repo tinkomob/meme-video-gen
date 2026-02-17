@@ -701,6 +701,9 @@ func (g *Generator) DeleteMeme(ctx context.Context, memeID string) error {
 	idx.UpdatedAt = time.Now()
 	g.log.Infof("deleteMemeb: meme removed from index, remaining items=%d", len(idx.Items))
 
+	// Save the source ID before updating JSON (to delete it later)
+	sourceIDToDelete := memeToDelete.SourceID
+
 	// Write updated memes.json with retry logic
 	maxRetries := 3
 	var lastErr error
@@ -712,7 +715,25 @@ func (g *Generator) DeleteMeme(ctx context.Context, memeID string) error {
 			time.Sleep(time.Duration(retry+1) * 500 * time.Millisecond)
 			continue
 		}
-		g.log.Infof("deleteMemeb: ✓ SUCCESS - meme deleted: %s (remaining: %d)", memeID, len(idx.Items))
+		g.log.Infof("deleteMemeb: ✓ memes.json updated successfully (remaining: %d)", len(idx.Items))
+
+		// Successfully saved, now delete the source (after lock is released by defer)
+		// We break here and handle source deletion outside the lock
+		if sourceIDToDelete != "" {
+			// Schedule source deletion after returning (will happen after defer unlock)
+			// For now, return success and rely on best-effort source cleanup
+			g.log.Infof("deleteMemeb: ✓ SUCCESS - meme fully deleted: %s (remaining: %d)", memeID, len(idx.Items))
+
+			// Defer the source deletion until after this function returns
+			go func() {
+				g.log.Infof("deleteMemeb: async deleting associated source from index - SourceID=%s", sourceIDToDelete)
+				if err := g.sourcesScr.RemoveSourceFromIndex(context.Background(), sourceIDToDelete); err != nil {
+					g.log.Warnf("deleteMemeb: async failed to remove source %s from index: %v (source may already be deleted)", sourceIDToDelete, err)
+				} else {
+					g.log.Infof("deleteMemeb: async ✓ source %s removed from index", sourceIDToDelete)
+				}
+			}()
+		}
 		return nil
 	}
 
@@ -722,6 +743,7 @@ func (g *Generator) DeleteMeme(ctx context.Context, memeID string) error {
 }
 
 // SyncWithS3 synchronizes memes.json with actual files in S3 memes/ folder
+// Also ensures all memes are unique by SHA256
 func (g *Generator) SyncWithS3(ctx context.Context) error {
 	g.log.Infof("memes: starting sync with S3 folder")
 
@@ -760,31 +782,66 @@ func (g *Generator) SyncWithS3(ctx context.Context) error {
 	}
 
 	// Remove entries from JSON where video or thumbnail don't exist in S3
+	// Also remove duplicate memes by SHA256
 	originalCount := len(memesIdx.Items)
 	filtered := make([]model.Meme, 0)
+	seenSHA256 := make(map[string]bool)
+	duplicateCount := 0
+
 	for _, item := range memesIdx.Items {
 		videoExists := actualKeys[item.VideoKey]
 		thumbExists := actualKeys[item.ThumbKey]
 
-		if videoExists && thumbExists {
-			filtered = append(filtered, item)
-		} else {
+		// Check if files exist in S3
+		if !videoExists || !thumbExists {
 			g.log.Infof("memes: removing orphaned entry from JSON: %s (video: %v, thumb: %v)",
 				item.ID, videoExists, thumbExists)
+			continue
 		}
+
+		// Check for SHA256 duplicates
+		if item.SHA256 != "" && seenSHA256[item.SHA256] {
+			g.log.Warnf("memes: removing duplicate meme detected (SHA256: %s, id: %s, existing id will be kept)",
+				item.SHA256, item.ID)
+			// Delete the duplicate video and thumbnail from S3
+			_ = g.s3.Delete(ctx, item.VideoKey)
+			_ = g.s3.Delete(ctx, item.ThumbKey)
+			duplicateCount++
+			continue
+		}
+
+		if item.SHA256 != "" {
+			seenSHA256[item.SHA256] = true
+		}
+
+		filtered = append(filtered, item)
 	}
+
 	memesIdx.Items = filtered
 
 	removedCount := originalCount - len(filtered)
 	if removedCount > 0 {
-		g.log.Infof("memes: removed %d orphaned entries from JSON", removedCount)
+		g.log.Infof("memes: removed %d entries from JSON (orphaned: %d, duplicates: %d)",
+			removedCount, removedCount-duplicateCount, duplicateCount)
 	}
 
-	// Delete orphaned files in S3 that are not tracked in JSON
+	// Update lists of existing keys based on filtered memes
+	filteredVideoKeys := make(map[string]bool)
+	filteredThumbKeys := make(map[string]bool)
+	for _, item := range filtered {
+		if item.VideoKey != "" {
+			filteredVideoKeys[item.VideoKey] = true
+		}
+		if item.ThumbKey != "" {
+			filteredThumbKeys[item.ThumbKey] = true
+		}
+	}
+
+	// Delete orphaned files in S3 that are not tracked in filtered JSON
 	orphanedFiles := 0
 	deletedFiles := 0
 	for key := range actualKeys {
-		if !existingVideoKeys[key] && !existingThumbKeys[key] {
+		if !filteredVideoKeys[key] && !filteredThumbKeys[key] {
 			orphanedFiles++
 			g.log.Infof("memes: deleting orphaned file from S3: %s", key)
 			if err := g.s3.Delete(ctx, key); err != nil {
@@ -804,8 +861,8 @@ func (g *Generator) SyncWithS3(ctx context.Context) error {
 		return fmt.Errorf("write memes.json: %w", err)
 	}
 
-	g.log.Infof("memes: sync complete - JSON entries: %d, S3 files: %d, removed: %d, orphaned: %d",
-		len(memesIdx.Items), len(objects), removedCount, orphanedFiles)
+	g.log.Infof("memes: sync complete - JSON entries: %d, S3 files: %d, removed: %d (duplicates: %d), orphaned files deleted: %d",
+		len(memesIdx.Items), len(objects), removedCount, duplicateCount, deletedFiles)
 	return nil
 }
 

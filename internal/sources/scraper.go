@@ -57,8 +57,22 @@ func (sc *Scraper) logf(format string, args ...interface{}) {
 	}
 }
 
+// logfIfNotSilent logs to stdout only if Silent mode is disabled
+func (sc *Scraper) logfIfNotSilent(format string, args ...interface{}) {
+	if !sc.cfg.Silent {
+		sc.logf(format, args...)
+	}
+}
+
+// logIfNotSilent logs only if Silent mode is disabled
+func (sc *Scraper) logIfNotSilent(format string, args ...interface{}) {
+	if !sc.cfg.Silent && sc.log != nil {
+		sc.log.Infof(format, args...)
+	}
+}
+
 func (sc *Scraper) EnsureSources(ctx context.Context) error {
-	sc.log.Infof("sources: ensuring sources index (max=%d)", sc.cfg.MaxSources)
+	sc.logIfNotSilent("sources: ensuring sources index (max=%d)", sc.cfg.MaxSources)
 
 	// First, synchronize JSON with actual S3 files
 	if err := sc.SyncWithS3(ctx); err != nil {
@@ -78,18 +92,18 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 	sc.trimExcess(ctx, &sourcesIdx)
 
 	if len(sourcesIdx.Items) >= sc.cfg.MaxSources {
-		sc.log.Infof("sources: already at max capacity (%d/%d)", len(sourcesIdx.Items), sc.cfg.MaxSources)
+		sc.logIfNotSilent("sources: already at max capacity (%d/%d)", len(sourcesIdx.Items), sc.cfg.MaxSources)
 		sourcesIdx.UpdatedAt = time.Now()
 		_ = sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx)
 		return nil
 	}
 
-	sc.log.Infof("sources: loading source URLs")
+	sc.logIfNotSilent("sources: loading source URLs")
 	pinterestURLs, _ := sc.loadSourceURLs(ctx, "pinterest_urls.json")
 	redditURLs, _ := sc.loadSourceURLs(ctx, "reddit_sources.json")
 	twitterURLs, _ := sc.loadSourceURLs(ctx, "twitter_urls.json")
 
-	sc.log.Infof("sources: found %d pinterest, %d reddit, %d twitter URLs", len(pinterestURLs), len(redditURLs), len(twitterURLs))
+	sc.logIfNotSilent("sources: found %d pinterest, %d reddit, %d twitter URLs", len(pinterestURLs), len(redditURLs), len(twitterURLs))
 
 	needed := sc.cfg.MaxSources - len(sourcesIdx.Items)
 	if needed <= 0 {
@@ -152,7 +166,7 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 	}
 
 	if len(allSources) == 0 {
-		sc.log.Infof("sources: no sources configured")
+		sc.logIfNotSilent("sources: no sources configured")
 		sourcesIdx.UpdatedAt = time.Now()
 		_ = sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx)
 		return nil
@@ -169,7 +183,7 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 			break
 		}
 
-		sc.log.Infof("sources: trying %s: %s", src.name, src.url)
+		sc.logIfNotSilent("sources: trying %s: %s", src.name, src.url)
 		asset, err := src.scrape(ctx, src.url)
 		if err != nil {
 			sc.log.Errorf("sources: scrape %s %s failed: %v", src.name, src.url, err)
@@ -178,7 +192,7 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 
 		if asset != nil {
 			if sc.assetExists(sourcesIdx, asset.SHA256) {
-				sc.log.Infof("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
+				sc.logIfNotSilent("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
 				continue
 			}
 
@@ -190,12 +204,12 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 			if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
 				sc.log.Errorf("sources: failed to update sources.json after upload: %v", err)
 			} else {
-				sc.log.Infof("sources: ✓ updated sources.json after adding %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
+				sc.logIfNotSilent("sources: ✓ updated sources.json after adding %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
 			}
 		}
 	}
 
-	sc.log.Infof("sources: index updated (added %d new assets, total=%d)", len(newAssets), len(sourcesIdx.Items))
+	sc.logIfNotSilent("sources: index updated (added %d new assets, total=%d)", len(newAssets), len(sourcesIdx.Items))
 	return nil
 }
 
@@ -210,7 +224,7 @@ func (sc *Scraper) cleanupOld(ctx context.Context, idx *model.SourcesIndex) {
 		return true
 	})
 	if len(idx.Items) < before {
-		sc.log.Infof("sources: deleted %d old assets", before-len(idx.Items))
+		sc.logIfNotSilent("sources: deleted %d old assets", before-len(idx.Items))
 	}
 }
 
@@ -224,12 +238,12 @@ func (sc *Scraper) trimExcess(ctx context.Context, idx *model.SourcesIndex) {
 		_ = sc.s3.Delete(ctx, a.MediaKey)
 	}
 	idx.Items = sorted[:sc.cfg.MaxSources]
-	sc.log.Infof("sources: trimmed %d excess assets", len(toDelete))
+	sc.logIfNotSilent("sources: trimmed %d excess assets", len(toDelete))
 }
 
 // SyncWithS3 synchronizes sources.json with actual files in S3 sources/ folder
 func (sc *Scraper) SyncWithS3(ctx context.Context) error {
-	sc.log.Infof("sources: starting sync with S3 folder")
+	sc.logIfNotSilent("sources: starting sync with S3 folder")
 
 	// Read current index
 	var sourcesIdx model.SourcesIndex
@@ -266,14 +280,14 @@ func (sc *Scraper) SyncWithS3(ctx context.Context) error {
 		if actualKeys[item.MediaKey] {
 			filtered = append(filtered, item)
 		} else {
-			sc.log.Infof("sources: removing orphaned entry from JSON: %s", item.MediaKey)
+			sc.logIfNotSilent("sources: removing orphaned entry from JSON: %s", item.MediaKey)
 		}
 	}
 	sourcesIdx.Items = filtered
 
 	removedCount := originalCount - len(filtered)
 	if removedCount > 0 {
-		sc.log.Infof("sources: removed %d orphaned entries from JSON", removedCount)
+		sc.logIfNotSilent("sources: removed %d orphaned entries from JSON", removedCount)
 	}
 
 	// Delete orphaned files in S3 that are not tracked in JSON
@@ -282,7 +296,7 @@ func (sc *Scraper) SyncWithS3(ctx context.Context) error {
 	for key := range actualKeys {
 		if !existingKeys[key] {
 			orphanedFiles++
-			sc.log.Infof("sources: deleting orphaned file from S3: %s", key)
+			sc.logIfNotSilent("sources: deleting orphaned file from S3: %s", key)
 			if err := sc.s3.Delete(ctx, key); err != nil {
 				sc.log.Errorf("sources: failed to delete orphaned file %s: %v", key, err)
 			} else {
@@ -291,7 +305,7 @@ func (sc *Scraper) SyncWithS3(ctx context.Context) error {
 		}
 	}
 	if orphanedFiles > 0 {
-		sc.log.Infof("sources: deleted %d/%d orphaned files from S3", deletedFiles, orphanedFiles)
+		sc.logIfNotSilent("sources: deleted %d/%d orphaned files from S3", deletedFiles, orphanedFiles)
 	}
 
 	// Update JSON
@@ -300,7 +314,7 @@ func (sc *Scraper) SyncWithS3(ctx context.Context) error {
 		return fmt.Errorf("write sources.json: %w", err)
 	}
 
-	sc.log.Infof("sources: sync complete - JSON entries: %d, S3 files: %d, removed: %d, orphaned: %d",
+	sc.logIfNotSilent("sources: sync complete - JSON entries: %d, S3 files: %d, removed: %d, orphaned: %d",
 		len(sourcesIdx.Items), len(objects), removedCount, orphanedFiles)
 	return nil
 }
@@ -319,7 +333,7 @@ func (sc *Scraper) GetRandomUnusedSource(ctx context.Context) (*model.SourceAsse
 	unused := lo.Filter(idx.Items, func(a model.SourceAsset, _ int) bool { return !a.Used })
 	if len(unused) == 0 {
 		// If all sources are used, reset them and start from beginning
-		sc.log.Infof("sources: all sources used, resetting for rotation")
+		sc.logIfNotSilent("sources: all sources used, resetting for rotation")
 		for i := range idx.Items {
 			idx.Items[i].Used = false
 		}
@@ -366,7 +380,7 @@ func (sc *Scraper) RemoveSourceFromIndex(ctx context.Context, id string) error {
 		return fmt.Errorf("failed to update sources.json: %w", err)
 	}
 
-	sc.log.Infof("sources: removed source %s from index", id)
+	sc.logIfNotSilent("sources: removed source %s from index", id)
 	return nil
 }
 
@@ -388,7 +402,7 @@ func (sc *Scraper) MarkSourceUsed(ctx context.Context, id string) error {
 				return fmt.Errorf("failed to update sources.json: %w", err)
 			}
 
-			sc.log.Infof("sources: marked source %s as used and updated sources.json", id)
+			sc.logIfNotSilent("sources: marked source %s as used and updated sources.json", id)
 			return nil
 		}
 	}
@@ -438,7 +452,7 @@ func (sc *Scraper) loadSourceURLs(ctx context.Context, filename string) ([]strin
 	key := sc.cfg.PayloadPrefix + filename
 	data, _, err := sc.s3.GetBytes(ctx, key)
 	if err == nil && data != nil {
-		sc.log.Infof("sources: loaded %s from S3: %s", filename, key)
+		sc.logIfNotSilent("sources: loaded %s from S3: %s", filename, key)
 		res := gjson.GetBytes(data, "@this")
 		if !res.IsArray() {
 			return nil, fmt.Errorf("%s must be array", filename)
@@ -454,7 +468,7 @@ func (sc *Scraper) loadSourceURLs(ctx context.Context, filename string) ([]strin
 	}
 
 	// Fallback to local files
-	sc.log.Infof("sources: S3 load failed for %s (%v), trying local paths", filename, err)
+	sc.logIfNotSilent("sources: S3 load failed for %s (%v), trying local paths", filename, err)
 	paths := []string{
 		filename,
 		"cmd/" + filename,

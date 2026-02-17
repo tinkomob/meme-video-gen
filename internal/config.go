@@ -35,6 +35,7 @@ type Config struct {
 
 	DailyGenerations int   // количество отправок мемов в день
 	PostsChatID      int64 // chat ID для отправки мемов по расписанию
+	Silent           bool  // если true, не выводить информационные логи о загрузке источников
 }
 
 func LoadConfig() (Config, error) {
@@ -64,6 +65,7 @@ func LoadConfig() (Config, error) {
 		MaxAge:           16 * time.Hour,
 		DailyGenerations: 3,
 		PostsChatID:      0,
+		Silent:           true,
 	}
 
 	// Load MaxSources from env
@@ -99,6 +101,12 @@ func LoadConfig() (Config, error) {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
 			cfg.PostsChatID = n
 		}
+
+		// Load Silent from env (default: true)
+		if v := os.Getenv("SILENT"); v != "" {
+			cfg.Silent = v != "false" && v != "0" && v != ""
+		}
+
 	}
 	if cfg.TelegramToken == "" {
 		return cfg, errors.New("TELEGRAM_BOT_TOKEN is required")
