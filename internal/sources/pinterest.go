@@ -53,7 +53,7 @@ func (sc *Scraper) scrapePinterestChrome(boardURL string) (string, error) {
 	ctx, cancel := chromedp.NewContext(allocCtx)
 	defer cancel()
 
-	ctx, cancel = context.WithTimeout(ctx, 120*time.Second)
+	ctx, cancel = context.WithTimeout(ctx, 180*time.Second)
 	defer cancel()
 
 	pinHref := ""
@@ -61,9 +61,9 @@ func (sc *Scraper) scrapePinterestChrome(boardURL string) (string, error) {
 	sc.logfIfNotSilent("[CHROME] Navigating to board: %s", boardURL)
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(boardURL),
-		chromedp.Sleep(3*time.Second),
+		chromedp.Sleep(2*time.Second),
 		chromedp.Evaluate(`window.scrollTo(0, Math.random() * Math.max(document.body.scrollHeight, 2000))`, nil),
-		chromedp.Sleep(3*time.Second),
+		chromedp.Sleep(2*time.Second),
 		chromedp.Evaluate(`
 			(function() {
 				const links = Array.from(document.querySelectorAll('a[href*="/pin/"]'));
@@ -109,7 +109,7 @@ func (sc *Scraper) scrapePinPage(ctx context.Context, pinURL string) (string, er
 
 	err := chromedp.Run(ctx,
 		chromedp.Navigate(pinURL),
-		chromedp.Sleep(4*time.Second),
+		chromedp.Sleep(2*time.Second),
 		chromedp.Evaluate(`
 			(function() {
 				console.log('[DEBUG] Starting image extraction from pin page');
@@ -249,12 +249,13 @@ func (sc *Scraper) scrapePinPage(ctx context.Context, pinURL string) (string, er
 
 // scrapeBoardImages scrapes images directly from the board
 func (sc *Scraper) scrapeBoardImages(ctx context.Context) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	// Use a fresh context for board images to avoid inheriting nearly-expired parent timeout
+	freshCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
 	var imageURLs []interface{}
 	sc.logfIfNotSilent("[BOARD] Attempting to scrape images from board...")
-	err := chromedp.Run(ctx,
+	err := chromedp.Run(freshCtx,
 		chromedp.Evaluate(`
 			(function() {
 				const images = Array.from(document.querySelectorAll('img[src*="pinimg.com"]'));
