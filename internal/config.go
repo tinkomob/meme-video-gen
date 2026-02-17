@@ -63,7 +63,7 @@ func LoadConfig() (Config, error) {
 		MaxSources:       20,
 		MaxMemes:         10,
 		MaxAge:           16 * time.Hour,
-		DailyGenerations: 3,
+		DailyGenerations: 5,
 		PostsChatID:      0,
 		Silent:           true,
 	}

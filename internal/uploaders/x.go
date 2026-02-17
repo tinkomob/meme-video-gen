@@ -225,6 +225,9 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 			},
 		}, fmt.Errorf("failed to upload media: %w", err)
 	}
+	
+	// Log successful media upload
+	fmt.Printf("[DEBUG] X: Media uploaded successfully, mediaID=%s, text=%s\n", mediaID, text)
 
 	// Step 2: Create post with media using v2 API
 	postURL := "https://api.x.com/2/tweets"
@@ -237,6 +240,8 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 	}
 
 	postBodyJSON, _ := json.Marshal(postBody)
+	fmt.Printf("[DEBUG] X: Creating post with body: %s\n", string(postBodyJSON))
+	
 	postReq, _ := http.NewRequestWithContext(ctx, "POST", postURL, bytes.NewBuffer(postBodyJSON))
 	postReq.Header.Set("Content-Type", "application/json")
 
@@ -254,8 +259,16 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 	}
 	defer postResp.Body.Close()
 
+	// Read and attempt to parse response
+	bodyBytes, _ := io.ReadAll(postResp.Body)
+	bodyLen := len(bodyBytes)
+	if bodyLen > 200 {
+		bodyLen = 200
+	}
+	fmt.Printf("[DEBUG] X: Response status=%d, body=%s\n", postResp.StatusCode, string(bodyBytes[:bodyLen]))
+
 	var postRes createPostResponse
-	if err := json.NewDecoder(postResp.Body).Decode(&postRes); err != nil {
+	if err := json.Unmarshal(bodyBytes, &postRes); err != nil {
 		return &UploadResult{
 			Success:  false,
 			Platform: "x",
@@ -268,9 +281,31 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 	}
 
 	if postResp.StatusCode != http.StatusCreated {
-		errorMsg := fmt.Sprintf("API returned status %d", postResp.StatusCode)
+		errorMsg := fmt.Sprintf("status=%d", postResp.StatusCode)
+		
+		// Try to extract error details from API response
 		if len(postRes.Errors) > 0 {
-			errorMsg = postRes.Errors[0].Detail
+			apiErr := postRes.Errors[0]
+			if apiErr.Detail != "" {
+				errorMsg = fmt.Sprintf("%s | detail=%s", errorMsg, apiErr.Detail)
+			}
+			if apiErr.Title != "" {
+				errorMsg = fmt.Sprintf("%s | title=%s", errorMsg, apiErr.Title)
+			}
+			if apiErr.Type != "" {
+				errorMsg = fmt.Sprintf("%s | type=%s", errorMsg, apiErr.Type)
+			}
+		}
+
+		// If error message is still minimal, try to read response body for more info
+		if errorMsg == fmt.Sprintf("status=%d", postResp.StatusCode) {
+			if len(bodyBytes) > 0 {
+				bodyLen := len(bodyBytes)
+				if bodyLen > 500 {
+					bodyLen = 500
+				}
+				errorMsg = fmt.Sprintf("%s | body=%s", errorMsg, string(bodyBytes[:bodyLen]))
+			}
 		}
 
 		return &UploadResult{
@@ -278,8 +313,9 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 			Platform: "x",
 			Error:    "Post creation failed",
 			Details: map[string]string{
-				"error": errorMsg,
-				"text":  text,
+				"error":  errorMsg,
+				"text":   text,
+				"status": fmt.Sprintf("%d", postResp.StatusCode),
 			},
 		}, fmt.Errorf("post creation failed: %s", errorMsg)
 	}
