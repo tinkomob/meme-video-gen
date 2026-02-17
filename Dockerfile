@@ -26,7 +26,9 @@ RUN apk add --no-cache \
     ffmpeg \
     ca-certificates \
     curl \
-    libc6-compat
+    libc6-compat \
+    chromium \
+    nss
 
 # Create app user for security
 RUN addgroup -g 1000 memebot && \
@@ -36,6 +38,9 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/meme-bot .
+
+# Set correct permissions for the app directory
+RUN chown -R memebot:memebot /app
 
 # Change to non-root user
 USER memebot

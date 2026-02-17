@@ -1,18 +1,19 @@
+version: '3.8'
+
 services:
   meme-video-gen:
     image: meme-video-gen:latest
     build: .
+    container_name: meme-video-gen-bot
     restart: unless-stopped
     dns:
       - 8.8.8.8
       - 8.8.4.4
     env_file:
       - .env
-    environment:
-      - YT_IMPERSONATE=chrome-136:macos-15
-      - YT_USER_AGENT=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36
-      - TELEGRAM_READ_TIMEOUT=60
-      - TELEGRAM_CONNECT_TIMEOUT=60
-      - TELEGRAM_WRITE_TIMEOUT=60
-      - TELEGRAM_POOL_CONNECTIONS=32
-      - TELEGRAM_POOL_MAXSIZE=32
+    networks:
+      - meme_network
+
+networks:
+  meme_network:
+    driver: bridge
