@@ -1,109 +1,46 @@
-# Use an official Python runtime as a parent image
-FROM python:3.11-slim
+# Build stage
+FROM golang:1.24-alpine AS builder
 
-# Set the working directory in the container
-WORKDIR /app
+# Install build dependencies
+RUN apk add --no-cache git gcc musl-dev
 
-# Install system dependencies for moviepy (ffmpeg), Node.js and Git
-RUN apt-get update && apt-get install -y \
-    ffmpeg \
-    git \
-    curl \
-    wget \
-    gnupg \
-    fonts-liberation \
-    fonts-noto \
-    fonts-noto-color-emoji \
-    libxkbcommon0 \
-    libxshmfence1 \
-    libxss1 \
-    libu2f-udev \
-    libglib2.0-0 \
-    libnss3 \
-    libx11-6 \
-    libx11-xcb1 \
-    libxcomposite1 \
-    libxcursor1 \
-    libxdamage1 \
-    libxi6 \
-    libxext6 \
-    libxfixes3 \
-    libxrandr2 \
-    libatk1.0-0 \
-    libatk-bridge2.0-0 \
-    libgbm1 \
-    libasound2 \
-    libpangocairo-1.0-0 \
-    libpango-1.0-0 \
-    libcairo2 \
-    libgtk-3-0 \
-    xdg-utils \
-    unzip \
-    ca-certificates \
-    libgstreamer1.0-0 \
-    libgstreamer-plugins-base1.0-0 \
-    libgtk-4-1 \
-    libgraphene-1.0-0 \
-    libicu76 \
-    libxslt1.1 \
-    libwoff1 \
-    libevent-2.1-7 \
-    libwebpdemux2 \
-    libavif16 \
-    libharfbuzz-icu0 \
-    libenchant-2-2 \
-    libsecret-1-0 \
-    libhyphen0 \
-    libmanette-0.2-0 \
-    gstreamer1.0-plugins-base \
-    gstreamer1.0-plugins-good \
-    gstreamer1.0-plugins-bad \
-    gstreamer1.0-plugins-ugly \
-    gstreamer1.0-libav \
-    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
 
-# Install Google Chrome and ChromeDriver for pinterest-dl
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/googlechrome-linux-keyring.gpg && \
-    echo "deb [arch=amd64 signed-by=/usr/share/keyrings/googlechrome-linux-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google.list && \
-    apt-get update && \
-    apt-get install -y google-chrome-stable && \
-    CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d'.' -f1) && \
-    echo "Chrome major version: $CHROME_VERSION" && \
-    wget -q "https://googlechromelabs.github.io/chrome-for-testing/LATEST_RELEASE_$CHROME_VERSION" -O /tmp/chromedriver_version.txt && \
-    CHROMEDRIVER_VERSION=$(cat /tmp/chromedriver_version.txt) && \
-    echo "Installing ChromeDriver version: $CHROMEDRIVER_VERSION" && \
-    wget -q "https://storage.googleapis.com/chrome-for-testing-public/$CHROMEDRIVER_VERSION/linux64/chromedriver-linux64.zip" -O /tmp/chromedriver.zip && \
-    unzip -q /tmp/chromedriver.zip -d /tmp/ && \
-    mv /tmp/chromedriver-linux64/chromedriver /usr/local/bin/chromedriver && \
-    chmod +x /usr/local/bin/chromedriver && \
-    echo "ChromeDriver installed:" && \
-    chromedriver --version && \
-    rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64 /tmp/chromedriver_version.txt && \
-    rm -rf /var/lib/apt/lists/*
+# Copy go mod files
+COPY go.mod go.sum ./
 
-    # Node.js ранее использовался только для TikTok signer; сейчас не обязателен.
+# Download dependencies
+RUN go mod download
 
-# Copy the requirements file into the container
-COPY requirements.txt .
-
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy the rest of the application code
+# Copy source code
 COPY . .
 
-# Copy environment file into image (optional: adjust if building in CI)
-# COPY .env .env
+# Build the application
+RUN CGO_ENABLED=1 GOOS=linux go build -o meme-bot ./cmd
 
-# Load environment variables during runtime via python-dotenv or explicit ENV if desired
-# Example: uncomment to bake specific variables (avoid for secrets in public builds)
-# ENV TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
+# Runtime stage
+FROM alpine:latest
 
-ENV PYTHONUNBUFFERED=1 \
-    NODE_ENV=production
+# Install runtime dependencies (ffmpeg, ca-certificates, and other runtime libs)
+RUN apk add --no-cache \
+    ffmpeg \
+    ca-certificates \
+    curl \
+    libc6-compat
 
-# Expose port 8000 for the web server
+# Create app user for security
+RUN addgroup -g 1000 memebot && \
+    adduser -D -u 1000 -G memebot memebot
+
+WORKDIR /app
+
+# Copy binary from builder
+COPY --from=builder /build/meme-bot .
+
+# Change to non-root user
+USER memebot
+
 EXPOSE 8000
 
-# Run the Telegram bot
-CMD ["python", "bot.py"]
+# Run the application
+CMD ["./meme-bot"]
