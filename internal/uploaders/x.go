@@ -225,7 +225,7 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 			},
 		}, fmt.Errorf("failed to upload media: %w", err)
 	}
-	
+
 	// Log successful media upload
 	fmt.Printf("[DEBUG] X: Media uploaded successfully, mediaID=%s, text=%s\n", mediaID, text)
 
@@ -241,7 +241,7 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 
 	postBodyJSON, _ := json.Marshal(postBody)
 	fmt.Printf("[DEBUG] X: Creating post with body: %s\n", string(postBodyJSON))
-	
+
 	postReq, _ := http.NewRequestWithContext(ctx, "POST", postURL, bytes.NewBuffer(postBodyJSON))
 	postReq.Header.Set("Content-Type", "application/json")
 
@@ -282,7 +282,7 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 
 	if postResp.StatusCode != http.StatusCreated {
 		errorMsg := fmt.Sprintf("status=%d", postResp.StatusCode)
-		
+
 		// Try to extract error details from API response
 		if len(postRes.Errors) > 0 {
 			apiErr := postRes.Errors[0]
