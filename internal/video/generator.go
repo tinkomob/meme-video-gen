@@ -98,6 +98,13 @@ func (g *Generator) EnsureMemes(ctx context.Context) error {
 	// Add all generated memes
 	for _, meme := range generatedMemes {
 		g.log.Infof("video: adding generated meme %s to index", meme.ID)
+
+		// Double check for visual duplicates before adding
+		if meme.ImageHash != 0 && g.memeExistsByImageHash(memesIdx, meme.ImageHash) {
+			g.log.Warnf("video: visual duplicate detected for meme %s (ImageHash already exists), skipping", meme.ID)
+			continue
+		}
+
 		memesIdx.Items = append(memesIdx.Items, *meme)
 	}
 
@@ -369,6 +376,17 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 	author := strings.TrimSuffix(song.Author, " - Topic")
 	title := fmt.Sprintf("%s — %s", author, song.Title)
 
+	// Compute image hash for thumbnail (visual uniqueness of memes)
+	var imageHash uint64
+	if thumbData, err := os.ReadFile(sourcePath); err == nil {
+		if hash, err := g.sourcesScr.ComputeImageHash(thumbData); err != nil {
+			g.log.Warnf("video: failed to compute image hash for thumbnail: %v", err)
+		} else {
+			imageHash = hash
+			g.log.Infof("video: ✓ computed ImageHash for thumbnail: %d", imageHash)
+		}
+	}
+
 	meme := &model.Meme{
 		ID:        memeID,
 		Title:     title,
@@ -378,6 +396,7 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		SourceID:  source.ID,
 		CreatedAt: time.Now(),
 		SHA256:    hash,
+		ImageHash: imageHash,
 	}
 
 	g.log.Infof("video: meme created successfully: ID=%s, VideoKey=%s, ThumbKey=%s",
@@ -388,6 +407,10 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 
 func (g *Generator) memeExists(idx model.MemesIndex, sha256 string) bool {
 	return lo.ContainsBy(idx.Items, func(m model.Meme) bool { return m.SHA256 == sha256 })
+}
+
+func (g *Generator) memeExistsByImageHash(idx model.MemesIndex, imageHash uint64) bool {
+	return lo.ContainsBy(idx.Items, func(m model.Meme) bool { return m.ImageHash == imageHash && imageHash != 0 })
 }
 
 func (g *Generator) GetRandomMeme(ctx context.Context) (*model.Meme, error) {

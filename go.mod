@@ -17,6 +17,8 @@ require (
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.39.0
 	github.com/tidwall/gjson v1.17.1
+	github.com/vitali-fedulov/imagehash2 v1.0.3
+	github.com/vitali-fedulov/images4 v1.3.1
 	golang.org/x/oauth2 v0.24.0
 	google.golang.org/api v0.210.0
 	google.golang.org/genai v1.43.0
@@ -79,6 +81,7 @@ require (
 	github.com/tidwall/pretty v1.2.0 // indirect
 	github.com/u2takey/ffmpeg-go v0.4.1 // indirect
 	github.com/u2takey/go-utils v0.3.1 // indirect
+	github.com/vitali-fedulov/hyper v1.0.5 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.54.0 // indirect
 	go.opentelemetry.io/otel v1.29.0 // indirect

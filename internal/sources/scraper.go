@@ -196,6 +196,12 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 				continue
 			}
 
+			// Also check for visual duplicates by image hash
+			if asset.ImageHash != 0 && sc.assetExistsByImageHash(sourcesIdx, asset.ImageHash) {
+				sc.logIfNotSilent("sources: ⚠️  visual duplicate detected! Skipping %s asset (ImageHash already exists)", src.name)
+				continue
+			}
+
 			newAssets = append(newAssets, *asset)
 			sourcesIdx.Items = append(sourcesIdx.Items, *asset)
 			sourcesIdx.UpdatedAt = time.Now()
@@ -321,6 +327,10 @@ func (sc *Scraper) SyncWithS3(ctx context.Context) error {
 
 func (sc *Scraper) assetExists(idx model.SourcesIndex, sha256 string) bool {
 	return lo.ContainsBy(idx.Items, func(a model.SourceAsset) bool { return a.SHA256 == sha256 })
+}
+
+func (sc *Scraper) assetExistsByImageHash(idx model.SourcesIndex, imageHash uint64) bool {
+	return lo.ContainsBy(idx.Items, func(a model.SourceAsset) bool { return a.ImageHash == imageHash })
 }
 
 func (sc *Scraper) GetRandomUnusedSource(ctx context.Context) (*model.SourceAsset, error) {

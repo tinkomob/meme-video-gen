@@ -38,6 +38,7 @@ type SourceAsset struct {
 	LastSeenAt time.Time  `json:"last_seen_at"`
 	Used       bool       `json:"used"`
 	SHA256     string     `json:"sha256"`
+	ImageHash  uint64     `json:"image_hash"` // Perceptual hash from imagehash2
 }
 
 type SourcesIndex struct {
@@ -54,6 +55,7 @@ type Meme struct {
 	SourceID  string    `json:"source_id"`
 	CreatedAt time.Time `json:"created_at"`
 	SHA256    string    `json:"sha256"`
+	ImageHash uint64    `json:"image_hash"` // Perceptual hash of thumbnail
 }
 
 type MemesIndex struct {

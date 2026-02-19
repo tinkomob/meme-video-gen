@@ -32,6 +32,14 @@ func (sc *Scraper) downloadAsset(ctx context.Context, mediaURL string, kind mode
 	h := sha256.Sum256(data)
 	hash := hex.EncodeToString(h[:])
 
+	// Compute perceptual image hash
+	imageHash, err := sc.ComputeImageHash(data)
+	if err != nil {
+		sc.log.Warnf("image_hash: failed to compute hash for %s: %v (continuing anyway)", mediaURL, err)
+		// Don't fail the entire download if hashing fails
+		imageHash = 0
+	}
+
 	ext := ".jpg"
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "png") {
@@ -59,5 +67,6 @@ func (sc *Scraper) downloadAsset(ctx context.Context, mediaURL string, kind mode
 		LastSeenAt: time.Now(),
 		Used:       false,
 		SHA256:     hash,
+		ImageHash:  imageHash,
 	}, nil
 }
