@@ -212,6 +212,9 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 	go func() {
 		b.log.Infof("handlePublish: START - memeID=%s, chatID=%d", memeID, chatID)
 
+		// Send status message "Publishing..."
+		statusMsgID := b.replyText(chatID, "⏳ Публикую на все платформы...")
+
 		// Initialize YouTube uploader from S3 if not already done
 		if _, err := b.svc.GetUploadersManager().GetUploader("youtube"); err != nil {
 			b.log.Infof("handlePublish: YouTube uploader not found, attempting to load from S3")
@@ -228,7 +231,7 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 		meme, err := b.svc.GetMemeByID(context.Background(), memeID)
 		if err != nil {
 			b.log.Errorf("handlePublish: failed to get meme: %v", err)
-			b.replyText(chatID, fmt.Sprintf("❌ Ошибка: мем не найден - %v", err))
+			b.editMessageHTML(chatID, statusMsgID, fmt.Sprintf("❌ Ошибка: мем не найден - %v", err))
 			return
 		}
 
@@ -236,7 +239,7 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 		videoPath, err := b.svc.Impl().DownloadMemeToTemp(context.Background(), meme)
 		if err != nil {
 			b.log.Errorf("handlePublish: failed to download video: %v", err)
-			b.replyText(chatID, fmt.Sprintf("❌ Ошибка загрузки видео: %v", err))
+			b.editMessageHTML(chatID, statusMsgID, fmt.Sprintf("❌ Ошибка загрузки видео: %v", err))
 			return
 		}
 		defer os.Remove(videoPath)
@@ -255,7 +258,7 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 		uploaders := b.svc.GetUploadersManager()
 		if uploaders == nil {
 			b.log.Errorf("handlePublish: uploaders manager is nil")
-			b.replyText(chatID, "❌ Ошибка: менеджер загрузчиков не инициализирован")
+			b.editMessageHTML(chatID, statusMsgID, "❌ Ошибка: менеджер загрузчиков не инициализирован")
 			return
 		}
 
@@ -317,10 +320,10 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 			}
 
 			finalMsg = fmt.Sprintf("📤 Результаты публикации:\n\n%s%s", strings.Join(resultLines, "\n"), deleteStatus)
-			b.replyHTML(chatID, finalMsg)
+			b.editMessageHTML(chatID, statusMsgID, finalMsg)
 		} else {
 			finalMsg = fmt.Sprintf("❌ Ошибка публикации:\n\n%s", strings.Join(resultLines, "\n"))
-			b.replyText(chatID, finalMsg)
+			b.editMessageHTML(chatID, statusMsgID, finalMsg)
 			b.log.Errorf("handlePublish: FAILED - all platforms failed")
 		}
 	}()
@@ -1730,4 +1733,10 @@ func (b *TelegramBot) replyHTML(chatID int64, text string) int {
 	m.ParseMode = tgbotapi.ModeHTML
 	sent, _ := b.tg.Send(m)
 	return sent.MessageID
+}
+func (b *TelegramBot) editMessageHTML(chatID int64, messageID int, text string) error {
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
+	edit.ParseMode = tgbotapi.ModeHTML
+	_, err := b.tg.Send(edit)
+	return err
 }
