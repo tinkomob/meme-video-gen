@@ -105,6 +105,17 @@ func (g *Generator) EnsureMemes(ctx context.Context) error {
 			continue
 		}
 
+		// Check against blacklist of historical video hashes
+		if meme.ImageHash != 0 {
+			inBlacklist, err := g.IsVideoHashInBlacklist(ctx, meme.ImageHash)
+			if err != nil {
+				g.log.Warnf("video: failed to check blacklist: %v", err)
+			} else if inBlacklist {
+				g.log.Warnf("video: blacklisted visual duplicate for meme %s (ImageHash in history), skipping", meme.ID)
+				continue
+			}
+		}
+
 		memesIdx.Items = append(memesIdx.Items, *meme)
 	}
 
@@ -139,6 +150,13 @@ func (g *Generator) EnsureMemes(ctx context.Context) error {
 			g.log.Infof("video: deleting old meme %s from S3", m.ID)
 			_ = g.s3.Delete(ctx, m.VideoKey)
 			_ = g.s3.Delete(ctx, m.ThumbKey)
+
+			// Add hash to blacklist so we never re-generate this meme
+			if m.ImageHash != 0 {
+				if err := g.AddVideoHashToBlacklist(ctx, m.ImageHash); err != nil {
+					g.log.Warnf("video: failed to add hash to blacklist for %s: %v", m.ID, err)
+				}
+			}
 		}
 	}
 
@@ -726,6 +744,13 @@ func (g *Generator) DeleteMeme(ctx context.Context, memeID string) error {
 
 	// Save the source ID before updating JSON (to delete it later)
 	sourceIDToDelete := memeToDelete.SourceID
+
+	// Add hash to blacklist so we never re-generate this meme
+	if memeToDelete.ImageHash != 0 {
+		if err := g.AddVideoHashToBlacklist(ctx, memeToDelete.ImageHash); err != nil {
+			g.log.Warnf("deleteMemeb: failed to add hash to blacklist for %s: %v", memeID, err)
+		}
+	}
 
 	// Write updated memes.json with retry logic
 	maxRetries := 3

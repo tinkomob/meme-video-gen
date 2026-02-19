@@ -2,6 +2,7 @@ package sources
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"image"
 	_ "image/gif"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/vitali-fedulov/imagehash2"
 	"github.com/vitali-fedulov/images4"
+	"github.com/samber/lo"
 
 	"meme-video-gen/internal/model"
 )
@@ -89,4 +91,48 @@ func (sc *Scraper) CheckImageSimilarity(imageData1, imageData2 []byte) (bool, er
 func hammingDistance(hash1, hash2 uint64) int {
 	xor := hash1 ^ hash2
 	return bits.OnesCount64(xor)
+}
+
+// IsHashInBlacklist checks if a hash exists in the image hash blacklist
+func (sc *Scraper) IsHashInBlacklist(ctx context.Context, hash uint64) (bool, error) {
+	if hash == 0 {
+		return false, nil
+	}
+
+	var index model.ImageHashIndex
+	found, err := sc.s3.ReadJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
+	if err != nil {
+		sc.log.Warnf("image_hash: failed to read blacklist: %v", err)
+		return false, nil // Be permissive on read errors
+	}
+	if !found {
+		return false, nil
+	}
+
+	return lo.Contains(index.Hashes, hash), nil
+}
+
+// AddHashToBlacklist adds a hash to the image hash blacklist
+func (sc *Scraper) AddHashToBlacklist(ctx context.Context, hash uint64) error {
+	if hash == 0 {
+		return nil
+	}
+
+	var index model.ImageHashIndex
+	found, err := sc.s3.ReadJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
+	if err != nil {
+		sc.log.Errorf("image_hash: failed to read blacklist for update: %v", err)
+		index = model.ImageHashIndex{Hashes: []uint64{}}
+	}
+	if !found {
+		index = model.ImageHashIndex{Hashes: []uint64{}}
+	}
+
+	// Only add if not already present
+	if !lo.Contains(index.Hashes, hash) {
+		index.Hashes = append(index.Hashes, hash)
+		sc.log.Infof("image_hash: added hash %d to blacklist (total: %d)", hash, len(index.Hashes))
+	}
+
+	return sc.s3.WriteJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
 }

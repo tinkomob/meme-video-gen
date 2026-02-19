@@ -62,3 +62,16 @@ type MemesIndex struct {
 	UpdatedAt time.Time `json:"updated_at"`
 	Items     []Meme    `json:"items"`
 }
+
+// HashIndex stores perceptual hashes that have been seen before
+// Used to prevent re-uploading/re-generating visually identical content
+// even if the original item has been deleted from the active index
+type ImageHashIndex struct {
+	UpdatedAt time.Time `json:"updated_at"`
+	Hashes    []uint64  `json:"hashes"` // Perceptual hashes of images
+}
+
+type VideoHashIndex struct {
+	UpdatedAt time.Time `json:"updated_at"`
+	Hashes    []uint64  `json:"hashes"` // Perceptual hashes of video thumbnails
+}

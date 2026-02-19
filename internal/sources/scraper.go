@@ -196,10 +196,21 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 				continue
 			}
 
-			// Also check for visual duplicates by image hash
+			// Also check for visual duplicates by image hash in active index
 			if asset.ImageHash != 0 && sc.assetExistsByImageHash(sourcesIdx, asset.ImageHash) {
 				sc.logIfNotSilent("sources: ⚠️  visual duplicate detected! Skipping %s asset (ImageHash already exists)", src.name)
 				continue
+			}
+
+			// Check against blacklist of historical hashes
+			if asset.ImageHash != 0 {
+				inBlacklist, err := sc.IsHashInBlacklist(ctx, asset.ImageHash)
+				if err != nil {
+					sc.log.Warnf("sources: failed to check blacklist: %v", err)
+				} else if inBlacklist {
+					sc.logIfNotSilent("sources: ⚠️  blacklisted visual duplicate! Skipping %s asset (ImageHash in history)", src.name)
+					continue
+				}
 			}
 
 			newAssets = append(newAssets, *asset)
@@ -372,10 +383,13 @@ func (sc *Scraper) RemoveSourceFromIndex(ctx context.Context, id string) error {
 		return fmt.Errorf("no sources.json")
 	}
 
+	var removedAsset *model.SourceAsset
 	newItems := make([]model.SourceAsset, 0, len(idx.Items))
 	for _, item := range idx.Items {
 		if item.ID != id {
 			newItems = append(newItems, item)
+		} else {
+			removedAsset = &item
 		}
 	}
 
@@ -388,6 +402,13 @@ func (sc *Scraper) RemoveSourceFromIndex(ctx context.Context, id string) error {
 
 	if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &idx); err != nil {
 		return fmt.Errorf("failed to update sources.json: %w", err)
+	}
+
+	// Add hash to blacklist so we never re-upload this image
+	if removedAsset != nil && removedAsset.ImageHash != 0 {
+		if err := sc.AddHashToBlacklist(ctx, removedAsset.ImageHash); err != nil {
+			sc.log.Warnf("sources: failed to add hash to blacklist for %s: %v", id, err)
+		}
 	}
 
 	sc.logIfNotSilent("sources: removed source %s from index", id)
