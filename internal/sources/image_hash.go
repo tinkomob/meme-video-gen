@@ -10,9 +10,9 @@ import (
 	_ "image/png"
 	"math/bits"
 
+	"github.com/samber/lo"
 	"github.com/vitali-fedulov/imagehash2"
 	"github.com/vitali-fedulov/images4"
-	"github.com/samber/lo"
 
 	"meme-video-gen/internal/model"
 )
