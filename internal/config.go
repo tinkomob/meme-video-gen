@@ -23,8 +23,9 @@ type Config struct {
 	MemesJSONKey    string
 	ScheduleJSONKey string
 
-	ImageHashIndexKey string // "image_hashes.json" - blacklist of image hashes
-	VideoHashIndexKey string // "video_hashes.json" - blacklist of video hashes
+	ImageHashIndexKey      string // "image_hashes.json" - blacklist of image hashes
+	VideoHashIndexKey      string // "video_hashes.json" - blacklist of video hashes
+	DislikedSourcesJSONKey string // "disliked_sources.json" - temporarily blacklisted sources
 
 	SongsPrefix   string
 	SourcesPrefix string
@@ -35,6 +36,10 @@ type Config struct {
 	MaxSources int
 	MaxMemes   int
 	MaxAge     time.Duration
+
+	// Disliked sources grace period (default: 24 hours)
+	// Sources blacklisted by user dislike won't be reused for this duration
+	DislikedSourceGracePeriod time.Duration
 
 	DailyGenerations int   // количество отправок мемов в день
 	PostsChatID      int64 // chat ID для отправки мемов по расписанию
@@ -57,8 +62,9 @@ func LoadConfig() (Config, error) {
 		MemesJSONKey:    "memes.json",
 		ScheduleJSONKey: "schedule.json",
 
-		ImageHashIndexKey: "image_hashes.json",
-		VideoHashIndexKey: "video_hashes.json",
+		ImageHashIndexKey:      "image_hashes.json",
+		VideoHashIndexKey:      "video_hashes.json",
+		DislikedSourcesJSONKey: "disliked_sources.json",
 
 		SongsPrefix:   "songs/",
 		SourcesPrefix: "sources/",
@@ -66,12 +72,13 @@ func LoadConfig() (Config, error) {
 		TokensPrefix:  "tokens/",
 		PayloadPrefix: "payload/",
 
-		MaxSources:       20,
-		MaxMemes:         10,
-		MaxAge:           16 * time.Hour,
-		DailyGenerations: 5,
-		PostsChatID:      0,
-		Silent:           true,
+		MaxSources:                20,
+		MaxMemes:                  10,
+		MaxAge:                    16 * time.Hour,
+		DislikedSourceGracePeriod: 24 * time.Hour, // 24 hours by default
+		DailyGenerations:          5,
+		PostsChatID:               0,
+		Silent:                    true,
 	}
 
 	// Load MaxSources from env
@@ -92,6 +99,13 @@ func LoadConfig() (Config, error) {
 	if v := os.Getenv("MAX_AGE"); v != "" {
 		if duration, err := time.ParseDuration(v); err == nil {
 			cfg.MaxAge = duration
+		}
+	}
+
+	// Load DislikedSourceGracePeriod from env (e.g., "24h", "48h")
+	if v := os.Getenv("DISLIKED_SOURCE_GRACE_PERIOD"); v != "" {
+		if duration, err := time.ParseDuration(v); err == nil {
+			cfg.DislikedSourceGracePeriod = duration
 		}
 	}
 

@@ -356,6 +356,16 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		return nil, err
 	}
 
+	// Cleanup disliked sources blacklist every hour (15 minutes past the hour)
+	if _, err := c.AddFunc("0 15 * * * *", func() {
+		log.Infof("cron: cleaning up expired disliked sources")
+		if err := vidGen.CleanupDislikedSources(context.Background()); err != nil {
+			log.Errorf("cron cleanup disliked sources: %v", err)
+		}
+	}); err != nil {
+		return nil, err
+	}
+
 	// Load POSTS_CHAT_ID from S3 at startup
 	go func() {
 		time.Sleep(1 * time.Second)

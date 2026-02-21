@@ -237,6 +237,16 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		}
 		g.log.Infof("video: got random source %s (key=%s)", src.ID, src.MediaKey)
 
+		// Check if source is disliked (avoid recently disliked sources)
+		isDisliked, err := g.IsSourceDisliked(ctx, src.ID)
+		if err != nil {
+			g.log.Warnf("video: failed to check if source is disliked: %v", err)
+		}
+		if isDisliked {
+			g.log.Infof("video: skipping disliked source %s", src.ID)
+			continue
+		}
+
 		// Check if file exists in S3 with short timeout
 		g.log.Infof("video: checking if source exists in S3...")
 		exists := false
@@ -749,6 +759,13 @@ func (g *Generator) DeleteMeme(ctx context.Context, memeID string) error {
 	if memeToDelete.ImageHash != 0 {
 		if err := g.AddVideoHashToBlacklist(ctx, memeToDelete.ImageHash); err != nil {
 			g.log.Warnf("deleteMemeb: failed to add hash to blacklist for %s: %v", memeID, err)
+		}
+	}
+
+	// Add source to disliked blacklist to prevent immediate reuse
+	if sourceIDToDelete != "" {
+		if err := g.AddSourceToDislikedBlacklist(ctx, sourceIDToDelete); err != nil {
+			g.log.Warnf("deleteMemeb: failed to blacklist disliked source %s: %v", sourceIDToDelete, err)
 		}
 	}
 
