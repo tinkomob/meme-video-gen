@@ -93,7 +93,7 @@ func LoadSchedule(ctx context.Context, client s3.Client) (*DailySchedule, error)
 func GetOrCreateSchedule(ctx context.Context, client s3.Client, cfg *internal.Config, now time.Time) (*DailySchedule, error) {
 
 	schedule, err := LoadSchedule(ctx, client)
-	if err == nil && schedule != nil && schedule.Date == now.Format("2006-01-02") {
+	if err == nil && schedule != nil && schedule.Date == now.Format("2006-01-02") && len(schedule.Entries) == cfg.DailyGenerations {
 		return schedule, nil
 	}
 
