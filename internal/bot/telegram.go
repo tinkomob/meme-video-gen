@@ -317,6 +317,9 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 			} else {
 				b.log.Infof("handlePublish: meme successfully deleted from S3: %s", memeID)
 				deleteStatus = "\n\n✅ Мем также удален из S3"
+
+				// Delete other memes from the same batch (if any)
+				b.deleteOtherBatchMemes(context.Background(), chatID, memeID)
 			}
 
 			finalMsg = fmt.Sprintf("📤 Результаты публикации:\n\n%s%s", strings.Join(resultLines, "\n"), deleteStatus)
@@ -326,6 +329,56 @@ func (b *TelegramBot) handlePublish(ctx context.Context, chatID int64, memeID st
 			b.editMessageHTML(chatID, statusMsgID, finalMsg)
 			b.log.Errorf("handlePublish: FAILED - all platforms failed")
 		}
+	}()
+}
+
+// deleteOtherBatchMemes deletes all other memes from the same batch (slider) except the published one
+// This is called after a meme is successfully published, assuming the user didn't like the others
+func (b *TelegramBot) deleteOtherBatchMemes(ctx context.Context, chatID int64, publishedMemeID string) {
+	// Get cached memes for this chat
+	batchMemes, ok := b.sliderMemes[chatID]
+	if !ok || len(batchMemes) == 0 {
+		b.log.Infof("deleteOtherBatchMemes: no cached batch memes for chatID=%d", chatID)
+		return
+	}
+
+	b.log.Infof("deleteOtherBatchMemes: START - chatID=%d, publishedMemeID=%s, batchSize=%d",
+		chatID, publishedMemeID, len(batchMemes))
+
+	// Find other memes in the batch
+	var otherMemes []*model.Meme
+	for _, m := range batchMemes {
+		if m.ID != publishedMemeID {
+			otherMemes = append(otherMemes, m)
+		}
+	}
+
+	if len(otherMemes) == 0 {
+		b.log.Infof("deleteOtherBatchMemes: no other memes in batch to delete")
+		// Clear cache
+		delete(b.sliderMemes, chatID)
+		return
+	}
+
+	// Delete other memes from S3 in background
+	go func() {
+		deleteCtx := context.Background()
+		successCount := 0
+
+		for _, meme := range otherMemes {
+			if err := b.svc.Impl().DeleteMeme(deleteCtx, meme.ID); err != nil {
+				b.log.Errorf("deleteOtherBatchMemes: failed to delete meme %s: %v", meme.ID, err)
+			} else {
+				b.log.Infof("deleteOtherBatchMemes: deleted meme %s", meme.ID)
+				successCount++
+			}
+		}
+
+		b.log.Infof("deleteOtherBatchMemes: COMPLETE - deleted %d/%d other memes from batch",
+			successCount, len(otherMemes))
+
+		// Clear cache for this chat
+		delete(b.sliderMemes, chatID)
 	}()
 }
 
