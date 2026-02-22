@@ -66,9 +66,9 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 	if tg.apiKey == "" {
 		tg.log.Infof("ai: no api key, using fallback ideas")
 		return []string{
-			"💡 Основная идея: Визуальный рассказ через метафоры и символы, синхронизированный с ритмом музыки\n\nСцена 1: Динамичные переходы и ключевые визуальные элементы под музыку '" + song.Title + "'",
-			"Сцена 2: Крупные планы, зум и цветовые фильтры для усиления эмоции",
-			"Сцена 3: Быстрые смены кадров и финальный момент импакта в ритм музыки",
+			"[СЦЕНА 1]\nДинамичные переходы и ключевые визуальные элементы под музыку '" + song.Title + "'. Резкое начало с импакт-элемента.",
+			"[СЦЕНА 2]\nКрупные планы, зум и цветовые фильтры для усиления эмоции. Резкий переход.",
+			"[СЦЕНА 3]\nБыстрые смены кадров и финальный момент импакта в ритм музыки. Резкое завершение.",
 		}, nil
 	}
 
@@ -82,23 +82,26 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 
 	prompt := fmt.Sprintf(
 		"Ты — креативный режиссер для TikTok и Reels. "+
-			"На основе трека '%s' (артист %s) создай ОДНУ цельную и оригинальную идею для короткого видеоролика. "+
-			"Опиши основную концепцию, а затем разбей её на 3-5 СВЯЗАННЫХ сцен. "+
-			"Каждая сцена продлится 6 секунд и должна логически вытекать из предыдущей, создавая единый видеоуж.\n\n"+
-			"Формат ответа:\n"+
-			"💡 Основная идея: [описание общей концепции и визуального стиля]\n\n"+
-			"Сцена 1: [описание первой сцены]\n"+
-			"Сцена 2: [описание второй сцены]\n"+
+			"На основе трека '%s' (артист %s) создай оригинальную идею из 3-5 сцен. "+
+			"Каждая сцена продлится 6 секунд и должна резко переходить в следующую.\n\n"+
+			"Формат ответа (БЕЗ вводной концепции, только сцены):\n"+
+			"[СЦЕНА 1]\n"+
+			"[описание первой сцены]\n\n"+
+			"[СЦЕНА 2]\n"+
+			"[описание второй сцены]\n\n"+
+			"[СЦЕНА 3]\n"+
+			"[описание третьей сцены]\n\n"+
 			"[и так далее...]\n\n"+
-			"Для каждой сцены опиши:\n"+
+			"Для каждой сцены напиши:\n"+
 			"- Какие визуальные элементы/объекты использовать\n"+
-			"- Какой стиль и эффекты\n"+
-			"- Какой темп и динамика движения\n"+
-			"- Как эта сцена переходит в следующую\n\n"+
+			"- Какой стиль и эффекты (фильтры, переходы)\n"+
+			"- Динамика и темп движения\n"+
 			"Требования:\n"+
-			"- Сцены должны быть визуально красивыми, эстетичными и связанными одной идеей\n"+
-			"- Легко снимаемыми с помощью мобильного телефона или простых материалов\n"+
-			"- БЕЗ текста внутри видео",
+			"- КРИТИЧНО: между сценами ОБЯЗАТЕЛЬНО резкие переходы\n"+
+			"- Сцены должны быть визуально красивыми и эстетичными\n"+
+			"- Легко снимаемыми с мобильного телефона\n"+
+			"- БЕЗ какого-либо текста внутри видео\n"+
+			"- НЕ описывай основную идею/концепцию, сразу пиши сцены",
 		song.Title,
 		song.Author,
 	)
@@ -113,108 +116,30 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 	content := resp.Text()
 	if content == "" {
 		return []string{
-			"💡 Основная идея: Визуальный рассказ через метафоры и символы, синхронизированный с ритмом музыки\n\nСцена 1: Динамичные переходы и ключевые визуальные элементы под музыку '" + song.Title + "'",
-			"Сцена 2: Крупные планы, зум и цветовые фильтры для усиления эмоции",
-			"Сцена 3: Быстрые смены кадров и финальный момент импакта в ритм музыки",
+			"[СЦЕНА 1]\nДинамичные переходы и ключевые визуальные элементы под музыку. Резкое начало с импакт-элемента.",
+			"[СЦЕНА 2]\nКрупные планы, зум и цветовые фильтры для усиления эмоции. Резкий переход.",
+			"[СЦЕНА 3]\nБыстрые смены кадров и финальный момент импакта. Резкое завершение.",
 		}, nil
 	}
 
-	// Parse the response into individual scenes
+	// Split content by double newlines to get individual scenes
+	// Return as-is without parsing
 	var scenes []string
-	var mainIdea string
-
-	// Split by "---" to separate main idea from scenes
-	parts := strings.Split(content, "---")
-	if len(parts) > 0 {
-		mainIdea = strings.TrimSpace(parts[0])
-		if strings.Contains(mainIdea, "💡") {
-			mainIdea = strings.TrimPrefix(mainIdea, "💡")
-			mainIdea = strings.TrimSpace(mainIdea)
+	parts := strings.Split(content, "\n\n")
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed != "" {
+			scenes = append(scenes, trimmed)
 		}
 	}
 
-	// Get scenes part (everything after "---")
-	scenesContent := content
-	if len(parts) > 1 {
-		scenesContent = parts[1]
+	// If we got at least one scene, return it
+	if len(scenes) > 0 {
+		return scenes, nil
 	}
 
-	// Find all scene blocks - they start with "**Сцена" or "Сцена"
-	// Split by any line containing "Сцена" that looks like a header
-	lines := strings.Split(scenesContent, "\n")
-	var currentScene strings.Builder
-	var sceneCount int
-
-	for _, line := range lines {
-		trimmedLine := strings.TrimSpace(line)
-		if trimmedLine == "" {
-			if currentScene.Len() > 0 {
-				currentScene.WriteString("\n")
-			}
-			continue
-		}
-
-		// Check if this line is a scene header
-		// Scene headers contain "Сцена" followed by either a number or a colon/asterisk
-		isSceneHeader := strings.Contains(trimmedLine, "Сцена") &&
-			(strings.Contains(trimmedLine, ":") || strings.Contains(trimmedLine, "*"))
-
-		if isSceneHeader && currentScene.Len() > 0 {
-			// Save previous scene
-			sceneText := strings.TrimSpace(currentScene.String())
-			if sceneText != "" && sceneText != "Сцена" {
-				scenes = append(scenes, sceneText)
-				sceneCount++
-			}
-			currentScene.Reset()
-		}
-
-		// Add line to current scene
-		if currentScene.Len() > 0 {
-			currentScene.WriteString("\n")
-		}
-		currentScene.WriteString(trimmedLine)
-	}
-
-	// Add last scene
-	if currentScene.Len() > 0 {
-		sceneText := strings.TrimSpace(currentScene.String())
-		if sceneText != "" && sceneText != "Сцена" {
-			scenes = append(scenes, sceneText)
-			sceneCount++
-		}
-	}
-
-	// If parsing successful but we have scenes, verify they look reasonable
-	if len(scenes) < 2 {
-		tg.log.Infof("ai: parsed %d scenes (attempt 1), content preview: %s", len(scenes), truncateString(scenesContent, 100))
-
-		// Fallback: split strictly by "Сцена " pattern
-		scenes = []string{}
-		scenePattern := strings.Split(scenesContent, "Сцена ")
-
-		for i := 1; i < len(scenePattern); i++ {
-			sceneText := strings.TrimSpace("Сцена " + scenePattern[i])
-			// Remove leading ** and numbers if present
-			sceneText = strings.TrimPrefix(sceneText, "**")
-			if sceneText != "" && len(sceneText) > 5 {
-				scenes = append(scenes, sceneText)
-			}
-		}
-	}
-
-	// Still not enough scenes? Use fallback
-	if len(scenes) < 2 {
-		tg.log.Infof("ai: parsed %d scenes after retry, using fallback. Main idea: %s", len(scenes), mainIdea)
-		return []string{
-			fmt.Sprintf("💡 Основная идея: %s", mainIdea),
-			"Сцена 1: Начало с привлечения внимания и установки настроения",
-			"Сцена 2: Развитие основной идеи и усиление визуального эффекта",
-			"Сцена 3: Финальный момент и впечатление",
-		}, nil
-	}
-
-	return scenes, nil
+	// Fallback if something went wrong
+	return []string{content}, nil
 }
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {

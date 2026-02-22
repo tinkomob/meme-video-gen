@@ -2181,13 +2181,13 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 
 	b.log.Infof("handleIdeaGeneration: idea generated with %d scenes", len(ideas))
 
-	// Build result message with formatted info
+	// Build result text for file and message
 	scenesText := ""
 	for _, scene := range ideas {
-		scenesText += "\n" + scene + "\n"
+		scenesText += scene + "\n\n"
 	}
 
-	// Get config for S3 download link
+	// Get config for S3 and download link
 	cfg := b.svc.GetConfig()
 	downloadURL := fmt.Sprintf("%s/%s/%s",
 		strings.TrimRight(cfg.S3Endpoint, "/"),
@@ -2212,35 +2212,52 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 		b.replyHTML(chatID, trackInfoMsg)
 	}
 
-	// Second message: Scenes/Ideas
-	ideasMsg := "🎬 <b>Идея для видео (по 6 сек каждая сцена):</b>" + scenesText
+	// Create file content with track info and ideas
+	fileContent := fmt.Sprintf(
+		"🎬 ВИДЕОИДЕЯ\n"+
+			"══════════════════════════════════════════════════════════════\n\n"+
+			"🎵 Трек: %s\n"+
+			"👤 Артист: %s\n"+
+			"⏱️ Длительность: %.1f сек\n\n"+
+			"─────────────────────────────────────────────────────────────\n"+
+			"📝 ИДЕЯ ДЛЯ ВИДЕО\n"+
+			"(Каждая сцена - 6 секунд)\n"+
+			"─────────────────────────────────────────────────────────────\n\n%s",
+		song.Title,
+		song.Author,
+		song.DurationS,
+		scenesText,
+	)
 
-	if len(ideasMsg) > 4096 {
-		// If too long, split into multiple messages
-		b.log.Infof("handleIdeaGeneration: ideas message too long (%d chars), sending in chunks. Got %d scenes", len(ideasMsg), len(ideas))
-		b.replyHTML(chatID, "🎬 <b>Идея для видео (по 6 сек каждая сцена):</b>")
+	// Upload file to S3
+	s3Key := fmt.Sprintf("ideas/%s_idea.txt", song.ID)
+	err = b.svc.GetS3Client().PutBytes(ctx, s3Key, []byte(fileContent), "text/plain")
+	if err != nil {
+		b.log.Errorf("handleIdeaGeneration: failed to save to S3: %v", err)
+		b.replyText(chatID, "❌ Ошибка при сохранении файла идеи")
+		return
+	}
 
-		for i, scene := range ideas {
-			trimmedScene := strings.TrimSpace(scene)
+	b.log.Infof("handleIdeaGeneration: file uploaded to S3: %s", s3Key)
 
-			// Check if scene already contains scene info (has "Сцена" in text itself)
-			containsSceneInfo := strings.Contains(trimmedScene, "**Сцена") ||
-				strings.Contains(trimmedScene, "Сцена") && strings.Contains(trimmedScene, ":")
+	// Send file to Telegram
+	msg := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{
+		Name:   fmt.Sprintf("%s_%s_idea.txt", song.Author, song.Title),
+		Reader: strings.NewReader(fileContent),
+	})
+	msg.Caption = fmt.Sprintf(
+		"🎬 Идея для видео под трек: <b>%s</b> - <b>%s</b>\n"+
+			"(Резкие переходы между сценами)",
+		song.Author,
+		song.Title,
+	)
+	msg.ParseMode = "HTML"
 
-			if containsSceneInfo {
-				// Already has formatted scene header, send as-is
-				b.replyHTML(chatID, trimmedScene)
-			} else if i == 0 && strings.Contains(trimmedScene, "💡") {
-				// This is the main idea block
-				b.replyHTML(chatID, trimmedScene)
-			} else {
-				// Regular scene without header, add one
-				chunk := fmt.Sprintf("<b>Сцена %d:</b>\n%s", i+1, trimmedScene)
-				b.replyHTML(chatID, chunk)
-			}
-		}
-	} else {
-		b.replyHTML(chatID, ideasMsg)
+	_, err = b.tg.Send(msg)
+	if err != nil {
+		b.log.Errorf("handleIdeaGeneration: failed to send file: %v", err)
+		b.replyText(chatID, "❌ Ошибка при отправке файла идеи")
+		return
 	}
 
 	b.log.Infof("handleIdeaGeneration: COMPLETE")
