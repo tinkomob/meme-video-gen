@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -35,6 +36,14 @@ type TelegramBot struct {
 
 	// S3 bucket name for storing uploaded files
 	s3BucketDir string
+
+	// Track search state (chatID -> is searching)
+	trackSearchState map[int64]bool
+	trackSearchMux   sync.Mutex
+
+	// Track search mode (chatID -> "idea" or "song")
+	trackSearchMode    map[int64]string
+	trackSearchModeMux sync.Mutex
 }
 
 func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath string) (*TelegramBot, error) {
@@ -55,6 +64,8 @@ func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath stri
 		schedulePosterDone: make(chan struct{}),
 		sliderMemes:        make(map[int64][]*model.Meme),
 		s3BucketDir:        "bot-uploads",
+		trackSearchState:   make(map[int64]bool),
+		trackSearchMode:    make(map[int64]string),
 	}, nil
 }
 
@@ -83,6 +94,30 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 				b.handleCommand(ctx, upd.Message)
 			} else if upd.Message != nil && upd.Message.Document != nil {
 				b.handleDocument(ctx, upd.Message)
+			} else if upd.Message != nil && upd.Message.Text != "" {
+				// Check if user is in track search mode
+				chatID := upd.Message.Chat.ID
+				b.trackSearchMux.Lock()
+				isSearching := b.trackSearchState[chatID]
+				if isSearching {
+					delete(b.trackSearchState, chatID) // Clear the state
+				}
+				b.trackSearchMux.Unlock()
+
+				if isSearching {
+					// Get the search mode
+					b.trackSearchModeMux.Lock()
+					mode := b.trackSearchMode[chatID]
+					delete(b.trackSearchMode, chatID) // Clear the mode
+					b.trackSearchModeMux.Unlock()
+
+					// Handle search based on mode
+					if mode == "song" {
+						b.handleSongSearch(ctx, chatID, upd.Message.Text)
+					} else {
+						b.handleIdeaSearch(ctx, chatID, upd.Message.Text)
+					}
+				}
 			} else if upd.CallbackQuery != nil {
 				b.handleCallback(ctx, upd.CallbackQuery)
 			}
@@ -106,6 +141,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdErrors(chatID)
 	case "meme":
 		b.handleMeme(ctx, chatID, msg.CommandArguments())
+	case "idea":
+		b.cmdIdea(ctx, chatID, msg.CommandArguments())
 	case "status":
 		b.cmdStatus(ctx, chatID)
 	case "chatid":
@@ -122,8 +159,6 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdClearSources(ctx, chatID)
 	case "clearmemes":
 		b.cmdClearMemes(ctx, chatID)
-	case "eenfinit":
-		b.cmdEenfinit(ctx, chatID, msg.CommandArguments())
 	case "sync":
 		b.cmdSync(ctx, chatID)
 	case "forcecheck":
@@ -138,6 +173,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdSyncFiles(ctx, chatID)
 	case "downloadfiles":
 		b.cmdDownloadFiles(ctx, chatID)
+	case "song":
+		b.cmdSong(ctx, chatID, msg.CommandArguments())
 	default:
 		b.replyText(chatID, "Неизвестная команда. Используйте /help")
 	}
@@ -148,6 +185,35 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 
 	data := cb.Data
 	chatID := cb.Message.Chat.ID
+
+	// Handle single-action callbacks first (no parameters needed)
+	if data == "ideasearch" {
+		// Set flag to wait for text input
+		b.trackSearchMux.Lock()
+		b.trackSearchState[chatID] = true
+		b.trackSearchMux.Unlock()
+
+		b.trackSearchModeMux.Lock()
+		b.trackSearchMode[chatID] = "idea"
+		b.trackSearchModeMux.Unlock()
+
+		b.replyText(chatID, "🔍 Введите название трека или артиста для поиска:\n(например: Dua Lipa или The Weeknd)")
+		return
+	}
+
+	if data == "songsearch" {
+		// Set flag to wait for text input
+		b.trackSearchMux.Lock()
+		b.trackSearchState[chatID] = true
+		b.trackSearchMux.Unlock()
+
+		b.trackSearchModeMux.Lock()
+		b.trackSearchMode[chatID] = "song"
+		b.trackSearchModeMux.Unlock()
+
+		b.replyText(chatID, "🔍 Введите название трека или артиста для поиска:\n(например: Dua Lipa или The Weeknd)")
+		return
+	}
 
 	// Parse callback data
 	parts := splitCallback(data)
@@ -172,6 +238,14 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 		b.handleDislike(ctx, chatID, memeID, cb.Message.MessageID)
 	case "dislikeslider":
 		b.handleDislikeSlider(ctx, chatID, cb.Message.MessageID)
+	case "ideagen":
+		// memeID here is actually songID
+		b.handleIdeaGeneration(ctx, chatID, memeID)
+	case "idealist":
+		// memeID here is actually offset
+		offset := 0
+		fmt.Sscanf(memeID, "%d", &offset)
+		b.handleIdeaList(ctx, chatID, offset)
 	case "toggle":
 		if len(parts) >= 3 {
 			platform := parts[1]
@@ -186,6 +260,16 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 		b.replyText(chatID, "❌ Отменено")
 	case "selectmeme":
 		b.handleSelectMeme(ctx, chatID, memeID, cb.Message.MessageID)
+	case "songrand":
+		b.handleSongDownloadRandom(ctx, chatID)
+	case "songlist":
+		// memeID here is actually offset
+		offset := 0
+		fmt.Sscanf(memeID, "%d", &offset)
+		b.handleSongList(ctx, chatID, offset)
+	case "songdl":
+		// memeID here is actually songID
+		b.handleSongDownload(ctx, chatID, memeID)
 	default:
 		b.replyText(chatID, "❌ Неизвестное действие")
 	}
@@ -1081,6 +1165,12 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /meme [count] — получить мем(ы) из пула (count: 1-10, по умолчанию 1)
              /meme — один мем с кнопками действий
              /meme 3 — 3 мема слайдером (медиагруппой)
+/idea [query] — получить идею для видео на основе песни
+              /idea — выбрать из списка, случайный или поиск
+              /idea Dua Lipa — найти треки Dua Lipa и выбрать
+/song [query] — скачать трек в формате MP3 или MP4A
+              /song — выбрать из списка, случайный или поиск
+              /song Dua Lipa — найти треки Dua Lipa и скачать
 /status — статус генерации и использование памяти
 /errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID
@@ -1101,7 +1191,6 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /uploadclient — загрузить client_secrets.json как документ
 /syncfiles — загрузить все файлы в S3
 /downloadfiles — загрузить все файлы из S3 локально
-/eenfinit — генерация мемов ТОЛЬКО для аккаунта eenfinit на YouTube
 
 📤 Кнопки действий:
 • Опубликовать — загрузить на все платформы
@@ -1766,32 +1855,452 @@ func (b *TelegramBot) cmdDownloadFiles(ctx context.Context, chatID int64) {
 	b.replyText(chatID, statusMsg)
 }
 
-func (b *TelegramBot) cmdEenfinit(ctx context.Context, chatID int64, args string) {
-	// Check if token_eenfinit.pickle exists
-	tokenPath := os.Getenv("TOKEN_EENFINIT")
-	if tokenPath == "" {
-		tokenPath = "token_eenfinit.pickle"
-	}
+func (b *TelegramBot) handleSongList(ctx context.Context, chatID int64, offset int) {
+	b.log.Infof("handleSongList: START - offset=%d", offset)
 
-	if _, err := os.Stat(tokenPath); os.IsNotExist(err) {
-		b.replyText(chatID, "❌ Файл token_eenfinit.pickle не найден\n\n"+
-			"Загрузите его или создайте новый:\n"+
-			"/uploadtoken (загрузите как token_eenfinit.pickle)\n"+
-			"/downloadfiles (загрузить из S3)\n\n"+
-			"Или используйте скрипт:\n"+
-			"python get_youtube_token.py token_eenfinit.pickle client_secrets.json")
+	// Get songs from storage
+	allSongs, err := b.svc.GetAllSongs(ctx)
+	if err != nil || len(allSongs) == 0 {
+		b.replyText(chatID, "❌ Ошибка: нет доступных песен")
 		return
 	}
 
-	b.replyText(chatID, "🚀 Генерация для eenfinit запущена... (в разработке)\n\n"+
-		"Эта функция генерирует мемы только для плейлиста eenfinit и публикует в YouTube аккаунт eenfinit.\n"+
-		"Источники: Pinterest, Reddit\n"+
-		"Плейлист: https://music.youtube.com/playlist?list=OLAK5uy_mjqaQ3Ut5XK1m2vEvYuzcoUb3D6XrW9SA")
+	// Limit to last 8 songs for pagination
+	const itemsPerPage = 8
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(allSongs) {
+		offset = len(allSongs) - 1
+	}
 
-	// TODO: Implement eenfinit generation logic
-	// Parse args (count, pin_num, audio_duration)
-	// Generate memes using eenfinit playlist
-	// Upload to YouTube eenfinit account
+	endIdx := offset + itemsPerPage
+	if endIdx > len(allSongs) {
+		endIdx = len(allSongs)
+	}
+
+	songs := allSongs[offset:endIdx]
+	b.log.Infof("handleSongList: showing %d songs (offset=%d, total=%d)", len(songs), offset, len(allSongs))
+
+	// Create buttons for songs (max 8)
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
+	for _, song := range songs {
+		// Truncate title to fit button
+		title := song.Title
+		if len(title) > 30 {
+			title = title[:27] + "..."
+		}
+
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("%s - %s", song.Author, title),
+			fmt.Sprintf("songdl:%s", song.ID),
+		)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+	}
+
+	// Add pagination buttons
+	navRow := make([]tgbotapi.InlineKeyboardButton, 0)
+	if offset > 0 {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData(
+			"⬅️ Предыдущие",
+			fmt.Sprintf("songlist:%d", offset-itemsPerPage),
+		))
+	}
+	if endIdx < len(allSongs) {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData(
+			"➡️ Следующие",
+			fmt.Sprintf("songlist:%d", endIdx),
+		))
+	}
+	if len(navRow) > 0 {
+		rows = append(rows, navRow)
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("🎵 Выберите трек (%d-%d из %d):", offset+1, endIdx, len(allSongs)))
+	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) handleSongDownloadRandom(ctx context.Context, chatID int64) {
+	b.log.Infof("handleSongDownloadRandom: START")
+
+	song, err := b.svc.GetRandomSong(ctx)
+	if err != nil {
+		b.log.Errorf("handleSongDownloadRandom: get random song failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка: %v", err))
+		return
+	}
+
+	b.handleSongDownload(ctx, chatID, song.ID)
+}
+
+func (b *TelegramBot) handleSongDownload(ctx context.Context, chatID int64, songID string) {
+	b.log.Infof("handleSongDownload: START - songID=%s", songID)
+
+	go func() {
+		// Get song info
+		song, err := b.svc.GetSongByID(ctx, songID)
+		if err != nil {
+			b.log.Errorf("handleSongDownload: get song failed: %v", err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка: песня не найдена - %v", err))
+			return
+		}
+
+		b.log.Infof("handleSongDownload: downloading song: %s (%s)", song.Title, song.Author)
+
+		// Download song to temp file
+		songPath, err := b.svc.Impl().DownloadSongToTemp(ctx, song)
+		if err != nil {
+			b.log.Errorf("handleSongDownload: download song failed: %v", err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка загрузки песни: %v", err))
+			return
+		}
+		defer os.Remove(songPath)
+
+		// Open file
+		f, err := os.Open(songPath)
+		if err != nil {
+			b.log.Errorf("handleSongDownload: open song file: %v", err)
+			b.replyText(chatID, "❌ Ошибка открытия файла")
+			return
+		}
+		defer f.Close()
+
+		// Send audio file
+		msg := tgbotapi.NewAudio(chatID, tgbotapi.FileReader{Name: "song.m4a", Reader: f})
+		msg.Title = song.Title
+		msg.Performer = song.Author
+		msg.Caption = fmt.Sprintf("🎵 %s\n👤 %s", song.Title, song.Author)
+
+		if _, err := b.tg.Send(msg); err != nil {
+			b.log.Errorf("handleSongDownload: send audio: %v", err)
+			b.replyText(chatID, "❌ Ошибка отправки аудиофайла")
+			return
+		}
+
+		b.log.Infof("handleSongDownload: song sent successfully - %s (%s)", song.Title, song.Author)
+	}()
+}
+
+func (b *TelegramBot) handleSongSearch(ctx context.Context, chatID int64, query string) {
+	b.log.Infof("handleSongSearch: START - query=%s", query)
+
+	// Search for songs matching the query
+	songs, err := b.svc.SearchSongs(ctx, query)
+	if err != nil {
+		b.log.Errorf("handleSongSearch: search failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка поиска: %v", err))
+		return
+	}
+
+	if len(songs) == 0 {
+		b.replyText(chatID, fmt.Sprintf("❌ Треков не найдено по запросу: \"%s\"", query))
+		return
+	}
+
+	b.log.Infof("handleSongSearch: found %d songs matching \"%s\"", len(songs), query)
+
+	// Create buttons for found songs (max 10)
+	maxResults := 10
+	displayCount := len(songs)
+	if displayCount > maxResults {
+		displayCount = maxResults
+	}
+
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
+	for i := 0; i < displayCount; i++ {
+		song := songs[i]
+
+		// Truncate title to fit button
+		title := song.Title
+		if len(title) > 30 {
+			title = title[:27] + "..."
+		}
+
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			fmt.Sprintf("%s - %s", song.Author, title),
+			fmt.Sprintf("songdl:%s", song.ID),
+		)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	resultText := fmt.Sprintf("🎵 Найдено треков: %d\nПоказано: %d", len(songs), displayCount)
+	if displayCount < len(songs) {
+		resultText += "\n\n❗Показаны первые 10 результатов"
+	}
+	msg := tgbotapi.NewMessage(chatID, resultText)
+	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) cmdSong(ctx context.Context, chatID int64, args string) {
+	b.log.Infof("cmdSong: START - args=%s", args)
+
+	args = strings.TrimSpace(args)
+
+	// If user provided search query
+	if args != "" {
+		b.handleSongSearch(ctx, chatID, args)
+		return
+	}
+
+	// Get songs from storage
+	songs, err := b.svc.GetAllSongs(ctx)
+	if err != nil || len(songs) == 0 {
+		b.replyText(chatID, "❌ Ошибка: нет доступных песен")
+		return
+	}
+
+	b.log.Infof("cmdSong: got %d songs", len(songs))
+
+	// Create inline keyboard with options
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🎲 Случайный трек", "songrand"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📋 Выбрать трек из списка", "songlist:0"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔍 Поиск трека", "songsearch"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, "🎵 Скачать трек\n\nВыберите трек, возьмите случайный или найдите по названию:")
+	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) cmdIdea(ctx context.Context, chatID int64, args string) {
+	b.log.Infof("cmdIdea: START - args=%s", args)
+
+	args = strings.TrimSpace(args)
+
+	// If user provided search query
+	if args != "" {
+		b.handleIdeaSearch(ctx, chatID, args)
+		return
+	}
+
+	// Get songs from storage
+	songs, err := b.svc.GetAllSongs(ctx)
+	if err != nil || len(songs) == 0 {
+		b.replyText(chatID, "❌ Ошибка: нет доступных песен")
+		return
+	}
+
+	b.log.Infof("cmdIdea: got %d songs", len(songs))
+
+	// Create inline keyboard with options
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🎲 Случайный трек", "ideagen:random"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📋 Выбрать трек из списка", "idealist:0"),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔍 Поиск трека", "ideasearch"),
+		),
+	)
+
+	msg := tgbotapi.NewMessage(chatID, "🎬 Генератор идей для видео\n\nВыберите трек, возьмите случайный или найдите по названию:")
+	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, songID string) {
+	b.log.Infof("handleIdeaGeneration: START - songID=%s", songID)
+
+	// Get the song (random or by ID)
+	var song *model.Song
+	var err error
+
+	if songID == "random" {
+		song, err = b.svc.GetRandomSong(ctx)
+	} else {
+		song, err = b.svc.GetSongByID(ctx, songID)
+	}
+
+	if err != nil {
+		b.log.Errorf("handleIdeaGeneration: get song failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка: песня не найдена - %v", err))
+		return
+	}
+
+	b.log.Infof("handleIdeaGeneration: processing song: %s (%s)", song.Title, song.Author)
+
+	// Show processing message
+	procMsgID := b.replyText(chatID, fmt.Sprintf("⏳ Анализирую трек: %s - %s\n📝 Генерирую идеи для сцен...", song.Author, song.Title))
+
+	// Generate ideas using AI
+	titleGenerator := b.svc.GetTitleGenerator()
+	if titleGenerator == nil {
+		b.log.Errorf("handleIdeaGeneration: title generator not available")
+		b.editMessage(chatID, procMsgID, "❌ Ошибка: генератор идей не инициализирован")
+		return
+	}
+
+	ideas, err := titleGenerator.GenerateIdeaForSong(ctx, song)
+	if err != nil {
+		b.log.Errorf("handleIdeaGeneration: generate ideas failed: %v", err)
+		b.editMessage(chatID, procMsgID, fmt.Sprintf("❌ Ошибка при генерации идеи: %v", err))
+		return
+	}
+
+	b.log.Infof("handleIdeaGeneration: idea generated with %d scenes", len(ideas))
+
+	// Build result message with formatted info
+	scenesText := ""
+	for _, scene := range ideas {
+		scenesText += "\n" + scene + "\n"
+	}
+
+	// Get config for S3 download link
+	cfg := b.svc.GetConfig()
+	downloadURL := fmt.Sprintf("%s/%s/%s",
+		strings.TrimRight(cfg.S3Endpoint, "/"),
+		cfg.S3Bucket,
+		song.AudioKey,
+	)
+
+	resultMsg := fmt.Sprintf(
+		"🎵 <b>Трек:</b> %s\n"+
+			"👤 <b>Артист:</b> %s\n"+
+			"⏱️ <b>Длительность:</b> %.1f сек\n"+
+			"🔗 <a href=\"%s\">Скачать трек</a>\n\n"+
+			"🎬 <b>Идея для видео (по 6 сек каждая сцена):</b>"+
+			"%s",
+		song.Title,
+		song.Author,
+		song.DurationS,
+		downloadURL,
+		scenesText,
+	)
+
+	b.editMessageHTML(chatID, procMsgID, resultMsg)
+	b.log.Infof("handleIdeaGeneration: COMPLETE")
+}
+
+func (b *TelegramBot) handleIdeaList(ctx context.Context, chatID int64, offset int) {
+	b.log.Infof("handleIdeaList: START - offset=%d", offset)
+
+	// Get songs from storage
+	allSongs, err := b.svc.GetAllSongs(ctx)
+	if err != nil || len(allSongs) == 0 {
+		b.replyText(chatID, "❌ Ошибка: нет доступных песен")
+		return
+	}
+
+	// Limit to last 8 songs for pagination
+	const itemsPerPage = 8
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= len(allSongs) {
+		offset = len(allSongs) - 1
+	}
+
+	endIdx := offset + itemsPerPage
+	if endIdx > len(allSongs) {
+		endIdx = len(allSongs)
+	}
+
+	songs := allSongs[offset:endIdx]
+	b.log.Infof("handleIdeaList: showing %d songs (offset=%d, total=%d)", len(songs), offset, len(allSongs))
+
+	// Create buttons for songs (max 8)
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
+	for _, song := range songs {
+		// Truncate title to fit button
+		title := song.Title
+		if len(title) > 30 {
+			title = title[:27] + "..."
+		}
+
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			title,
+			fmt.Sprintf("ideagen:%s", song.ID),
+		)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+	}
+
+	// Add pagination buttons
+	navRow := make([]tgbotapi.InlineKeyboardButton, 0)
+	if offset > 0 {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData(
+			"⬅️ Предыдущие",
+			fmt.Sprintf("idealist:%d", offset-itemsPerPage),
+		))
+	}
+	if endIdx < len(allSongs) {
+		navRow = append(navRow, tgbotapi.NewInlineKeyboardButtonData(
+			"➡️ Следующие",
+			fmt.Sprintf("idealist:%d", endIdx),
+		))
+	}
+	if len(navRow) > 0 {
+		rows = append(rows, navRow)
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	msg := tgbotapi.NewMessage(chatID, fmt.Sprintf("📋 Выберите трек (%d-%d из %d):", offset+1, endIdx, len(allSongs)))
+	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) handleIdeaSearch(ctx context.Context, chatID int64, query string) {
+	b.log.Infof("handleIdeaSearch: START - query=%s", query)
+
+	// Search for songs matching the query
+	songs, err := b.svc.SearchSongs(ctx, query)
+	if err != nil {
+		b.log.Errorf("handleIdeaSearch: search failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка поиска: %v", err))
+		return
+	}
+
+	if len(songs) == 0 {
+		b.replyText(chatID, fmt.Sprintf("❌ Треков не найдено по запросу: \"%s\"", query))
+		return
+	}
+
+	b.log.Infof("handleIdeaSearch: found %d songs matching \"%s\"", len(songs), query)
+
+	// Create buttons for found songs (max 10)
+	maxResults := 10
+	displayCount := len(songs)
+	if displayCount > maxResults {
+		displayCount = maxResults
+	}
+
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0)
+	for i := 0; i < displayCount; i++ {
+		song := songs[i]
+		// Show title and artist in one button
+		btnText := song.Title
+		if len(btnText) > 25 {
+			btnText = btnText[:22] + "..."
+		}
+
+		btn := tgbotapi.NewInlineKeyboardButtonData(
+			btnText,
+			fmt.Sprintf("ideagen:%s", song.ID),
+		)
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{btn})
+	}
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
+	resultMsg := fmt.Sprintf("🔍 Найдено %d треков по запросу \"%s\":\n\nВыберите трек:", displayCount, query)
+	if len(songs) > maxResults {
+		resultMsg += fmt.Sprintf("\n\n(показаны первые %d из %d)", displayCount, len(songs))
+	}
+
+	msg := tgbotapi.NewMessage(chatID, resultMsg)
+	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
 }
 
 func (b *TelegramBot) replyText(chatID int64, text string) int {
@@ -1809,6 +2318,12 @@ func (b *TelegramBot) replyHTML(chatID int64, text string) int {
 func (b *TelegramBot) editMessageHTML(chatID int64, messageID int, text string) error {
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	edit.ParseMode = tgbotapi.ModeHTML
+	_, err := b.tg.Send(edit)
+	return err
+}
+
+func (b *TelegramBot) editMessage(chatID int64, messageID int, text string) error {
+	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	_, err := b.tg.Send(edit)
 	return err
 }

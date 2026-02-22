@@ -31,6 +31,7 @@ type MemeService interface {
 	GetRandomMeme(ctx context.Context) (*model.Meme, error)
 	GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error)
 	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
+	DownloadSongToTemp(ctx context.Context, song *model.Song) (string, error)
 	DeleteMeme(ctx context.Context, memeID string) error
 	ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error)
 }
@@ -285,6 +286,10 @@ func (r *realImpl) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (st
 	return r.video.DownloadMemeToTemp(ctx, meme)
 }
 
+func (r *realImpl) DownloadSongToTemp(ctx context.Context, song *model.Song) (string, error) {
+	return r.audio.DownloadSongToTemp(ctx, song)
+}
+
 func (r *realImpl) DeleteMeme(ctx context.Context, memeID string) error {
 	r.log.Infof("service.DeleteMeme: START - memeID=%s", memeID)
 	err := r.video.DeleteMeme(ctx, memeID)
@@ -523,6 +528,92 @@ func (s *Service) DownloadFileToTemp(ctx context.Context, s3Key string, prefix s
 // GetUploadersManager returns the uploaders manager
 func (s *Service) GetUploadersManager() *uploaders.Manager {
 	return s.uploadersManager
+}
+
+// GetTitleGenerator returns the AI title generator (used for idea generation)
+func (s *Service) GetTitleGenerator() *ai.TitleGenerator {
+	if impl, ok := s.impl.(*realImpl); ok {
+		return impl.ai
+	}
+	return nil
+}
+
+// GetAllSongs returns all songs from the index
+func (s *Service) GetAllSongs(ctx context.Context) ([]*model.Song, error) {
+	var songsIdx model.SongsIndex
+	found, err := s.s3c.ReadJSON(ctx, s.cfg.SongsJSONKey, &songsIdx)
+	if err != nil {
+		return nil, fmt.Errorf("read songs.json: %w", err)
+	}
+	if !found || len(songsIdx.Items) == 0 {
+		return nil, fmt.Errorf("no songs found")
+	}
+
+	// Convert to pointers for consistency
+	result := make([]*model.Song, len(songsIdx.Items))
+	for i := range songsIdx.Items {
+		result[i] = &songsIdx.Items[i]
+	}
+	return result, nil
+}
+
+// GetSongByID returns a song by ID
+func (s *Service) GetSongByID(ctx context.Context, songID string) (*model.Song, error) {
+	songs, err := s.GetAllSongs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, song := range songs {
+		if song.ID == songID {
+			return song, nil
+		}
+	}
+	return nil, fmt.Errorf("song not found: %s", songID)
+}
+
+// GetRandomSong returns a random song from all available songs
+func (s *Service) GetRandomSong(ctx context.Context) (*model.Song, error) {
+	songs, err := s.GetAllSongs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(songs) == 0 {
+		return nil, fmt.Errorf("no songs available")
+	}
+
+	// Use the same randomization as video generator
+	idx := int(time.Now().UnixNano() % int64(len(songs)))
+	return songs[idx], nil
+}
+
+// SearchSongs searches for songs by title or author
+func (s *Service) SearchSongs(ctx context.Context, query string) ([]*model.Song, error) {
+	songs, err := s.GetAllSongs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	if query == "" {
+		return nil, fmt.Errorf("search query is empty")
+	}
+
+	var results []*model.Song
+	for _, song := range songs {
+		// Search in title and author
+		if strings.Contains(strings.ToLower(song.Title), query) ||
+			strings.Contains(strings.ToLower(song.Author), query) {
+			results = append(results, song)
+		}
+	}
+
+	if len(results) == 0 {
+		return nil, fmt.Errorf("no songs found matching query: %s", query)
+	}
+
+	return results, nil
 }
 
 // InitializeUploadersManager initializes the uploaders manager
