@@ -121,39 +121,106 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 
 	// Parse the response into individual scenes
 	var scenes []string
-	lines := strings.Split(strings.TrimSpace(content), "\n")
-	var currentScene string
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
+	var mainIdea string
+
+	// Split by "---" to separate main idea from scenes
+	parts := strings.Split(content, "---")
+	if len(parts) > 0 {
+		mainIdea = strings.TrimSpace(parts[0])
+		if strings.Contains(mainIdea, "💡") {
+			mainIdea = strings.TrimPrefix(mainIdea, "💡")
+			mainIdea = strings.TrimSpace(mainIdea)
 		}
-		// Check if this is a scene header (starts with "Сцена")
-		if strings.HasPrefix(line, "Сцена") && strings.Contains(line, ":") {
-			if currentScene != "" {
-				scenes = append(scenes, currentScene)
-			}
-			currentScene = line
-		} else if currentScene != "" {
-			// Append continuation to current scene
-			currentScene += "\n" + line
-		}
-	}
-	// Add last scene
-	if currentScene != "" {
-		scenes = append(scenes, currentScene)
 	}
 
-	// If parsing failed or very few scenes, return fallback
+	// Get scenes part (everything after "---")
+	scenesContent := content
+	if len(parts) > 1 {
+		scenesContent = parts[1]
+	}
+
+	// Find all scene blocks - they start with "**Сцена" or "Сцена"
+	// Split by any line containing "Сцена" that looks like a header
+	lines := strings.Split(scenesContent, "\n")
+	var currentScene strings.Builder
+	var sceneCount int
+
+	for _, line := range lines {
+		trimmedLine := strings.TrimSpace(line)
+		if trimmedLine == "" {
+			if currentScene.Len() > 0 {
+				currentScene.WriteString("\n")
+			}
+			continue
+		}
+
+		// Check if this line is a scene header
+		// Scene headers contain "Сцена" followed by either a number or a colon/asterisk
+		isSceneHeader := strings.Contains(trimmedLine, "Сцена") &&
+			(strings.Contains(trimmedLine, ":") || strings.Contains(trimmedLine, "*"))
+
+		if isSceneHeader && currentScene.Len() > 0 {
+			// Save previous scene
+			sceneText := strings.TrimSpace(currentScene.String())
+			if sceneText != "" && sceneText != "Сцена" {
+				scenes = append(scenes, sceneText)
+				sceneCount++
+			}
+			currentScene.Reset()
+		}
+
+		// Add line to current scene
+		if currentScene.Len() > 0 {
+			currentScene.WriteString("\n")
+		}
+		currentScene.WriteString(trimmedLine)
+	}
+
+	// Add last scene
+	if currentScene.Len() > 0 {
+		sceneText := strings.TrimSpace(currentScene.String())
+		if sceneText != "" && sceneText != "Сцена" {
+			scenes = append(scenes, sceneText)
+			sceneCount++
+		}
+	}
+
+	// If parsing successful but we have scenes, verify they look reasonable
 	if len(scenes) < 2 {
+		tg.log.Infof("ai: parsed %d scenes (attempt 1), content preview: %s", len(scenes), truncateString(scenesContent, 100))
+
+		// Fallback: split strictly by "Сцена " pattern
+		scenes = []string{}
+		scenePattern := strings.Split(scenesContent, "Сцена ")
+
+		for i := 1; i < len(scenePattern); i++ {
+			sceneText := strings.TrimSpace("Сцена " + scenePattern[i])
+			// Remove leading ** and numbers if present
+			sceneText = strings.TrimPrefix(sceneText, "**")
+			if sceneText != "" && len(sceneText) > 5 {
+				scenes = append(scenes, sceneText)
+			}
+		}
+	}
+
+	// Still not enough scenes? Use fallback
+	if len(scenes) < 2 {
+		tg.log.Infof("ai: parsed %d scenes after retry, using fallback. Main idea: %s", len(scenes), mainIdea)
 		return []string{
-			"💡 Основная идея: " + content + "\n\nСцена 1: Начало с привлечения внимания и установки настроения",
+			fmt.Sprintf("💡 Основная идея: %s", mainIdea),
+			"Сцена 1: Начало с привлечения внимания и установки настроения",
 			"Сцена 2: Развитие основной идеи и усиление визуального эффекта",
 			"Сцена 3: Финальный момент и впечатление",
 		}, nil
 	}
 
 	return scenes, nil
+}
+func truncateString(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen]
 }
 
 func GetAPIKey() string {

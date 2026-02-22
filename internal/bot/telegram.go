@@ -2195,25 +2195,54 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 		song.AudioKey,
 	)
 
-	resultMsg := fmt.Sprintf(
+	// First message: Track info and download link
+	trackInfoMsg := fmt.Sprintf(
 		"🎵 <b>Трек:</b> %s\n"+
 			"👤 <b>Артист:</b> %s\n"+
 			"⏱️ <b>Длительность:</b> %.1f сек\n"+
-			"🔗 <a href=\"%s\">Скачать трек</a>\n\n"+
-			"🎬 <b>Идея для видео (по 6 сек каждая сцена):</b>"+
-			"%s",
+			"🔗 <a href=\"%s\">Скачать трек</a>",
 		song.Title,
 		song.Author,
 		song.DurationS,
 		downloadURL,
-		scenesText,
 	)
 
-	if err := b.editMessageHTML(chatID, procMsgID, resultMsg); err != nil {
+	if err := b.editMessageHTML(chatID, procMsgID, trackInfoMsg); err != nil {
 		b.log.Errorf("handleIdeaGeneration: failed to edit message: %v", err)
-		// Send as new message if edit fails
-		b.replyHTML(chatID, resultMsg)
+		b.replyHTML(chatID, trackInfoMsg)
 	}
+
+	// Second message: Scenes/Ideas
+	ideasMsg := "🎬 <b>Идея для видео (по 6 сек каждая сцена):</b>" + scenesText
+
+	if len(ideasMsg) > 4096 {
+		// If too long, split into multiple messages
+		b.log.Infof("handleIdeaGeneration: ideas message too long (%d chars), sending in chunks. Got %d scenes", len(ideasMsg), len(ideas))
+		b.replyHTML(chatID, "🎬 <b>Идея для видео (по 6 сек каждая сцена):</b>")
+
+		for i, scene := range ideas {
+			trimmedScene := strings.TrimSpace(scene)
+
+			// Check if scene already contains scene info (has "Сцена" in text itself)
+			containsSceneInfo := strings.Contains(trimmedScene, "**Сцена") ||
+				strings.Contains(trimmedScene, "Сцена") && strings.Contains(trimmedScene, ":")
+
+			if containsSceneInfo {
+				// Already has formatted scene header, send as-is
+				b.replyHTML(chatID, trimmedScene)
+			} else if i == 0 && strings.Contains(trimmedScene, "💡") {
+				// This is the main idea block
+				b.replyHTML(chatID, trimmedScene)
+			} else {
+				// Regular scene without header, add one
+				chunk := fmt.Sprintf("<b>Сцена %d:</b>\n%s", i+1, trimmedScene)
+				b.replyHTML(chatID, chunk)
+			}
+		}
+	} else {
+		b.replyHTML(chatID, ideasMsg)
+	}
+
 	b.log.Infof("handleIdeaGeneration: COMPLETE")
 }
 
