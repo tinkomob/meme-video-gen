@@ -215,6 +215,11 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 		return
 	}
 
+	if data == "songrand" {
+		b.handleSongDownloadRandom(ctx, chatID)
+		return
+	}
+
 	// Parse callback data
 	parts := splitCallback(data)
 	if len(parts) < 2 {
@@ -260,8 +265,6 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 		b.replyText(chatID, "❌ Отменено")
 	case "selectmeme":
 		b.handleSelectMeme(ctx, chatID, memeID, cb.Message.MessageID)
-	case "songrand":
-		b.handleSongDownloadRandom(ctx, chatID)
 	case "songlist":
 		// memeID here is actually offset
 		offset := 0
@@ -1938,22 +1941,25 @@ func (b *TelegramBot) handleSongDownloadRandom(ctx context.Context, chatID int64
 func (b *TelegramBot) handleSongDownload(ctx context.Context, chatID int64, songID string) {
 	b.log.Infof("handleSongDownload: START - songID=%s", songID)
 
-	go func() {
-		// Get song info
-		song, err := b.svc.GetSongByID(ctx, songID)
-		if err != nil {
-			b.log.Errorf("handleSongDownload: get song failed: %v", err)
-			b.replyText(chatID, fmt.Sprintf("❌ Ошибка: песня не найдена - %v", err))
-			return
-		}
+	// Get song info
+	song, err := b.svc.GetSongByID(ctx, songID)
+	if err != nil {
+		b.log.Errorf("handleSongDownload: get song failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка: песня не найдена - %v", err))
+		return
+	}
 
+	// Send status message
+	statusMsg := b.replyText(chatID, "⏳ Скачиваю трек...")
+
+	go func() {
 		b.log.Infof("handleSongDownload: downloading song: %s (%s)", song.Title, song.Author)
 
 		// Download song to temp file
 		songPath, err := b.svc.Impl().DownloadSongToTemp(ctx, song)
 		if err != nil {
 			b.log.Errorf("handleSongDownload: download song failed: %v", err)
-			b.replyText(chatID, fmt.Sprintf("❌ Ошибка загрузки песни: %v", err))
+			b.editMessageHTML(chatID, statusMsg, fmt.Sprintf("❌ Ошибка загрузки песни: %v", err))
 			return
 		}
 		defer os.Remove(songPath)
@@ -1962,22 +1968,45 @@ func (b *TelegramBot) handleSongDownload(ctx context.Context, chatID int64, song
 		f, err := os.Open(songPath)
 		if err != nil {
 			b.log.Errorf("handleSongDownload: open song file: %v", err)
-			b.replyText(chatID, "❌ Ошибка открытия файла")
+			b.editMessageHTML(chatID, statusMsg, "❌ Ошибка открытия файла")
 			return
 		}
 		defer f.Close()
+
+		// Construct S3 URL for download link
+		s3URL := ""
+		cfg := b.svc.GetConfig()
+		if cfg.S3Endpoint != "" && cfg.S3Bucket != "" && song.AudioKey != "" {
+			// Format: https://bucket.endpoint/key or https://endpoint/bucket/key
+			if strings.Contains(cfg.S3Endpoint, "amazonaws.com") {
+				// AWS S3 format: https://bucket.s3.region.amazonaws.com/key
+				s3URL = fmt.Sprintf("%s/%s/%s", strings.TrimSuffix(cfg.S3Endpoint, "/"), cfg.S3Bucket, song.AudioKey)
+			} else {
+				// MinIO format: https://endpoint/bucket/key
+				s3URL = fmt.Sprintf("%s/%s/%s", strings.TrimSuffix(cfg.S3Endpoint, "/"), cfg.S3Bucket, song.AudioKey)
+			}
+		}
 
 		// Send audio file
 		msg := tgbotapi.NewAudio(chatID, tgbotapi.FileReader{Name: "song.m4a", Reader: f})
 		msg.Title = song.Title
 		msg.Performer = song.Author
-		msg.Caption = fmt.Sprintf("🎵 %s\n👤 %s", song.Title, song.Author)
+
+		caption := fmt.Sprintf("🎵 %s\n👤 %s", song.Title, song.Author)
+		if s3URL != "" {
+			caption += fmt.Sprintf("\n\n📥 <a href=\"%s\">Скачать из S3</a>", s3URL)
+		}
+		msg.Caption = caption
+		msg.ParseMode = "HTML"
 
 		if _, err := b.tg.Send(msg); err != nil {
 			b.log.Errorf("handleSongDownload: send audio: %v", err)
-			b.replyText(chatID, "❌ Ошибка отправки аудиофайла")
+			b.editMessageHTML(chatID, statusMsg, "❌ Ошибка отправки аудиофайла")
 			return
 		}
+
+		// Delete status message
+		b.tg.Send(tgbotapi.NewDeleteMessage(chatID, statusMsg))
 
 		b.log.Infof("handleSongDownload: song sent successfully - %s (%s)", song.Title, song.Author)
 	}()
@@ -2180,7 +2209,11 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 		scenesText,
 	)
 
-	b.editMessageHTML(chatID, procMsgID, resultMsg)
+	if err := b.editMessageHTML(chatID, procMsgID, resultMsg); err != nil {
+		b.log.Errorf("handleIdeaGeneration: failed to edit message: %v", err)
+		// Send as new message if edit fails
+		b.replyHTML(chatID, resultMsg)
+	}
 	b.log.Infof("handleIdeaGeneration: COMPLETE")
 }
 
