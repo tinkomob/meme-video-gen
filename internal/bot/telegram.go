@@ -1029,7 +1029,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
              /meme — один мем с кнопками действий
              /meme 3 — 3 мема слайдером (медиагруппой)
 /status — статус генерации и использование памяти
-/errors — последние 50 строк errors.log
+/errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID
 /scheduleinfo — расписание отправок мемов на сегодня
 /setnext <index> <time> — изменить время отправки по индексу
@@ -1067,17 +1067,36 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 }
 
 func (b *TelegramBot) cmdErrors(chatID int64) {
-	lines, err := TailLastNLines(b.errorsPath, 50)
+	f, err := os.Open(b.errorsPath)
 	if err != nil {
-		b.log.Errorf("tail errors: %v", err)
-		b.replyText(chatID, "Не удалось прочитать errors.log")
+		b.log.Errorf("open errors.log: %v", err)
+		b.replyText(chatID, "❌ Не удалось открыть errors.log")
 		return
 	}
-	msg := strings.Join(lines, "\n")
-	if strings.TrimSpace(msg) == "" {
-		msg = "errors.log пуст"
+	defer f.Close()
+
+	// Check if file is empty
+	info, err := f.Stat()
+	if err != nil {
+		b.log.Errorf("stat errors.log: %v", err)
+		b.replyText(chatID, "❌ Ошибка чтения errors.log")
+		return
 	}
-	b.replyText(chatID, msg)
+
+	if info.Size() == 0 {
+		b.replyText(chatID, "📋 errors.log пуст")
+		return
+	}
+
+	msg := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{Name: "errors.log", Reader: f})
+	msg.Caption = fmt.Sprintf("📋 errors.log (%d байт)", info.Size())
+
+	_, err = b.tg.Send(msg)
+	if err != nil {
+		b.log.Errorf("send errors.log: %v", err)
+		b.replyText(chatID, "❌ Ошибка отправки файла")
+		return
+	}
 }
 
 func (b *TelegramBot) cmdStatus(ctx context.Context, chatID int64) {
