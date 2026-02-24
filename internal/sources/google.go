@@ -222,14 +222,14 @@ func (sc *Scraper) scrapeGoogleImages(ctx context.Context) (*model.SourceAsset, 
 // downloadGoogleImage downloads an image from the given URL and creates a SourceAsset
 func (sc *Scraper) downloadGoogleImage(ctx context.Context, imageURL, source, query string) (*model.SourceAsset, error) {
 	// Retry logic for download attempts (to handle 403, 429, etc)
-	maxRetries := 3
+	maxRetries := 5
 	var lastErr error
 	var resp *http.Response
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			// Exponential backoff: 2s, 5s, 10s
-			backoff := time.Duration((attempt)*3+2) * time.Second
+			// Exponential backoff: 2s, 5s, 10s, 20s, 40s
+			backoff := time.Duration((attempt*3)+2) * time.Second
 			sc.log.Infof("Google: retry attempt %d/%d after %v", attempt+1, maxRetries, backoff)
 			time.Sleep(backoff)
 		}

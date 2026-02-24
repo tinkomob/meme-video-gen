@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
@@ -100,14 +101,41 @@ func (idx *Indexer) EnsureSongs(ctx context.Context) error {
 
 func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Client, entry *youtube.PlaylistEntry, songsIdx *model.SongsIndex) error {
 	idx.log.Infof("audio: getting video details for %s", entry.ID)
+
+	// Retry logic for YouTube downloads (403 errors are common)
+	maxRetries := 5
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			backoff := time.Duration(1<<uint(attempt))*time.Second + time.Duration(rand.Intn(1000))*time.Millisecond
+			idx.log.Warnf("audio: retry %d/%d for %s after %v (last error: %v)", attempt, maxRetries, entry.ID, backoff, lastErr)
+			time.Sleep(backoff)
+		}
+
+		lastErr = idx.downloadSongAttempt(ctx, client, entry, songsIdx)
+		if lastErr == nil {
+			return nil
+		}
+
+		// Check if error is retryable (403, 429, timeout)
+		if !isRetryableError(lastErr) {
+			idx.log.Errorf("audio: non-retryable error for %s: %v", entry.ID, lastErr)
+			return lastErr
+		}
+	}
+
+	idx.log.Errorf("audio: failed to download song %s after %d attempts: %v", entry.ID, maxRetries, lastErr)
+	return lastErr
+}
+
+func (idx *Indexer) downloadSongAttempt(ctx context.Context, client *youtube.Client, entry *youtube.PlaylistEntry, songsIdx *model.SongsIndex) error {
 	video, err := client.GetVideo(entry.ID)
 	if err != nil {
-		idx.log.Errorf("audio: get video %s: %v", entry.ID, err)
-		return err
+		return fmt.Errorf("get video: %w", err)
 	}
 	formats := video.Formats.WithAudioChannels()
 	if len(formats) == 0 {
-		idx.log.Errorf("audio: no audio formats for %s", entry.ID)
 		return fmt.Errorf("no audio formats")
 	}
 	format := formats[0]
@@ -117,23 +145,20 @@ func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Cl
 
 	f, err := os.Create(tmpFile)
 	if err != nil {
-		idx.log.Errorf("audio: create temp file: %v", err)
-		return err
+		return fmt.Errorf("create temp file: %w", err)
 	}
 
 	idx.log.Infof("audio: downloading stream for %s", entry.ID)
 	stream, _, err := client.GetStream(video, &format)
 	if err != nil {
 		f.Close()
-		idx.log.Errorf("audio: get stream %s: %v", entry.ID, err)
-		return err
+		return fmt.Errorf("get stream: %w", err)
 	}
 
 	if _, err := io.Copy(f, stream); err != nil {
 		f.Close()
 		stream.Close()
-		idx.log.Errorf("audio: copy stream %s: %v", entry.ID, err)
-		return err
+		return fmt.Errorf("copy stream: %w", err)
 	}
 	f.Close()
 	stream.Close()
@@ -168,6 +193,19 @@ func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Cl
 		SHA256:     hash,
 	})
 	return nil
+}
+
+func isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "403") ||
+		strings.Contains(errStr, "429") ||
+		strings.Contains(errStr, "timeout") ||
+		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "context deadline") ||
+		strings.Contains(errStr, "EOF")
 }
 
 func cleanAuthorName(author string) string {

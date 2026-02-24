@@ -1,6 +1,7 @@
 package video
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -986,6 +987,14 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 	log.Infof("[FFMPEG] audio: %s", audioPath)
 	log.Infof("[FFMPEG] output: %s", outputPath)
 
+	// Validate input files exist before running ffmpeg
+	if _, err := os.Stat(imagePath); err != nil {
+		return fmt.Errorf("image file not found: %s (%w)", imagePath, err)
+	}
+	if _, err := os.Stat(audioPath); err != nil {
+		return fmt.Errorf("audio file not found: %s (%w)", audioPath, err)
+	}
+
 	// Use ffmpeg to create video from image with audio
 	// Use -f lavfi to generate black background + scale+pad image on top (avoids -loop hanging)
 	// This is more stable than using -loop 1 with images
@@ -995,9 +1004,10 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]",
 	)
 
+	var stderr bytes.Buffer
 	cmd := exec.Command("ffmpeg",
 		"-hide_banner",
-		"-loglevel", "quiet",
+		"-loglevel", "error",
 		"-i", imagePath,
 		"-i", audioPath,
 		"-filter_complex", filterComplex,
@@ -1012,14 +1022,25 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		"-r", "30",
 		"-t", fmt.Sprintf("%.2f", duration),
 		"-y",
+		"-strict", "-2", // Allow experimental codecs
 		outputPath,
 	)
+	cmd.Stderr = &stderr
 
 	log.Infof("[FFMPEG] executing ffmpeg with filter_complex (duration=%.2fs)", duration)
 
 	if err := cmd.Run(); err != nil {
-		log.Errorf("[FFMPEG] ✗ ffmpeg failed: %v", err)
-		return fmt.Errorf("ffmpeg failed: %w", err)
+		errMsg := stderr.String()
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		log.Errorf("[FFMPEG] ✗ ffmpeg failed (exit code: %v): %s", err, errMsg)
+		return fmt.Errorf("ffmpeg error: %s", errMsg)
+	}
+
+	// Verify output file was created
+	if _, err := os.Stat(outputPath); err != nil {
+		return fmt.Errorf("ffmpeg did not create output file: %s (%w)", outputPath, err)
 	}
 
 	log.Infof("[FFMPEG] ✓ ffmpeg completed successfully, output file: %s", outputPath)
@@ -1061,11 +1082,20 @@ func replaceAudioInVideo(ctx context.Context, videoPath, audioPath, outputPath s
 func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputPath string, duration float64, log *logging.Logger) error {
 	log.Infof("[FFMPEG] replacing audio (trimmed to %.2f seconds)", duration)
 
+	// Validate input files exist
+	if _, err := os.Stat(videoPath); err != nil {
+		return fmt.Errorf("video file not found: %s (%w)", videoPath, err)
+	}
+	if _, err := os.Stat(audioPath); err != nil {
+		return fmt.Errorf("audio file not found: %s (%w)", audioPath, err)
+	}
+
 	// Use ffmpeg to replace audio in video with trimmed audio
 	// -i video_input -i audio_input -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -t duration output
+	var stderr bytes.Buffer
 	cmd := exec.Command("ffmpeg",
 		"-hide_banner",
-		"-loglevel", "quiet",
+		"-loglevel", "error",
 		"-i", videoPath,
 		"-i", audioPath,
 		"-c:v", "copy",
@@ -1075,14 +1105,25 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 		"-map", "1:a:0",
 		"-t", fmt.Sprintf("%.2f", duration),
 		"-y",
+		"-strict", "-2",
 		outputPath,
 	)
+	cmd.Stderr = &stderr
 
 	log.Infof("[FFMPEG] executing ffmpeg to replace and trim audio (duration=%.2fs)", duration)
 
 	if err := cmd.Run(); err != nil {
-		log.Errorf("[FFMPEG] ✗ ffmpeg failed: %v", err)
-		return fmt.Errorf("ffmpeg failed: %w", err)
+		errMsg := stderr.String()
+		if errMsg == "" {
+			errMsg = err.Error()
+		}
+		log.Errorf("[FFMPEG] ✗ ffmpeg failed (exit code: %v): %s", err, errMsg)
+		return fmt.Errorf("ffmpeg error: %s", errMsg)
+	}
+
+	// Verify output file was created
+	if _, err := os.Stat(outputPath); err != nil {
+		return fmt.Errorf("ffmpeg did not create output file: %s (%w)", outputPath, err)
 	}
 
 	log.Infof("[FFMPEG] ✓ audio replaced and trimmed successfully, output file: %s", outputPath)

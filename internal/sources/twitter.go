@@ -68,7 +68,7 @@ type TwitterIncludes struct {
 func (sc *Scraper) scrapeTwitter(ctx context.Context, profileURL string) (*model.SourceAsset, error) {
 	bearerToken := os.Getenv("X_BEARER_TOKEN")
 	if bearerToken == "" {
-		return nil, errors.New("X_BEARER_TOKEN not configured")
+		return nil, errors.New("X_BEARER_TOKEN not set. Get from https://developer.twitter.com/en/portal/dashboard")
 	}
 
 	username := parseTwitterUsername(profileURL)
@@ -81,6 +81,12 @@ func (sc *Scraper) scrapeTwitter(ctx context.Context, profileURL string) (*model
 	// Get user ID
 	userID, err := sc.getTwitterUserID(ctx, client, bearerToken, username)
 	if err != nil {
+		if strings.Contains(err.Error(), "401") {
+			return nil, fmt.Errorf("Twitter 401: X_BEARER_TOKEN is invalid/expired for @%s. Reset token at https://developer.twitter.com", username)
+		}
+		if strings.Contains(err.Error(), "429") {
+			return nil, fmt.Errorf("Twitter rate-limited for @%s: wait before retry", username)
+		}
 		return nil, fmt.Errorf("get user ID for @%s: %w", username, err)
 	}
 
