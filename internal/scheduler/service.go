@@ -50,6 +50,16 @@ type Service struct {
 	cfgMux           sync.Mutex
 	monitor          *ResourceMonitor
 	uploadersManager *uploaders.Manager
+
+	// In-memory cache with TTL to reduce S3 traffic
+	cacheMux     sync.RWMutex
+	cachedCounts map[string]cachedValue // key: "songs" | "sources" | "memes"
+	cacheTTL     time.Duration
+}
+
+type cachedValue struct {
+	count     int
+	timestamp time.Time
 }
 
 func (s *Service) Run(ctx context.Context) error {
@@ -130,43 +140,116 @@ func (s *Service) LoadPostsChatID(ctx context.Context) error {
 	return nil
 }
 
-// GetSourcesCount returns the number of loaded sources
+// InvalidateCache clears the count cache to force re-read from S3 on next check
+func (s *Service) InvalidateCache(cacheKey string) {
+	s.cacheMux.Lock()
+	defer s.cacheMux.Unlock()
+	delete(s.cachedCounts, cacheKey)
+	// s.log.Infof("cache invalidated: %s", cacheKey)
+}
+
+// InvalidateCacheAll clears all counts from cache
+func (s *Service) InvalidateCacheAll() {
+	s.cacheMux.Lock()
+	defer s.cacheMux.Unlock()
+	s.cachedCounts = make(map[string]cachedValue)
+	// s.log.Infof("cache invalidated: all entries cleared")
+}
+
+// GetSourcesCount returns the number of loaded sources (cached to reduce S3 traffic)
 func (s *Service) GetSourcesCount(ctx context.Context) (int, error) {
+	// Check cache first (60 second TTL)
+	s.cacheMux.RLock()
+	if cached, exists := s.cachedCounts["sources"]; exists && time.Since(cached.timestamp) < s.cacheTTL {
+		s.cacheMux.RUnlock()
+		// Cache hit - no S3 traffic
+		return cached.count, nil
+	}
+	s.cacheMux.RUnlock()
+
+	// Cache miss - read from S3
+	s.log.Infof("GetSourcesCount: cache miss, reading from S3")
 	var sourcesIdx model.SourcesIndex
 	found, err := s.s3c.ReadJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx)
 	if err != nil {
 		return 0, err
 	}
-	if !found {
-		return 0, nil
+
+	count := 0
+	if found {
+		count = len(sourcesIdx.Items)
 	}
-	return len(sourcesIdx.Items), nil
+
+	// Update cache
+	s.cacheMux.Lock()
+	s.cachedCounts["sources"] = cachedValue{count: count, timestamp: time.Now()}
+	s.cacheMux.Unlock()
+
+	return count, nil
 }
 
-// GetMemesCount returns the number of generated meme videos
+// GetMemesCount returns the number of generated meme videos (cached to reduce S3 traffic)
 func (s *Service) GetMemesCount(ctx context.Context) (int, error) {
+	// Check cache first (60 second TTL)
+	s.cacheMux.RLock()
+	if cached, exists := s.cachedCounts["memes"]; exists && time.Since(cached.timestamp) < s.cacheTTL {
+		s.cacheMux.RUnlock()
+		// Cache hit - no S3 traffic
+		return cached.count, nil
+	}
+	s.cacheMux.RUnlock()
+
+	// Cache miss - read from S3
+	s.log.Infof("GetMemesCount: cache miss, reading from S3")
 	var memesIdx model.MemesIndex
 	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
 	if err != nil {
 		return 0, err
 	}
-	if !found {
-		return 0, nil
+
+	count := 0
+	if found {
+		count = len(memesIdx.Items)
 	}
-	return len(memesIdx.Items), nil
+
+	// Update cache
+	s.cacheMux.Lock()
+	s.cachedCounts["memes"] = cachedValue{count: count, timestamp: time.Now()}
+	s.cacheMux.Unlock()
+
+	return count, nil
 }
 
-// GetSongsCount returns the number of loaded audio songs
+// GetSongsCount returns the number of loaded audio songs (cached to reduce S3 traffic)
 func (s *Service) GetSongsCount(ctx context.Context) (int, error) {
+	// Check cache first (60 second TTL)
+	s.cacheMux.RLock()
+	if cached, exists := s.cachedCounts["songs"]; exists && time.Since(cached.timestamp) < s.cacheTTL {
+		s.cacheMux.RUnlock()
+		// Cache hit - no S3 traffic
+		return cached.count, nil
+	}
+	s.cacheMux.RUnlock()
+
+	// Cache miss - read from S3
+	s.log.Infof("GetSongsCount: cache miss, reading from S3")
 	var songsIdx model.SongsIndex
 	found, err := s.s3c.ReadJSON(ctx, s.cfg.SongsJSONKey, &songsIdx)
 	if err != nil {
 		return 0, err
 	}
-	if !found {
-		return 0, nil
+
+	count := 0
+	if found {
+		count = len(songsIdx.Items)
 	}
-	return len(songsIdx.Items), nil
+
+	// Update cache
+	s.cacheMux.Lock()
+	s.cachedCounts["songs"] = cachedValue{count: count, timestamp: time.Now()}
+	s.cacheMux.Unlock()
+
+	return count, nil
 }
 
 // ClearSources removes all sources from the index and deletes source files from S3
@@ -199,6 +282,9 @@ func (s *Service) ClearSources(ctx context.Context) error {
 	if err := s.s3c.WriteJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
 		return err
 	}
+
+	// Invalidate cache
+	s.InvalidateCache("sources")
 
 	s.log.Infof("sources cleared successfully")
 	return nil
@@ -237,6 +323,9 @@ func (s *Service) ClearMemes(ctx context.Context) error {
 	if err := s.s3c.WriteJSON(ctx, s.cfg.MemesJSONKey, &memesIdx); err != nil {
 		return err
 	}
+
+	// Invalidate cache
+	s.InvalidateCache("memes")
 
 	s.log.Infof("memes cleared successfully")
 	return nil
@@ -331,7 +420,15 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	impl := &realImpl{cfg: cfg, s3: s3c, log: log, audio: audioIdx, src: srcScr, video: vidGen, ai: aiGen}
 
 	c := cron.New(cron.WithSeconds())
-	s := &Service{impl: impl, log: log, cron: c, cfg: cfg, s3c: s3c}
+	s := &Service{
+		impl:         impl,
+		log:          log,
+		cron:         c,
+		cfg:          cfg,
+		s3c:          s3c,
+		cachedCounts: make(map[string]cachedValue),
+		cacheTTL:     60 * time.Second, // Cache count values for 60 seconds to reduce S3 traffic
+	}
 
 	// Hourly maintenance tasks (0 seconds, every hour)
 	if _, err := c.AddFunc("0 0 * * * *", func() {
@@ -339,6 +436,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		if err := impl.EnsureSongs(context.Background()); err != nil {
 			log.Errorf("cron ensure songs: %v", err)
 		}
+		s.InvalidateCache("songs") // Invalidate cache after updating
 	}); err != nil {
 		return nil, err
 	}
@@ -348,6 +446,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		if err := impl.EnsureSources(context.Background()); err != nil {
 			log.Errorf("cron ensure sources: %v", err)
 		}
+		s.InvalidateCache("sources") // Invalidate cache after updating
 	}); err != nil {
 		return nil, err
 	}
@@ -357,6 +456,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		if err := impl.EnsureMemes(context.Background()); err != nil {
 			log.Errorf("cron ensure memes: %v", err)
 		}
+		s.InvalidateCache("memes") // Invalidate cache after updating
 	}); err != nil {
 		return nil, err
 	}

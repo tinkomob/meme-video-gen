@@ -44,6 +44,13 @@ type TelegramBot struct {
 	// Track search mode (chatID -> "idea" or "song")
 	trackSearchMode    map[int64]string
 	trackSearchModeMux sync.Mutex
+
+	// Meme file cache to avoid re-downloading (memeID -> file path)
+	// Optimization: avoid re-downloading same video multiple times within TTL
+	memeFileCache        map[string]string    // memeID -> file path
+	memeCacheTTL         map[string]time.Time // memeID -> expiration time
+	memeCacheMux         sync.RWMutex
+	memeCacheTTLDuration time.Duration // default 5 minutes
 }
 
 func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath string) (*TelegramBot, error) {
@@ -57,15 +64,18 @@ func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath stri
 	}
 	api.Debug = false
 	return &TelegramBot{
-		tg:                 api,
-		svc:                svc,
-		log:                log,
-		errorsPath:         errorsPath,
-		schedulePosterDone: make(chan struct{}),
-		sliderMemes:        make(map[int64][]*model.Meme),
-		s3BucketDir:        "bot-uploads",
-		trackSearchState:   make(map[int64]bool),
-		trackSearchMode:    make(map[int64]string),
+		tg:                   api,
+		svc:                  svc,
+		log:                  log,
+		errorsPath:           errorsPath,
+		schedulePosterDone:   make(chan struct{}),
+		sliderMemes:          make(map[int64][]*model.Meme),
+		s3BucketDir:          "bot-uploads",
+		trackSearchState:     make(map[int64]bool),
+		trackSearchMode:      make(map[int64]string),
+		memeFileCache:        make(map[string]string),
+		memeCacheTTL:         make(map[string]time.Time),
+		memeCacheTTLDuration: 5 * time.Minute,
 	}, nil
 }
 
@@ -1068,7 +1078,81 @@ func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
 					sentTimes[timeKey] = true
 				}
 			}
+
+			// Clean up expired cached files (runs every 10 seconds)
+			go b.clearExpiredMemeCache()
 		}
+	}
+}
+
+// getCachedOrDownloadMeme retrieves cached meme file or downloads from S3 with caching
+// Optimization: avoids re-downloading same meme multiple times within TTL (default 5 minutes)
+// This significantly reduces S3 egress traffic during scheduled posting
+func (b *TelegramBot) getCachedOrDownloadMeme(ctx context.Context, meme *model.Meme) (string, error) {
+	// Check if already cached and not expired
+	b.memeCacheMux.RLock()
+	cachedPath, exists := b.memeFileCache[meme.ID]
+	expireTime, hasExpire := b.memeCacheTTL[meme.ID]
+	b.memeCacheMux.RUnlock()
+
+	now := time.Now()
+	if exists && hasExpire && now.Before(expireTime) {
+		// Cache hit and not expired
+		if stat, err := os.Stat(cachedPath); err == nil && stat.Size() > 0 {
+			b.log.Infof("getCachedOrDownloadMeme: cache HIT for meme %s (expires in %v)", meme.ID, expireTime.Sub(now))
+			return cachedPath, nil
+		}
+		// File was deleted, remove from cache
+		b.memeCacheMux.Lock()
+		delete(b.memeFileCache, meme.ID)
+		delete(b.memeCacheTTL, meme.ID)
+		b.memeCacheMux.Unlock()
+	}
+
+	// Cache miss or expired - download from S3
+	b.log.Infof("getCachedOrDownloadMeme: cache MISS for meme %s, downloading from S3...", meme.ID)
+	videoPath, err := b.svc.Impl().DownloadMemeToTemp(ctx, meme)
+	if err != nil {
+		b.log.Errorf("getCachedOrDownloadMeme: download failed: %v", err)
+		return "", err
+	}
+
+	// Store in cache with TTL
+	b.memeCacheMux.Lock()
+	b.memeFileCache[meme.ID] = videoPath
+	b.memeCacheTTL[meme.ID] = now.Add(b.memeCacheTTLDuration)
+	b.memeCacheMux.Unlock()
+
+	b.log.Infof("getCachedOrDownloadMeme: cached meme %s (TTL: %v)", meme.ID, b.memeCacheTTLDuration)
+	return videoPath, nil
+}
+
+// clearExpiredMemeCache removes cached files that have expired
+// Should be called periodically to free disk space
+// Runs every 1 minute to clean up old files
+func (b *TelegramBot) clearExpiredMemeCache() {
+	b.memeCacheMux.Lock()
+	defer b.memeCacheMux.Unlock()
+
+	now := time.Now()
+	expiredCount := 0
+
+	for memeID, expireTime := range b.memeCacheTTL {
+		if now.After(expireTime) {
+			// Remove expired file
+			if filePath, ok := b.memeFileCache[memeID]; ok {
+				if err := os.Remove(filePath); err != nil {
+					b.log.Errorf("clearExpiredMemeCache: failed to remove file %s: %v", filePath, err)
+				}
+				delete(b.memeFileCache, memeID)
+				expiredCount++
+			}
+			delete(b.memeCacheTTL, memeID)
+		}
+	}
+
+	if expiredCount > 0 {
+		b.log.Infof("clearExpiredMemeCache: removed %d expired cached files (freeing disk space)", expiredCount)
 	}
 }
 
@@ -1089,14 +1173,14 @@ func (b *TelegramBot) sendScheduledMemes(ctx context.Context, chatID int64) {
 		return
 	}
 
-	b.log.Infof("sendScheduledMemes: got %d memes, downloading videos...", len(memes))
+	b.log.Infof("sendScheduledMemes: got %d memes, downloading videos with cache...", len(memes))
 
-	// Download all memes first
+	// Download all memes first (use cached version if available and not expired)
 	videos := make([]string, 0, len(memes))
 	for _, meme := range memes {
-		videoPath, err := b.svc.Impl().DownloadMemeToTemp(ctx, meme)
+		videoPath, err := b.getCachedOrDownloadMeme(ctx, meme)
 		if err != nil {
-			b.log.Errorf("sendScheduledMemes: download meme %s failed: %v", meme.ID, err)
+			b.log.Errorf("sendScheduledMemes: cache/download meme %s failed: %v", meme.ID, err)
 			continue
 		}
 		videos = append(videos, videoPath)
@@ -1107,13 +1191,10 @@ func (b *TelegramBot) sendScheduledMemes(ctx context.Context, chatID int64) {
 		return
 	}
 
-	b.log.Infof("sendScheduledMemes: downloaded %d videos, building media group...", len(videos))
+	b.log.Infof("sendScheduledMemes: prepared %d videos, building media group...", len(videos))
 
-	defer func() {
-		for _, v := range videos {
-			os.Remove(v)
-		}
-	}()
+	// Note: DO NOT defer cleanup - files are managed by meme cache with TTL
+	// Cache cleanup happens via clearExpiredMemeCache() called periodically
 
 	// Build media group (up to 3 videos as slider)
 	mediaGroup := make([]interface{}, 0, len(videos))
