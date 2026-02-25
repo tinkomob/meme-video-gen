@@ -74,7 +74,7 @@ func LoadConfig() (Config, error) {
 
 		MaxSources:                20,
 		MaxMemes:                  10,
-		MaxAge:                    16 * time.Hour,
+		MaxAge:                    24 * time.Hour,
 		DislikedSourceGracePeriod: 24 * time.Hour, // 24 hours by default
 		DailyGenerations:          5,
 		PostsChatID:               0,
