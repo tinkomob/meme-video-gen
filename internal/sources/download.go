@@ -13,8 +13,16 @@ import (
 	"meme-video-gen/internal/model"
 )
 
+// sharedHTTPClient is a package-level HTTP client reused across all scrapers
+// to allow TCP connection pooling.
+var sharedHTTPClient = &http.Client{Timeout: 60 * time.Second}
+
 func (sc *Scraper) downloadAsset(ctx context.Context, mediaURL string, kind model.SourceKind, sourceURL string) (*model.SourceAsset, error) {
-	resp, err := http.Get(mediaURL)
+	req, err := http.NewRequestWithContext(ctx, "GET", mediaURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("create request: %w", err)
+	}
+	resp, err := sharedHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -52,7 +52,7 @@ func main() {
 		}
 	}()
 
-	b, err := bot.NewTelegramBot(svc, log, "errors.log")
+	b, err := bot.NewTelegramBot(svc, log, "errors.log", cancel)
 	if err != nil {
 		log.Errorf("bot init: %v", err)
 		return

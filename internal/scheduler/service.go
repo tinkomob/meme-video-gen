@@ -33,6 +33,7 @@ type MemeService interface {
 	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
 	DownloadSongToTemp(ctx context.Context, song *model.Song) (string, error)
 	DeleteMeme(ctx context.Context, memeID string) error
+	DeleteMemes(ctx context.Context, memeIDs []string) error
 	ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error)
 }
 
@@ -390,6 +391,10 @@ func (r *realImpl) DeleteMeme(ctx context.Context, memeID string) error {
 	return nil
 }
 
+func (r *realImpl) DeleteMemes(ctx context.Context, memeIDs []string) error {
+	return r.video.DeleteMemes(ctx, memeIDs)
+}
+
 func (r *realImpl) ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error) {
 	r.log.Infof("service.ReplaceAudioInMeme: START - memeID=%s", memeID)
 	meme, err := r.video.ReplaceAudioInMeme(ctx, memeID)
@@ -427,7 +432,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		cfg:          cfg,
 		s3c:          s3c,
 		cachedCounts: make(map[string]cachedValue),
-		cacheTTL:     60 * time.Second, // Cache count values for 60 seconds to reduce S3 traffic
+		cacheTTL:     90 * time.Second, // 90s TTL > aggressive-monitor interval (1min) to prevent cache miss on every check
 	}
 
 	// Hourly maintenance tasks (0 seconds, every hour)

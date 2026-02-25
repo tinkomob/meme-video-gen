@@ -3,10 +3,12 @@ package sources
 import (
 	"context"
 	"fmt"
+	"io"
 	"math/rand"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/samber/lo"
@@ -43,6 +45,11 @@ type Scraper struct {
 	cfg internal.Config
 	s3  s3.Client
 	log *logging.Logger
+
+	// Image hash blacklist in-memory cache (5-minute TTL) to reduce S3 reads.
+	hashCacheMux     sync.RWMutex
+	hashBlacklist    *model.ImageHashIndex
+	hashBlacklistExp time.Time
 }
 
 func NewScraper(cfg internal.Config, s3c s3.Client, log *logging.Logger) *Scraper {
@@ -216,13 +223,15 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 			newAssets = append(newAssets, *asset)
 			sourcesIdx.Items = append(sourcesIdx.Items, *asset)
 			sourcesIdx.UpdatedAt = time.Now()
+			sc.logIfNotSilent("sources: ✓ added %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
+		}
+	}
 
-			// Update sources.json immediately after each successful upload
-			if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
-				sc.log.Errorf("sources: failed to update sources.json after upload: %v", err)
-			} else {
-				sc.logIfNotSilent("sources: ✓ updated sources.json after adding %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
-			}
+	// Write sources.json once at the end (instead of after every asset)
+	// — reduces S3 write traffic from O(N) to O(1).
+	if len(newAssets) > 0 {
+		if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
+			sc.log.Errorf("sources: failed to update sources.json: %v", err)
 		}
 	}
 
@@ -376,6 +385,52 @@ func (sc *Scraper) GetRandomUnusedSource(ctx context.Context) (*model.SourceAsse
 	return &selected, nil
 }
 
+// LoadSourcesIndex loads the sources index from S3 once.
+// Callers can work on the returned value in-memory and avoid repeated S3 reads.
+func (sc *Scraper) LoadSourcesIndex(ctx context.Context) (model.SourcesIndex, error) {
+	var idx model.SourcesIndex
+	found, err := sc.s3.ReadJSON(ctx, sc.cfg.SourcesJSONKey, &idx)
+	if err != nil {
+		return idx, fmt.Errorf("read sources.json: %w", err)
+	}
+	if !found {
+		return model.SourcesIndex{Items: []model.SourceAsset{}}, nil
+	}
+	return idx, nil
+}
+
+// PickRandomUnused selects a random unused source from an already-loaded index without
+// hitting S3. skipIDs contains source IDs that were already attempted in this round.
+// If all sources are used, resets them in S3 and picks from the full list.
+func (sc *Scraper) PickRandomUnused(ctx context.Context, idx *model.SourcesIndex, skipIDs map[string]bool) (*model.SourceAsset, error) {
+	// First pass: unused AND not already tried
+	candidates := lo.Filter(idx.Items, func(a model.SourceAsset, _ int) bool {
+		return !a.Used && !skipIDs[a.ID]
+	})
+	// Second pass: unused but potentially retried
+	if len(candidates) == 0 {
+		candidates = lo.Filter(idx.Items, func(a model.SourceAsset, _ int) bool { return !a.Used })
+	}
+	// Third pass: all are used — reset and restart
+	if len(candidates) == 0 {
+		sc.logIfNotSilent("sources: all sources used, resetting for rotation")
+		for i := range idx.Items {
+			idx.Items[i].Used = false
+		}
+		idx.UpdatedAt = time.Now()
+		if err := sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, idx); err != nil {
+			sc.log.Errorf("sources: failed to reset used flag: %v", err)
+		}
+		candidates = idx.Items
+	}
+	if len(candidates) == 0 {
+		return nil, fmt.Errorf("no sources available")
+	}
+	i := randomIndex(len(candidates))
+	result := candidates[i]
+	return &result, nil
+}
+
 func (sc *Scraper) RemoveSourceFromIndex(ctx context.Context, id string) error {
 	var idx model.SourcesIndex
 	found, err := sc.s3.ReadJSON(ctx, sc.cfg.SourcesJSONKey, &idx)
@@ -445,8 +500,13 @@ func (sc *Scraper) SourceExistsInS3(ctx context.Context, asset *model.SourceAsse
 	if asset == nil || asset.MediaKey == "" {
 		return false
 	}
-	_, _, err := sc.s3.GetBytes(ctx, asset.MediaKey)
-	return err == nil
+	// Use HeadObject (Exists) instead of GetBytes to avoid downloading the full file
+	exists, err := sc.s3.Exists(ctx, asset.MediaKey)
+	if err != nil {
+		sc.log.Warnf("sources: SourceExistsInS3 check failed for %s: %v", asset.MediaKey, err)
+		return false
+	}
+	return exists
 }
 
 func (sc *Scraper) DownloadSourceToTemp(ctx context.Context, asset *model.SourceAsset) (string, error) {
@@ -457,25 +517,54 @@ func (sc *Scraper) DownloadSourceToTemp(ctx context.Context, asset *model.Source
 		return "", fmt.Errorf("asset.MediaKey is empty (asset ID: %s)", asset.ID)
 	}
 
-	data, ct, err := sc.s3.GetBytes(ctx, asset.MediaKey)
+	// Stream directly from S3 — avoids holding image bytes (~300KB-2MB) in heap.
+	reader, err := sc.s3.GetReader(ctx, asset.MediaKey)
 	if err != nil {
-		return "", fmt.Errorf("s3.GetBytes failed for key '%s': %w", asset.MediaKey, err)
+		return "", fmt.Errorf("s3.GetReader failed for key '%s': %w", asset.MediaKey, err)
 	}
-	if kind, ok := looksLikeImage(data); !ok {
-		head := data
-		if len(head) > 32 {
-			head = head[:32]
-		}
-		return "", fmt.Errorf("downloaded source is not a valid image (key=%s id=%s ct=%q size=%d head=% x)", asset.MediaKey, asset.ID, ct, len(data), head)
-	} else {
-		_ = kind
-	}
-	if len(data) < 1024 {
-		return "", fmt.Errorf("downloaded source too small (key=%s id=%s ct=%q size=%d)", asset.MediaKey, asset.ID, ct, len(data))
-	}
+	defer reader.Reader.Close()
+
 	ext := filepath.Ext(asset.MediaKey)
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("source-%s%s", asset.ID, ext))
-	return tmpFile, os.WriteFile(tmpFile, data, 0o644)
+	f, err := os.Create(tmpFile)
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+
+	if _, err := io.Copy(f, reader.Reader); err != nil {
+		f.Close()
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("copy from S3 stream: %w", err)
+	}
+	f.Close()
+
+	// Validate file size
+	info, err := os.Stat(tmpFile)
+	if err != nil {
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("stat temp file: %w", err)
+	}
+	if info.Size() < 1024 {
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("downloaded source too small (key=%s id=%s size=%d)", asset.MediaKey, asset.ID, info.Size())
+	}
+
+	// Validate magic bytes from file header (open + read 12 bytes)
+	hdr := make([]byte, 12)
+	hf, err := os.Open(tmpFile)
+	if err != nil {
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("open temp for validation: %w", err)
+	}
+	n, _ := hf.Read(hdr)
+	hf.Close()
+
+	if _, ok := looksLikeImage(hdr[:n]); !ok {
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("downloaded source is not a valid image (key=%s id=%s size=%d head=% x)", asset.MediaKey, asset.ID, info.Size(), hdr[:n])
+	}
+
+	return tmpFile, nil
 }
 
 func (sc *Scraper) loadSourceURLs(ctx context.Context, filename string) ([]string, error) {

@@ -52,18 +52,41 @@ func (g *Generator) AddSourceToDislikedBlacklist(ctx context.Context, sourceID s
 		return fmt.Errorf("failed to update disliked sources: %w", err)
 	}
 
+	// Invalidate in-memory cache so IsSourceDisliked picks up the new entry
+	g.dislikedCacheMux.Lock()
+	g.dislikedCache = nil
+	g.dislikedCacheMux.Unlock()
+
 	return nil
 }
 
-// IsSourceDisliked checks if a source is currently blacklisted
+// IsSourceDisliked checks if a source is currently blacklisted.
+// Uses an in-memory cache with 5-minute TTL to avoid hitting S3 on every generation attempt.
 func (g *Generator) IsSourceDisliked(ctx context.Context, sourceID string) (bool, error) {
-	var idx model.DislikedSourceIndex
-	found, err := g.s3.ReadJSON(ctx, g.cfg.DislikedSourcesJSONKey, &idx)
-	if err != nil || !found {
-		return false, nil // No blacklist or error reading it
+	g.dislikedCacheMux.RLock()
+	cached := g.dislikedCache
+	exp := g.dislikedCacheExp
+	g.dislikedCacheMux.RUnlock()
+
+	if cached == nil || time.Now().After(exp) {
+		var idx model.DislikedSourceIndex
+		found, err := g.s3.ReadJSON(ctx, g.cfg.DislikedSourcesJSONKey, &idx)
+		if err != nil || !found {
+			empty := model.DislikedSourceIndex{Items: []model.DislikedSource{}}
+			g.dislikedCacheMux.Lock()
+			g.dislikedCache = &empty
+			g.dislikedCacheExp = time.Now().Add(5 * time.Minute)
+			g.dislikedCacheMux.Unlock()
+			return false, nil
+		}
+		g.dislikedCacheMux.Lock()
+		g.dislikedCache = &idx
+		g.dislikedCacheExp = time.Now().Add(5 * time.Minute)
+		g.dislikedCacheMux.Unlock()
+		cached = &idx
 	}
 
-	return idx.IsBlacklisted(sourceID), nil
+	return cached.IsBlacklisted(sourceID), nil
 }
 
 // CleanupDislikedSources removes expired entries from the blacklist
@@ -84,10 +107,13 @@ func (g *Generator) CleanupDislikedSources(ctx context.Context) error {
 	g.log.Infof("disliked: cleaning up expired entries (%d → %d)", initialCount, len(idx.Items))
 
 	if len(idx.Items) == 0 {
-		// If empty, we could delete the file or keep it - let's delete it
 		if err := g.s3.Delete(ctx, g.cfg.DislikedSourcesJSONKey); err != nil {
 			g.log.Warnf("disliked: failed to delete empty blacklist: %v", err)
 		}
+		// Invalidate cache
+		g.dislikedCacheMux.Lock()
+		g.dislikedCache = nil
+		g.dislikedCacheMux.Unlock()
 		return nil
 	}
 
@@ -96,6 +122,11 @@ func (g *Generator) CleanupDislikedSources(ctx context.Context) error {
 		g.log.Errorf("disliked: failed to save cleaned up blacklist: %v", err)
 		return fmt.Errorf("failed to save disliked sources: %w", err)
 	}
+
+	// Invalidate cache after write
+	g.dislikedCacheMux.Lock()
+	g.dislikedCache = nil
+	g.dislikedCacheMux.Unlock()
 
 	return nil
 }

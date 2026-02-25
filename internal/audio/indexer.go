@@ -294,10 +294,23 @@ func (idx *Indexer) DownloadSongToTemp(ctx context.Context, song *model.Song) (s
 		return "", fmt.Errorf("song.AudioKey is empty (song ID: %s)", song.ID)
 	}
 
-	data, _, err := idx.s3.GetBytes(ctx, song.AudioKey)
+	// Stream directly from S3 to temp file — avoids holding entire audio in heap (5-15 MB)
+	reader, err := idx.s3.GetReader(ctx, song.AudioKey)
 	if err != nil {
-		return "", fmt.Errorf("s3.GetBytes failed for key '%s': %w", song.AudioKey, err)
+		return "", fmt.Errorf("s3.GetReader failed for key '%s': %w", song.AudioKey, err)
 	}
+	defer reader.Reader.Close()
+
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("song-%s.m4a", song.ID))
-	return tmpFile, os.WriteFile(tmpFile, data, 0o644)
+	f, err := os.Create(tmpFile)
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	defer f.Close()
+
+	if _, err := io.Copy(f, reader.Reader); err != nil {
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("copy from S3 stream: %w", err)
+	}
+	return tmpFile, nil
 }

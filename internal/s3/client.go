@@ -22,6 +22,7 @@ type Client interface {
 	PutBytes(ctx context.Context, key string, b []byte, contentType string) error
 	GetBytes(ctx context.Context, key string) ([]byte, string, error)
 	GetReader(ctx context.Context, key string) (*ObjectReader, error)
+	Exists(ctx context.Context, key string) (bool, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
 
@@ -126,6 +127,19 @@ func (c *s3Client) GetReader(ctx context.Context, key string) (*ObjectReader, er
 		Reader: out.Body,
 		Size:   size,
 	}, nil
+}
+
+func (c *s3Client) Exists(ctx context.Context, key string) (bool, error) {
+	_, err := c.api.HeadObject(ctx, &awss3.HeadObjectInput{Bucket: &c.bucket, Key: &key})
+	if err != nil {
+		var notFound *types.NotFound
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &notFound) || errors.As(err, &noSuchKey) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 func (c *s3Client) Delete(ctx context.Context, key string) error {

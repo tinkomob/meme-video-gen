@@ -9,6 +9,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"math/bits"
+	"time"
 
 	"github.com/samber/lo"
 	"github.com/vitali-fedulov/imagehash2"
@@ -93,31 +94,46 @@ func hammingDistance(hash1, hash2 uint64) int {
 	return bits.OnesCount64(xor)
 }
 
-// IsHashInBlacklist checks if a hash exists in the image hash blacklist
+// IsHashInBlacklist checks if a hash exists in the image hash blacklist.
+// Uses an in-memory cache with 5-minute TTL to avoid hitting S3 on every call.
 func (sc *Scraper) IsHashInBlacklist(ctx context.Context, hash uint64) (bool, error) {
 	if hash == 0 {
 		return false, nil
 	}
 
-	var index model.ImageHashIndex
-	found, err := sc.s3.ReadJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
-	if err != nil {
-		sc.log.Warnf("image_hash: failed to read blacklist: %v", err)
-		return false, nil // Be permissive on read errors
-	}
-	if !found {
-		return false, nil
+	sc.hashCacheMux.RLock()
+	cached := sc.hashBlacklist
+	exp := sc.hashBlacklistExp
+	sc.hashCacheMux.RUnlock()
+
+	if cached == nil || time.Now().After(exp) {
+		// Cache miss or expired — reload from S3
+		var index model.ImageHashIndex
+		found, err := sc.s3.ReadJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
+		if err != nil {
+			sc.log.Warnf("image_hash: failed to read blacklist: %v", err)
+			return false, nil
+		}
+		if !found {
+			index = model.ImageHashIndex{Hashes: []uint64{}}
+		}
+		sc.hashCacheMux.Lock()
+		sc.hashBlacklist = &index
+		sc.hashBlacklistExp = time.Now().Add(5 * time.Minute)
+		sc.hashCacheMux.Unlock()
+		cached = &index
 	}
 
-	return lo.Contains(index.Hashes, hash), nil
+	return lo.Contains(cached.Hashes, hash), nil
 }
 
-// AddHashToBlacklist adds a hash to the image hash blacklist
+// AddHashToBlacklist adds a hash to the image hash blacklist and invalidates the cache.
 func (sc *Scraper) AddHashToBlacklist(ctx context.Context, hash uint64) error {
 	if hash == 0 {
 		return nil
 	}
 
+	// Load fresh from S3 for the write (ignore cache to avoid stale overwrites)
 	var index model.ImageHashIndex
 	found, err := sc.s3.ReadJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
 	if err != nil {
@@ -128,11 +144,17 @@ func (sc *Scraper) AddHashToBlacklist(ctx context.Context, hash uint64) error {
 		index = model.ImageHashIndex{Hashes: []uint64{}}
 	}
 
-	// Only add if not already present
 	if !lo.Contains(index.Hashes, hash) {
 		index.Hashes = append(index.Hashes, hash)
 		sc.log.Infof("image_hash: added hash %d to blacklist (total: %d)", hash, len(index.Hashes))
 	}
 
-	return sc.s3.WriteJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
+	err = sc.s3.WriteJSON(ctx, sc.cfg.ImageHashIndexKey, &index)
+	if err == nil {
+		// Invalidate cache so next read picks up the new entry
+		sc.hashCacheMux.Lock()
+		sc.hashBlacklist = nil
+		sc.hashCacheMux.Unlock()
+	}
+	return err
 }

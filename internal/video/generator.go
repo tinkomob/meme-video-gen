@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,6 +25,10 @@ import (
 	"meme-video-gen/internal/sources"
 )
 
+// ffmpegSem limits the number of concurrent ffmpeg processes to 1 to avoid
+// "pthread_create() failed: Resource temporarily unavailable" under heavy load.
+var ffmpegSem = make(chan struct{}, 1)
+
 type Generator struct {
 	cfg          internal.Config
 	s3           s3.Client
@@ -31,6 +36,16 @@ type Generator struct {
 	audioIdx     *audio.Indexer
 	sourcesScr   *sources.Scraper
 	memesJSONMux sync.Mutex // Protects concurrent access to memes.json
+
+	// Video hash blacklist in-memory cache (5-minute TTL)
+	videoHashCacheMux     sync.RWMutex
+	videoHashBlacklist    *model.VideoHashIndex
+	videoHashBlacklistExp time.Time
+
+	// Disliked sources in-memory cache (5-minute TTL)
+	dislikedCacheMux sync.RWMutex
+	dislikedCache    *model.DislikedSourceIndex
+	dislikedCacheExp time.Time
 }
 
 func NewGenerator(cfg internal.Config, s3c s3.Client, log *logging.Logger, audioIdx *audio.Indexer, sourcesScr *sources.Scraper) *Generator {
@@ -229,13 +244,22 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 	var sourcePath, audioPath, videoPath string
 	var videoCreated bool
 
+	// Load sources index ONCE before the retry loop to avoid N×ReadJSON(sources.json).
+	sourcesIdx, err := g.sourcesScr.LoadSourcesIndex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("load sources index: %w", err)
+	}
+	triedSourceIDs := make(map[string]bool)
+
 	for attempt := 0; attempt < 10; attempt++ {
 		g.log.Infof("video: attempt %d/10 to create meme", attempt+1)
 
-		src, err := g.sourcesScr.GetRandomUnusedSource(ctx)
+		// PickRandomUnused works on the in-memory index — no extra S3 read per attempt.
+		src, err := g.sourcesScr.PickRandomUnused(ctx, &sourcesIdx, triedSourceIDs)
 		if err != nil {
 			return nil, fmt.Errorf("get source: %w", err)
 		}
+		triedSourceIDs[src.ID] = true
 		g.log.Infof("video: got random source %s (key=%s)", src.ID, src.MediaKey)
 
 		// Check if source is disliked (avoid recently disliked sources)
@@ -248,7 +272,7 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 			continue
 		}
 
-		// Check if file exists in S3 with short timeout
+		// Check if file exists in S3 — uses HeadObject, no data transfer.
 		g.log.Infof("video: checking if source exists in S3...")
 		exists := false
 		{
@@ -505,12 +529,23 @@ func (g *Generator) GetRandomMemes(ctx context.Context, count int) ([]*model.Mem
 }
 
 func (g *Generator) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error) {
-	data, _, err := g.s3.GetBytes(ctx, meme.VideoKey)
+	// Stream directly from S3 to avoid loading full video (5-20 MB) into heap.
+	reader, err := g.s3.GetReader(ctx, meme.VideoKey)
 	if err != nil {
 		return "", err
 	}
+	defer reader.Reader.Close()
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("meme-%s.mp4", meme.ID))
-	return tmpFile, os.WriteFile(tmpFile, data, 0o644)
+	f, err := os.Create(tmpFile)
+	if err != nil {
+		return "", fmt.Errorf("create temp file: %w", err)
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, reader.Reader); err != nil {
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("stream meme from S3: %w", err)
+	}
+	return tmpFile, nil
 }
 
 // ReplaceAudioInMeme replaces the audio track in an existing meme with a new random audio
@@ -808,6 +843,73 @@ func (g *Generator) DeleteMeme(ctx context.Context, memeID string) error {
 	return fmt.Errorf("failed to update memes.json: %w", lastErr)
 }
 
+// DeleteMemes deletes multiple memes in a single S3 read+write cycle (batch operation).
+// This is more efficient than calling DeleteMeme N times (which does N reads + N writes).
+func (g *Generator) DeleteMemes(ctx context.Context, memeIDs []string) error {
+	if len(memeIDs) == 0 {
+		return nil
+	}
+	g.log.Infof("DeleteMemes: batch deleting %d memes", len(memeIDs))
+
+	g.memesJSONMux.Lock()
+	defer g.memesJSONMux.Unlock()
+
+	var idx model.MemesIndex
+	found, err := g.s3.ReadJSON(ctx, g.cfg.MemesJSONKey, &idx)
+	if err != nil {
+		return fmt.Errorf("read memes.json: %w", err)
+	}
+	if !found {
+		return nil
+	}
+
+	deleteSet := make(map[string]bool, len(memeIDs))
+	for _, id := range memeIDs {
+		deleteSet[id] = true
+	}
+
+	remaining := make([]model.Meme, 0, len(idx.Items))
+	var toDelete []model.Meme
+	for _, m := range idx.Items {
+		if deleteSet[m.ID] {
+			toDelete = append(toDelete, m)
+		} else {
+			remaining = append(remaining, m)
+		}
+	}
+
+	idx.Items = remaining
+	idx.UpdatedAt = time.Now()
+
+	if err := g.s3.WriteJSON(ctx, g.cfg.MemesJSONKey, &idx); err != nil {
+		return fmt.Errorf("write memes.json: %w", err)
+	}
+
+	// Delete S3 files and run side-effects outside the lock (already released by defer)
+	go func() {
+		bgCtx := context.Background()
+		for _, m := range toDelete {
+			if m.VideoKey != "" {
+				_ = g.s3.Delete(bgCtx, m.VideoKey)
+			}
+			if m.ThumbKey != "" {
+				_ = g.s3.Delete(bgCtx, m.ThumbKey)
+			}
+			if m.ImageHash != 0 {
+				_ = g.AddVideoHashToBlacklist(bgCtx, m.ImageHash)
+			}
+			if m.SourceID != "" {
+				_ = g.AddSourceToDislikedBlacklist(bgCtx, m.SourceID)
+				_ = g.sourcesScr.RemoveSourceFromIndex(bgCtx, m.SourceID)
+			}
+		}
+		g.log.Infof("DeleteMemes: cleaned up %d memes from S3", len(toDelete))
+	}()
+
+	g.log.Infof("DeleteMemes: successfully removed %d memes from index", len(toDelete))
+	return nil
+}
+
 // SyncWithS3 synchronizes memes.json with actual files in S3 memes/ folder
 // Also ensures all memes are unique by SHA256
 func (g *Generator) SyncWithS3(ctx context.Context) error {
@@ -1004,10 +1106,15 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]",
 	)
 
+	// Acquire semaphore – only one ffmpeg process at a time to avoid exhausting system threads.
+	ffmpegSem <- struct{}{}
+	defer func() { <-ffmpegSem }()
+
 	var stderr bytes.Buffer
 	cmd := exec.Command("ffmpeg",
 		"-hide_banner",
 		"-loglevel", "error",
+		"-threads", "1",
 		"-i", imagePath,
 		"-i", audioPath,
 		"-filter_complex", filterComplex,
@@ -1092,10 +1199,16 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 
 	// Use ffmpeg to replace audio in video with trimmed audio
 	// -i video_input -i audio_input -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -t duration output
+
+	// Acquire semaphore – only one ffmpeg process at a time.
+	ffmpegSem <- struct{}{}
+	defer func() { <-ffmpegSem }()
+
 	var stderr bytes.Buffer
 	cmd := exec.Command("ffmpeg",
 		"-hide_banner",
 		"-loglevel", "error",
+		"-threads", "1",
 		"-i", videoPath,
 		"-i", audioPath,
 		"-c:v", "copy",

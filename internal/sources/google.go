@@ -135,8 +135,7 @@ func (sc *Scraper) scrapeGoogleImages(ctx context.Context) (*model.SourceAsset, 
 			continue
 		}
 
-		client := &http.Client{Timeout: 30 * time.Second}
-		resp, err := client.Do(req)
+		resp, err := sharedHTTPClient.Do(req)
 		if err != nil {
 			sc.log.Errorf("Google: request failed: %v", err)
 			continue
@@ -253,9 +252,8 @@ func (sc *Scraper) downloadGoogleImage(ctx context.Context, imageURL, source, qu
 		req.Header.Set("Sec-Fetch-Mode", "no-cors")
 		req.Header.Set("Sec-Fetch-Site", "cross-site")
 
-		client := &http.Client{Timeout: 30 * time.Second}
 		var err2 error
-		resp, err2 = client.Do(req)
+		resp, err2 = sharedHTTPClient.Do(req)
 		if err2 != nil {
 			lastErr = fmt.Errorf("download request: %w", err2)
 			sc.log.Errorf("Google: attempt %d failed: %v", attempt+1, lastErr)
