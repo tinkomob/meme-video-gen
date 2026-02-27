@@ -13,6 +13,15 @@ services:
       - .env
     networks:
       - meme_network
+    ulimits:
+      nproc:
+        soft: 65535
+        hard: 65535
+      nofile:
+        soft: 65535
+        hard: 65535
+    pids_limit: 512
+    init: true
 
 networks:
   meme_network:

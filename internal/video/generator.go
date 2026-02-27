@@ -1114,7 +1114,9 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 	cmd := exec.Command("ffmpeg",
 		"-hide_banner",
 		"-loglevel", "error",
-		"-threads", "1",
+		"-threads", "1", // global thread limit
+		"-filter_threads", "1", // scale/pad filter threads
+		"-filter_complex_threads", "1", // filter_complex graph threads
 		"-i", imagePath,
 		"-i", audioPath,
 		"-filter_complex", filterComplex,
@@ -1123,6 +1125,7 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		"-c:v", "libx264",
 		"-preset", "ultrafast",
 		"-tune", "stillimage",
+		"-x264-params", "threads=1", // libx264 internal thread pool
 		"-c:a", "aac",
 		"-b:a", "192k",
 		"-pix_fmt", "yuv420p",
@@ -1208,7 +1211,9 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 	cmd := exec.Command("ffmpeg",
 		"-hide_banner",
 		"-loglevel", "error",
-		"-threads", "1",
+		"-threads", "1", // global thread limit
+		"-filter_threads", "1", // filter graph threads
+		"-filter_complex_threads", "1",
 		"-i", videoPath,
 		"-i", audioPath,
 		"-c:v", "copy",
