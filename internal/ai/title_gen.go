@@ -66,9 +66,9 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 	if tg.apiKey == "" {
 		tg.log.Infof("ai: no api key, using fallback ideas")
 		return []string{
-			"[СЦЕНА 1]\nДинамичные переходы и ключевые визуальные элементы под музыку '" + song.Title + "'. Резкое начало с импакт-элемента.",
-			"[СЦЕНА 2]\nКрупные планы, зум и цветовые фильтры для усиления эмоции. Резкий переход.",
-			"[СЦЕНА 3]\nБыстрые смены кадров и финальный момент импакта в ритм музыки. Резкое завершение.",
+			"[ВАЙБ]\nАтмосферный трек '" + song.Title + "' с гипнотичным, медитативным настроением.",
+			"[ИДЕЯ]\nМакро-съёмка музыкальных инструментов и аудиотехники в тихом студийном свете — визуальная медитация под звук.",
+			"[ПРОМПТ]\nExtreme close-up of vinyl record spinning in slow motion, soft bokeh background, dramatic side lighting with warm amber glow, cinematic minimalist aesthetic, 4K, ultra slow motion, soft focus edges, atmospheric dust particles floating in light beam.",
 		}, nil
 	}
 
@@ -81,27 +81,26 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 	}
 
 	prompt := fmt.Sprintf(
-		"Ты — креативный режиссер для TikTok и Reels. "+
-			"На основе трека '%s' (артист %s) создай оригинальную идею из 3-5 сцен. "+
-			"Каждая сцена продлится 6 секунд и должна резко переходить в следующую.\n\n"+
-			"Формат ответа (БЕЗ вводной концепции, только сцены):\n"+
-			"[СЦЕНА 1]\n"+
-			"[описание первой сцены]\n\n"+
-			"[СЦЕНА 2]\n"+
-			"[описание второй сцены]\n\n"+
-			"[СЦЕНА 3]\n"+
-			"[описание третьей сцены]\n\n"+
-			"[и так далее...]\n\n"+
-			"Для каждой сцены напиши:\n"+
-			"- Какие визуальные элементы/объекты использовать\n"+
-			"- Какой стиль и эффекты (фильтры, переходы)\n"+
-			"- Динамика и темп движения\n"+
-			"Требования:\n"+
-			"- КРИТИЧНО: между сценами ОБЯЗАТЕЛЬНО резкие переходы\n"+
-			"- Сцены должны быть визуально красивыми и эстетичными\n"+
-			"- Легко снимаемыми с мобильного телефона\n"+
-			"- БЕЗ какого-либо текста внутри видео\n"+
-			"- НЕ описывай основную идею/концепцию, сразу пиши сцены",
+		"Роль: Ты — профессиональный Арт-директор и эксперт по визуализации звука. "+
+			"Твоя специализация — создание гипнотичного видеоряда для Reels и TikTok, который не отвлекает от музыки, а заставляет зрителя вслушиваться в неё.\n\n"+
+			"Трек: '%s', Артист: '%s'\n\n"+
+			"Твоя задача:\n"+
+			"1. Проанализируй трек: определи вероятный темп (BPM), настроение, ключевые инструменты и текстуры (например, виниловый шум, эхо, мягкое пианино).\n"+
+			"2. Предложи концепцию видео, напрямую связанную с музыкальной культурой (инструменты, аудиотехника, эстетика студии или абстрактные визуализации звука).\n"+
+			"3. Напиши детальный промпт для генерации видео в ИИ (Runway, Luma, Kling) на английском языке.\n\n"+
+			"Требования к промпту:\n"+
+			"- Стиль: Cinematic, Minimalist, Aesthetic\n"+
+			"- Кадр: Macro-shot или Close-up (крупные планы)\n"+
+			"- Движение: Очень медленное (Slow motion), плавное, гипнотическое\n"+
+			"- Освещение: Dramatic lighting, soft glows, атмосферные тени\n"+
+			"- Фокус: Bokeh и Soft focus, чтобы картинка была «мягкой» и не перегруженной деталями\n\n"+
+			"Формат ответа (строго соблюдай структуру):\n"+
+			"[ВАЙБ]\n"+
+			"[краткое описание вайба трека]\n\n"+
+			"[ИДЕЯ]\n"+
+			"[описание идеи видео и почему это подходит треку]\n\n"+
+			"[ПРОМПТ]\n"+
+			"[готовый промпт на английском языке для ИИ-генерации видео]",
 		song.Title,
 		song.Author,
 	)
@@ -116,29 +115,38 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 	content := resp.Text()
 	if content == "" {
 		return []string{
-			"[СЦЕНА 1]\nДинамичные переходы и ключевые визуальные элементы под музыку. Резкое начало с импакт-элемента.",
-			"[СЦЕНА 2]\nКрупные планы, зум и цветовые фильтры для усиления эмоции. Резкий переход.",
-			"[СЦЕНА 3]\nБыстрые смены кадров и финальный момент импакта. Резкое завершение.",
+			"[ВАЙБ]\nАтмосферный трек с гипнотичным, медитативным настроением.",
+			"[ИДЕЯ]\nМакро-съёмка музыкальных инструментов и аудиотехники — визуальная медитация под звук.",
+			"[ПРОМПТ]\nExtreme close-up of vinyl record spinning in slow motion, soft bokeh background, dramatic side lighting with warm amber glow, cinematic minimalist aesthetic, 4K, ultra slow motion.",
 		}, nil
 	}
 
-	// Split content by double newlines to get individual scenes
-	// Return as-is without parsing
-	var scenes []string
-	parts := strings.Split(content, "\n\n")
-	for _, part := range parts {
-		trimmed := strings.TrimSpace(part)
-		if trimmed != "" {
-			scenes = append(scenes, trimmed)
+	// Parse sections [ВАЙБ], [ИДЕЯ], [ПРОМПТ] from response
+	sections := []string{"[ВАЙБ]", "[ИДЕЯ]", "[ПРОМПТ]"}
+	var result []string
+	for i, section := range sections {
+		start := strings.Index(content, section)
+		if start == -1 {
+			continue
+		}
+		start += len(section)
+		end := len(content)
+		if i+1 < len(sections) {
+			if next := strings.Index(content[start:], sections[i+1]); next != -1 {
+				end = start + next
+			}
+		}
+		body := strings.TrimSpace(content[start:end])
+		if body != "" {
+			result = append(result, section+"\n"+body)
 		}
 	}
 
-	// If we got at least one scene, return it
-	if len(scenes) > 0 {
-		return scenes, nil
+	if len(result) > 0 {
+		return result, nil
 	}
 
-	// Fallback if something went wrong
+	// Fallback if parsing failed
 	return []string{content}, nil
 }
 func truncateString(s string, maxLen int) string {
