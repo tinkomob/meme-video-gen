@@ -28,7 +28,8 @@ RUN apk add --no-cache \
     curl \
     libc6-compat \
     chromium \
-    nss
+    nss \
+    tini
 
 # Create app user for security
 RUN addgroup -g 1000 memebot && \
@@ -47,5 +48,6 @@ USER memebot
 
 EXPOSE 8000
 
-# Run the application
+# Use tini as init to reap zombie ffmpeg sub-processes
+ENTRYPOINT ["/sbin/tini", "--"]
 CMD ["./meme-bot"]
