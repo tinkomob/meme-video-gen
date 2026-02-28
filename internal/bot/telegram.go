@@ -2338,7 +2338,7 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 	b.log.Infof("handleIdeaGeneration: processing song: %s (%s)", song.Title, song.Author)
 
 	// Show processing message
-	procMsgID := b.replyText(chatID, fmt.Sprintf("⏳ Анализирую трек: %s - %s\n📝 Генерирую идеи для сцен...", song.Author, song.Title))
+	procMsgID := b.replyText(chatID, fmt.Sprintf("⏳ Анализирую трек: %s - %s\n🎨 Генерирую видеоконцепцию и промпт...", song.Author, song.Title))
 
 	// Generate ideas using AI
 	titleGenerator := b.svc.GetTitleGenerator()
@@ -2388,6 +2388,15 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 		b.replyHTML(chatID, trackInfoMsg)
 	}
 
+	// Extract [ПРОМПТ] section for separate Telegram message
+	var aiPromptText string
+	for _, idea := range ideas {
+		if strings.HasPrefix(idea, "[ПРОМПТ]") {
+			aiPromptText = strings.TrimSpace(strings.TrimPrefix(idea, "[ПРОМПТ]"))
+			break
+		}
+	}
+
 	// Create file content with track info and ideas
 	fileContent := fmt.Sprintf(
 		"🎬 ВИДЕОИДЕЯ\n"+
@@ -2396,8 +2405,7 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 			"👤 Артист: %s\n"+
 			"⏱️ Длительность: %.1f сек\n\n"+
 			"─────────────────────────────────────────────────────────────\n"+
-			"📝 ИДЕЯ ДЛЯ ВИДЕО\n"+
-			"(Каждая сцена - 6 секунд)\n"+
+			"📝 ВИДЕОКОНЦЕПЦИЯ\n"+
 			"─────────────────────────────────────────────────────────────\n\n%s",
 		song.Title,
 		song.Author,
@@ -2422,8 +2430,7 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 		Reader: strings.NewReader(fileContent),
 	})
 	msg.Caption = fmt.Sprintf(
-		"🎬 Идея для видео под трек: <b>%s</b> - <b>%s</b>\n"+
-			"(Резкие переходы между сценами)",
+		"🎬 Видеоконцепция под трек: <b>%s</b> - <b>%s</b>",
 		song.Author,
 		song.Title,
 	)
@@ -2434,6 +2441,17 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 		b.log.Errorf("handleIdeaGeneration: failed to send file: %v", err)
 		b.replyText(chatID, "❌ Ошибка при отправке файла идеи")
 		return
+	}
+
+	// Send AI prompt as a separate message for easy copying
+	if aiPromptText != "" {
+		promptMsg := fmt.Sprintf(
+			"🤖 <b>Готовый промпт для ИИ-генерации видео</b>\n"+
+				"<i>(Runway / Luma / Kling)</i>\n\n"+
+				"<code>%s</code>",
+			aiPromptText,
+		)
+		b.replyHTML(chatID, promptMsg)
 	}
 
 	b.log.Infof("handleIdeaGeneration: COMPLETE")
