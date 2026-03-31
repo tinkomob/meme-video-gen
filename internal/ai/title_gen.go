@@ -66,9 +66,9 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 	if tg.apiKey == "" {
 		tg.log.Infof("ai: no api key, using fallback ideas")
 		return []string{
-			"[ВАЙБ]\nАтмосферный трек '" + song.Title + "' с гипнотичным, медитативным настроением.",
-			"[ИДЕЯ]\nМакро-съёмка музыкальных инструментов и аудиотехники в тихом студийном свете — визуальная медитация под звук.",
-			"[ПРОМПТ]\nExtreme close-up of vinyl record spinning in slow motion, soft bokeh background, dramatic side lighting with warm amber glow, cinematic minimalist aesthetic, 4K, ultra slow motion, soft focus edges, atmospheric dust particles floating in light beam.",
+			"[ВАЙБ]\nАтмосферный трек '" + song.Title + "' с гипнотичным, медитативным настроением, где всё держится на мягком ритме и воздушной фактуре.",
+			"[ИДЕЯ]\n1. Макро-съёмка винила, иглы и лёгкой пыли в луче тёплого света, чтобы подчеркнуть ощущение живого звука.\n2. Медленные крупные планы аудиотехники, ручек микшера и тёплых отражений на металле — очень близкая, почти осязаемая студийная атмосфера.\n3. Абстрактная визуализация звуковых волн через мягкие тени, стекло и дымку, чтобы сохранить музыкальный, но не буквальный образ.",
+			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, slow motion, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
 		}, nil
 	}
 
@@ -86,21 +86,23 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 			"Трек: '%s', Артист: '%s'\n\n"+
 			"Твоя задача:\n"+
 			"1. Проанализируй трек: определи вероятный темп (BPM), настроение, ключевые инструменты и текстуры (например, виниловый шум, эхо, мягкое пианино).\n"+
-			"2. Предложи концепцию видео, напрямую связанную с музыкальной культурой (инструменты, аудиотехника, эстетика студии или абстрактные визуализации звука).\n"+
-			"3. Напиши детальный промпт для генерации видео в ИИ (Runway, Luma, Kling) на английском языке.\n\n"+
-			"Требования к промпту:\n"+
-			"- Стиль: Cinematic, Minimalist, Aesthetic\n"+
-			"- Кадр: Macro-shot или Close-up (крупные планы)\n"+
-			"- Движение: Очень медленное (Slow motion), плавное, гипнотическое\n"+
+			"2. Предложи одну концепцию видео, но каждый раз выбирай новую комбинацию деталей, чтобы концепции отличались друг от друга между разными запросами: меняй главный объект, ракурс, свет, текстуру, настроение и мелкие визуальные акценты, сохраняя общий стиль. Используй музыкальную культуру, аудиотехнику, студийную эстетику или абстрактные визуализации звука.\n"+
+			"3. Напиши один детальный промпт для генерации видео в ИИ (Runway, Luma, Kling) на английском языке, основанный только на этой одной концепции.\n\n"+
+			"Требования к концепции и промпту:\n"+
+			"- Общий стиль: Cinematic, Minimalist, Aesthetic\n"+
+			"- Палитра: тёплая, мягкая, приглушённая, без резких цветовых контрастов\n"+
+			"- Кадр: Macro-shot или Close-up, допускаются редкие средние планы\n"+
+			"- Движение: Очень медленное, плавное, гипнотическое, без резких склеек\n"+
 			"- Освещение: Dramatic lighting, soft glows, атмосферные тени\n"+
-			"- Фокус: Bokeh и Soft focus, чтобы картинка была «мягкой» и не перегруженной деталями\n\n"+
+			"- Фокус: Bokeh, Soft focus, лёгкая дымка, чтобы картинка была мягкой и не перегруженной деталями\n"+
+			"- Внутренняя вариативность: каждая новая генерация должна быть заметно другой по объекту, свету и фактуре, но оставаться в том же эстетическом семействе\n\n"+
 			"Формат ответа (строго соблюдай структуру):\n"+
 			"[ВАЙБ]\n"+
 			"[краткое описание вайба трека]\n\n"+
 			"[ИДЕЯ]\n"+
-			"[описание идеи видео и почему это подходит треку]\n\n"+
+			"[одна короткая, законченная концепция видео]\n\n"+
 			"[ПРОМПТ]\n"+
-			"[готовый промпт на английском языке для ИИ-генерации видео]",
+			"[готовый промпт на английском языке для ИИ-генерации видео, основанный на лучшей идее]",
 		song.Title,
 		song.Author,
 	)
@@ -115,9 +117,9 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 	content := resp.Text()
 	if content == "" {
 		return []string{
-			"[ВАЙБ]\nАтмосферный трек с гипнотичным, медитативным настроением.",
-			"[ИДЕЯ]\nМакро-съёмка музыкальных инструментов и аудиотехники — визуальная медитация под звук.",
-			"[ПРОМПТ]\nExtreme close-up of vinyl record spinning in slow motion, soft bokeh background, dramatic side lighting with warm amber glow, cinematic minimalist aesthetic, 4K, ultra slow motion.",
+			"[ВАЙБ]\nАтмосферный трек с гипнотичным, медитативным настроением и мягкой студийной фактурой.",
+			"[ИДЕЯ]\nМакро-съёмка винила, иглы и пыли в тёплом луче света, с очень медленным движением камеры и мягкими бликами на металле.",
+			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, slow motion, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
 		}, nil
 	}
 

@@ -20,6 +20,7 @@ import (
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/scheduler"
 	uploaders_types "meme-video-gen/internal/uploaders"
+	"meme-video-gen/internal/video"
 )
 
 type TelegramBot struct {
@@ -1344,7 +1345,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /meme [count] — получить мем(ы) из пула (count: 1-10, по умолчанию 1)
              /meme — один мем с кнопками действий
              /meme 3 — 3 мема слайдером (медиагруппой)
-/idea [query] — получить идею для видео на основе песни
+/idea [query] — получить идею для видео на основе песни и сгенерировать видео
               /idea — выбрать из списка, случайный или поиск
               /idea Dua Lipa — найти треки Dua Lipa и выбрать
 /song [query] — скачать трек в формате MP3 или MP4A
@@ -2357,14 +2358,13 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 
 	b.log.Infof("handleIdeaGeneration: idea generated with %d scenes", len(ideas))
 
+	cfg := b.svc.GetConfig()
+
 	// Build result text for file and message
 	scenesText := ""
 	for _, scene := range ideas {
 		scenesText += scene + "\n\n"
 	}
-
-	// Get config for S3 and download link
-	cfg := b.svc.GetConfig()
 	downloadURL := fmt.Sprintf("%s/%s/%s",
 		strings.TrimRight(cfg.S3Endpoint, "/"),
 		cfg.S3Bucket,
@@ -2397,6 +2397,103 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 		}
 	}
 
+	videoPrompt := strings.TrimSpace(aiPromptText)
+	if videoPrompt == "" {
+		videoPrompt = strings.TrimSpace(scenesText)
+	}
+	if videoPrompt == "" {
+		videoPrompt = fmt.Sprintf("Create a cinematic video inspired by %s by %s.", song.Title, song.Author)
+	}
+
+	var generatedVideoURL string
+	var generatedOperationID string
+	if cfg.BratuhaAPIKey != "" {
+		b.replyText(chatID, "🎥 Запускаю генерацию видео через Bratuha Grok Video...")
+
+		videoClient := ai.NewBratuhaVideoClient(cfg.BratuhaAPIKey, b.log)
+		generatedVideoURL, generatedOperationID, err = videoClient.GenerateVideoURL(ctx, videoPrompt)
+		if err != nil {
+			b.log.Errorf("handleIdeaGeneration: video generation failed: %v", err)
+			b.replyText(chatID, fmt.Sprintf("⚠️ Видео не удалось сгенерировать: %v", err))
+		} else {
+			b.log.Infof("handleIdeaGeneration: video generated via Bratuha operation=%s url=%s", generatedOperationID, generatedVideoURL)
+
+			generatedVideoBody, err := b.downloadFile(ctx, generatedVideoURL)
+			if err != nil {
+				b.log.Errorf("handleIdeaGeneration: failed to download generated video: %v", err)
+				b.replyText(chatID, fmt.Sprintf("⚠️ Видео готово, но не удалось скачать файл: %v", err))
+			} else {
+				defer generatedVideoBody.Close()
+
+				generatedVideoTemp, err := os.CreateTemp("", fmt.Sprintf("idea_%s_*.mp4", song.ID))
+				if err != nil {
+					b.log.Errorf("handleIdeaGeneration: failed to create temp file for generated video: %v", err)
+					b.replyText(chatID, "⚠️ Не удалось подготовить временный файл для видео")
+				} else {
+					generatedVideoPath := generatedVideoTemp.Name()
+					if _, err := io.Copy(generatedVideoTemp, generatedVideoBody); err != nil {
+						generatedVideoTemp.Close()
+						os.Remove(generatedVideoPath)
+						b.log.Errorf("handleIdeaGeneration: failed to save generated video: %v", err)
+						b.replyText(chatID, "⚠️ Не удалось сохранить сгенерированное видео")
+					} else {
+						generatedVideoTemp.Close()
+
+						songPath, err := b.svc.Impl().DownloadSongToTemp(ctx, song)
+						if err != nil {
+							os.Remove(generatedVideoPath)
+							b.log.Errorf("handleIdeaGeneration: failed to download song for mux: %v", err)
+							b.replyText(chatID, fmt.Sprintf("⚠️ Не удалось скачать трек для добавления музыки: %v", err))
+						} else {
+							defer os.Remove(songPath)
+
+							finalVideoTemp, err := os.CreateTemp("", fmt.Sprintf("idea_%s_final_*.mp4", song.ID))
+							if err != nil {
+								os.Remove(generatedVideoPath)
+								b.log.Errorf("handleIdeaGeneration: failed to create temp file for final video: %v", err)
+								b.replyText(chatID, "⚠️ Не удалось подготовить итоговый видеофайл")
+							} else {
+								finalVideoPath := finalVideoTemp.Name()
+								finalVideoTemp.Close()
+
+								muxErr := video.MuxVideoWithAudio(ctx, generatedVideoPath, songPath, finalVideoPath, b.log)
+								os.Remove(generatedVideoPath)
+								if muxErr != nil {
+									os.Remove(finalVideoPath)
+									b.log.Errorf("handleIdeaGeneration: failed to mux audio into video: %v", muxErr)
+									b.replyText(chatID, fmt.Sprintf("⚠️ Видео с музыкой не удалось собрать: %v", muxErr))
+								} else {
+									defer os.Remove(finalVideoPath)
+
+									finalFile, err := os.Open(finalVideoPath)
+									if err != nil {
+										b.log.Errorf("handleIdeaGeneration: failed to open final video: %v", err)
+										b.replyText(chatID, "⚠️ Не удалось открыть итоговый видеофайл")
+									} else {
+										defer finalFile.Close()
+
+										videoMsg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{
+											Name:   fmt.Sprintf("idea_%s.mp4", song.ID),
+											Reader: finalFile,
+										})
+										videoMsg.Caption = fmt.Sprintf("🎬 Видео по идее: %s - %s", song.Author, song.Title)
+
+										if _, err := b.tg.Send(videoMsg); err != nil {
+											b.log.Errorf("handleIdeaGeneration: failed to send generated video: %v", err)
+											b.replyText(chatID, "⚠️ Видео с музыкой собрано, но не удалось отправить в Telegram")
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+			}
+		}
+	} else {
+		b.replyText(chatID, "⚠️ BRATUHA_API_KEY не задан, поэтому видео не генерируется")
+	}
+
 	// Create file content with track info and ideas
 	fileContent := fmt.Sprintf(
 		"🎬 ВИДЕОИДЕЯ\n"+
@@ -2404,12 +2501,16 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 			"🎵 Трек: %s\n"+
 			"👤 Артист: %s\n"+
 			"⏱️ Длительность: %.1f сек\n\n"+
+			"🤖 Bratuha operation: %s\n"+
+			"🎞️ Video URL: %s\n\n"+
 			"─────────────────────────────────────────────────────────────\n"+
 			"📝 ВИДЕОКОНЦЕПЦИЯ\n"+
 			"─────────────────────────────────────────────────────────────\n\n%s",
 		song.Title,
 		song.Author,
 		song.DurationS,
+		generatedOperationID,
+		generatedVideoURL,
 		scenesText,
 	)
 

@@ -7,9 +7,9 @@
 - **audio** — индексирует треки из YouTube плейлистов (kkdai/youtube), сохраняет в S3
 - **sources** — скрапит картинки/видео из Pinterest/Reddit/Twitter/Google Images (gocolly/colly + SerpAPI), ротирует по давности (<24ч) и лимиту (50)
 - **video** — генерирует мем-видео (mowshon/moviego), дедуп по SHA256, хранит до 10 штук в S3
-- **ai** — генерирует креативные названия через Google Gemini AI
+- **ai** — генерирует креативные названия через Google Gemini AI и видео-промпты
 - **s3** — универсальный клиент для работы с S3-совместимым хранилищем + JSON-индексы
-- **bot** — Telegram-бот с командами `/meme`, `/errors` (последние 50 строк)
+- **bot** — Telegram-бот с командами `/meme`, `/idea`, `/errors` (последние 50 строк)
 - **scheduler** — cron-задачи (раз в час обновляет аудио/источники/мемы)
 
 ## Быстрый старт
@@ -37,6 +37,7 @@ S3_SECRET_ACCESS_KEY=...
 S3_REGION=ru-1
 S3_BUCKET=...
 GEMINI_API_KEY=...  # опционально, для AI-названий
+BRATUHA_API_KEY=... # опционально, для генерации видео по /idea
 SERPAPI_KEY=...     # опционально, для Google Images
 ```
 
@@ -78,6 +79,7 @@ docker run --env-file .env -v ${PWD}/errors.log:/app/errors.log meme-bot
 
 - `/start`, `/help` — помощь
 - `/meme` — получить случайный мем из готовых
+- `/idea` — сгенерировать идею и видео по треку
 - `/errors` — последние 50 строк из `errors.log`
 
 ## Логика работы

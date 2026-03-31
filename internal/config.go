@@ -15,8 +15,9 @@ type Config struct {
 	S3AccessKey   string
 	S3SecretKey   string
 
-	GeminiAPIKey string
-	SerpAPIKey   string
+	GeminiAPIKey  string
+	SerpAPIKey    string
+	BratuhaAPIKey string
 
 	SongsJSONKey    string
 	SourcesJSONKey  string
@@ -56,6 +57,7 @@ func LoadConfig() (Config, error) {
 		S3SecretKey:   firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("S3_SECRET_ACCESS_KEY_ID")),
 		GeminiAPIKey:  firstNonEmpty(os.Getenv("GOOGLE_API_KEY"), os.Getenv("GEMINI_API_KEY")),
 		SerpAPIKey:    os.Getenv("SERPAPI_KEY"),
+		BratuhaAPIKey: os.Getenv("BRATUHA_API_KEY"),
 
 		SongsJSONKey:    "songs.json",
 		SourcesJSONKey:  "sources.json",
