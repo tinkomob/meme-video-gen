@@ -102,7 +102,7 @@ func (c *BratuhaVideoClient) createOperation(ctx context.Context, prompt string)
 			"model":        "grok-imagine/text-to-video",
 			"prompt":       prompt,
 			"aspect_ratio": "9:16",
-			"duration":     "6",
+			"duration":     "12",
 			"resolution":   "480p",
 			"mode":         "normal",
 		},

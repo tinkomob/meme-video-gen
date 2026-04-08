@@ -41,7 +41,7 @@ func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.
 
 	prompt := fmt.Sprintf(
 		"Ты — креативный копирайтер для коротких видео. "+
-			"Создай одно короткое (до 60 символов), цепляющее название для 8-секундного мем-видео под трек '%s'. "+
+			"Создай одно короткое (до 60 символов), цепляющее название для 12-секундного мем-видео под трек '%s'. "+
 			"Название должно быть на русском, без эмодзи, без хэштегов, просто текст.",
 		song.Title,
 	)
@@ -61,14 +61,14 @@ func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.
 }
 
 // GenerateIdeaForSong generates a creative video idea based on the track, divided into scenes
-// Each scene is designed for a 6-second video clip
+// Each scene is designed for a 3-4 second segment within a 12-second video
 func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.Song) ([]string, error) {
 	if tg.apiKey == "" {
 		tg.log.Infof("ai: no api key, using fallback ideas")
 		return []string{
 			"[ВАЙБ]\nАтмосферный трек '" + song.Title + "' с гипнотичным, медитативным настроением, где всё держится на мягком ритме и воздушной фактуре.",
-			"[ИДЕЯ]\n1. Макро-съёмка винила, иглы и лёгкой пыли в луче тёплого света, чтобы подчеркнуть ощущение живого звука.\n2. Медленные крупные планы аудиотехники, ручек микшера и тёплых отражений на металле — очень близкая, почти осязаемая студийная атмосфера.\n3. Абстрактная визуализация звуковых волн через мягкие тени, стекло и дымку, чтобы сохранить музыкальный, но не буквальный образ.",
-			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, slow motion, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
+			"[ИДЕЯ]\n1. Макро-съёмка винила, иглы и лёгкой пыли в луче тёплого света, чтобы подчеркнуть ощущение живого звука.\n2. Медленные крупные планы аудиотехники, ручек микшера и тёплых отражений на металле — очень близкая, почти осязаемая студийная атмосфера.\n3. Абстрактная визуализация звуковых волн через мягкие тени, стекло и дымку, чтобы сохранить музыкальный, но не буквальный образ.\n4. Финальный атмосферный кадр с мягким уходом камеры в свет и лёгкий туман, чтобы завершить 12-секундную историю.",
+			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
 		}, nil
 	}
 
@@ -86,8 +86,8 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 			"Трек: '%s', Артист: '%s'\n\n"+
 			"Твоя задача:\n"+
 			"1. Проанализируй трек: определи вероятный темп (BPM), настроение, ключевые инструменты и текстуры (например, виниловый шум, эхо, мягкое пианино).\n"+
-			"2. Предложи одну концепцию видео, но каждый раз выбирай новую комбинацию деталей, чтобы концепции отличались друг от друга между разными запросами: меняй главный объект, ракурс, свет, текстуру, настроение и мелкие визуальные акценты, сохраняя общий стиль. Используй музыкальную культуру, аудиотехнику, студийную эстетику или абстрактные визуализации звука.\n"+
-			"3. Напиши один детальный промпт для генерации видео в ИИ (Runway, Luma, Kling) на английском языке, основанный только на этой одной концепции.\n\n"+
+			"2. Предложи одну концепцию видео, но каждый раз выбирай новую комбинацию деталей, чтобы концепции отличались друг от друга между разными запросами: меняй главный объект, ракурс, свет, текстуру, настроение и мелкие визуальные акценты, сохраняя общий стиль. Используй музыкальную культуру, аудиотехнику, студийную эстетику или абстрактные визуализации звука. Концепция должна быть рассчитана на 12 секунд и разбита на 3-4 сцены.\n"+
+			"3. Напиши один детальный промпт для генерации видео в ИИ (Runway, Luma, Kling) на английском языке, основанный только на этой одной концепции и рассчитанный на 12 секунд с 3-4 сценами.\n\n"+
 			"Требования к концепции и промпту:\n"+
 			"- Общий стиль: Cinematic, Minimalist, Aesthetic\n"+
 			"- Палитра: тёплая, мягкая, приглушённая, без резких цветовых контрастов\n"+
@@ -95,6 +95,7 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 			"- Движение: Очень медленное, плавное, гипнотическое, без резких склеек\n"+
 			"- Освещение: Dramatic lighting, soft glows, атмосферные тени\n"+
 			"- Фокус: Bokeh, Soft focus, лёгкая дымка, чтобы картинка была мягкой и не перегруженной деталями\n"+
+			"- Структура видео: 3-4 сцены общей длительностью 12 секунд, с плавными переходами и без резких монтажных склеек\n"+
 			"- Внутренняя вариативность: каждая новая генерация должна быть заметно другой по объекту, свету и фактуре, но оставаться в том же эстетическом семействе\n\n"+
 			"Формат ответа (строго соблюдай структуру):\n"+
 			"[ВАЙБ]\n"+
@@ -119,7 +120,7 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 		return []string{
 			"[ВАЙБ]\nАтмосферный трек с гипнотичным, медитативным настроением и мягкой студийной фактурой.",
 			"[ИДЕЯ]\nМакро-съёмка винила, иглы и пыли в тёплом луче света, с очень медленным движением камеры и мягкими бликами на металле.",
-			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, slow motion, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
+			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
 		}, nil
 	}
 
