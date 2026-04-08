@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"google.golang.org/genai"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"meme-video-gen/internal/logging"
 	"meme-video-gen/internal/model"
@@ -31,6 +33,53 @@ func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.
 		return fmt.Sprintf("Мем под трек: %s", song.Title), nil
 	}
 
+	// Retry strategy: 3 attempts with exponential backoff
+	const maxRetries = 3
+	const initialBackoff = 2 * time.Second
+	
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		title, err := tg.generateTitleWithClient(ctx, song)
+		
+		// Success - return immediately
+		if err == nil && title != "" {
+			return title, nil
+		}
+		
+		// Check if error is retryable
+		isRetryable := tg.isRetryableError(err)
+		
+		// Log the error
+		if attempt < maxRetries && isRetryable {
+			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
+			tg.log.Warnf("ai: generate title failed (attempt %d/%d): %v. Retrying in %v", 
+				attempt, maxRetries, err, backoff)
+			
+			// Wait with backoff before retry
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				tg.log.Infof("ai: context cancelled during retry, using fallback title")
+				return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+			}
+			continue
+		}
+		
+		// Last attempt or non-retryable error
+		if attempt == maxRetries && isRetryable {
+			tg.log.Warnf("ai: all %d retry attempts exhausted: %v, using fallback title", maxRetries, err)
+			return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+		}
+		
+		// Non-retryable error or empty response on any attempt
+		tg.log.Warnf("ai: using fallback title due to: %v", err)
+		return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+	}
+
+	return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+}
+
+// generateTitleWithClient makes the actual API call for title generation
+func (tg *TitleGenerator) generateTitleWithClient(ctx context.Context, song *model.Song) (string, error) {
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  tg.apiKey,
 		Backend: genai.BackendGeminiAPI,
@@ -55,23 +104,67 @@ func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.
 
 	title := resp.Text()
 	if title == "" {
-		title = fmt.Sprintf("Мем под трек: %s", song.Title)
+		return "", fmt.Errorf("empty response from gemini api")
 	}
 	return title, nil
 }
 
 // GenerateIdeaForSong generates a creative video idea based on the track, divided into scenes
 // Each scene is designed for a 3-4 second segment within a 12-second video
+// Uses exponential backoff retry for API failures (503, 429, 500, etc)
 func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.Song) ([]string, error) {
 	if tg.apiKey == "" {
 		tg.log.Infof("ai: no api key, using fallback ideas")
-		return []string{
-			"[ВАЙБ]\nАтмосферный трек '" + song.Title + "' с гипнотичным, медитативным настроением, где всё держится на мягком ритме и воздушной фактуре.",
-			"[ИДЕЯ]\n1. Макро-съёмка винила, иглы и лёгкой пыли в луче тёплого света, чтобы подчеркнуть ощущение живого звука.\n2. Медленные крупные планы аудиотехники, ручек микшера и тёплых отражений на металле — очень близкая, почти осязаемая студийная атмосфера.\n3. Абстрактная визуализация звуковых волн через мягкие тени, стекло и дымку, чтобы сохранить музыкальный, но не буквальный образ.\n4. Финальный атмосферный кадр с мягким уходом камеры в свет и лёгкий туман, чтобы завершить 12-секундную историю.",
-			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
-		}, nil
+		return tg.getFallbackIdeas(song), nil
 	}
 
+	// Retry strategy: 3 attempts with exponential backoff
+	const maxRetries = 3
+	const initialBackoff = 2 * time.Second
+	
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ideas, err := tg.generateIdeaWithClient(ctx, song)
+		
+		// Success - return immediately
+		if err == nil {
+			return ideas, nil
+		}
+		
+		// Check if error is retryable (503, 429, 500, timeout, etc)
+		isRetryable := tg.isRetryableError(err)
+		
+		// Log the error
+		if attempt < maxRetries && isRetryable {
+			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
+			tg.log.Warnf("ai: generate idea failed (attempt %d/%d): %v. Retrying in %v", 
+				attempt, maxRetries, err, backoff)
+			
+			// Wait with backoff before retry
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				tg.log.Infof("ai: context cancelled during retry, using fallback ideas")
+				return tg.getFallbackIdeas(song), nil
+			}
+			continue
+		}
+		
+		// Last attempt or non-retryable error
+		if attempt == maxRetries && isRetryable {
+			tg.log.Warnf("ai: all %d retry attempts exhausted: %v, falling back to templates", maxRetries, err)
+			return tg.getFallbackIdeas(song), nil
+		}
+		
+		// Non-retryable error on any attempt
+		tg.log.Errorf("ai: non-retryable error: %v", err)
+		return tg.getFallbackIdeas(song), nil
+	}
+
+	return tg.getFallbackIdeas(song), nil
+}
+
+// generateIdeaWithClient makes the actual API call
+func (tg *TitleGenerator) generateIdeaWithClient(ctx context.Context, song *model.Song) ([]string, error) {
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
 		APIKey:  tg.apiKey,
 		Backend: genai.BackendGeminiAPI,
@@ -117,11 +210,8 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 
 	content := resp.Text()
 	if content == "" {
-		return []string{
-			"[ВАЙБ]\nАтмосферный трек с гипнотичным, медитативным настроением и мягкой студийной фактурой.",
-			"[ИДЕЯ]\nМакро-съёмка винила, иглы и пыли в тёплом луче света, с очень медленным движением камеры и мягкими бликами на металле.",
-			"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
-		}, nil
+		// API returned empty response - treat as error
+		return nil, fmt.Errorf("empty response from gemini api")
 	}
 
 	// Parse sections [ВАЙБ], [ИДЕЯ], [ПРОМПТ] from response
@@ -151,6 +241,52 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 
 	// Fallback if parsing failed
 	return []string{content}, nil
+}
+
+// isRetryableError determines if an error should trigger a retry
+func (tg *TitleGenerator) isRetryableError(err error) bool {
+	if err == nil {
+		return false
+	}
+	
+	errStr := err.Error()
+	
+	// Check for known retryable errors
+	retryablePatterns := []string{
+		"503",      // Service Unavailable
+		"429",      // Too Many Requests
+		"500",      // Internal Server Error
+		"502",      // Bad Gateway
+		"timeout",  // Context timeout
+		"unavailable", // gRPC UNAVAILABLE
+		"temporarily unavailable",
+		"Please try again later",
+		"high demand",
+	}
+	
+	for _, pattern := range retryablePatterns {
+		if strings.Contains(errStr, pattern) {
+			return true
+		}
+	}
+	
+	// Check if it's an unavailable status code
+	if st, ok := status.FromError(err); ok {
+		return st.Code() == codes.Unavailable || 
+		       st.Code() == codes.DeadlineExceeded ||
+		       st.Code() == codes.ResourceExhausted
+	}
+	
+	return false
+}
+
+// getFallbackIdeas returns hardcoded fallback ideas for when API is unavailable
+func (tg *TitleGenerator) getFallbackIdeas(song *model.Song) []string {
+	return []string{
+		"[ВАЙБ]\nАтмосферный трек '" + song.Title + "' с гипнотичным, медитативным настроением, где всё держится на мягком ритме и воздушной фактуре.",
+		"[ИДЕЯ]\n1. Макро-съёмка винила, иглы и лёгкой пыли в луче тёплого света, чтобы подчеркнуть ощущение живого звука.\n2. Медленные крупные планы аудиотехники, ручек микшера и тёплых отражений на металле — очень близкая, почти осязаемая студийная атмосфера.\n3. Абстрактная визуализация звуковых волн через мягкие тени, стекло и дымку, чтобы сохранить музыкальный, но не буквальный образ.\n4. Финальный атмосферный кадр с мягким уходом камеры в свет и лёгкий туман, чтобы завершить 12-секундную историю.",
+		"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
+	}
 }
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
