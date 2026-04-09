@@ -721,6 +721,67 @@ func (s *Service) SearchSongs(ctx context.Context, query string) ([]*model.Song,
 	return results, nil
 }
 
+// filterSongsForIdea filters songs to only include eenfinit, excluding dee bill
+func (s *Service) filterSongsForIdea(songs []*model.Song) []*model.Song {
+	var filtered []*model.Song
+	for _, song := range songs {
+		// Only include eenfinit, exclude dee bill
+		author := strings.ToLower(song.Author)
+		if strings.Contains(author, "eenfinit") && !strings.Contains(author, "dee bill") {
+			filtered = append(filtered, song)
+		}
+	}
+	return filtered
+}
+
+// GetRandomSongForIdea returns a random song from eenfinit (excluding dee bill) for idea generation
+func (s *Service) GetRandomSongForIdea(ctx context.Context) (*model.Song, error) {
+	songs, err := s.GetAllSongs(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := s.filterSongsForIdea(songs)
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("no songs from eenfinit available (excluding dee bill)")
+	}
+
+	// Use the same randomization as video generator
+	idx := int(time.Now().UnixNano() % int64(len(filtered)))
+	return filtered[idx], nil
+}
+
+// GetSongByIDForIdea returns a song by ID if from eenfinit (excluding dee bill)
+func (s *Service) GetSongByIDForIdea(ctx context.Context, songID string) (*model.Song, error) {
+	song, err := s.GetSongByID(ctx, songID)
+	if err != nil {
+		return nil, err
+	}
+
+	// Check if song is from eenfinit and not dee bill
+	author := strings.ToLower(song.Author)
+	if !strings.Contains(author, "eenfinit") || strings.Contains(author, "dee bill") {
+		return nil, fmt.Errorf("song %s is not from eenfinit or is from dee bill", songID)
+	}
+
+	return song, nil
+}
+
+// SearchSongsForIdea searches for songs by title or author from eenfinit (excluding dee bill)
+func (s *Service) SearchSongsForIdea(ctx context.Context, query string) ([]*model.Song, error) {
+	results, err := s.SearchSongs(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+
+	filtered := s.filterSongsForIdea(results)
+	if len(filtered) == 0 {
+		return nil, fmt.Errorf("no songs from eenfinit found matching query: %s (excluding dee bill)", query)
+	}
+
+	return filtered, nil
+}
+
 // InitializeUploadersManager initializes the uploaders manager
 func (s *Service) InitializeUploadersManager() {
 	s.uploadersManager = uploaders.NewManager()

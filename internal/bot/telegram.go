@@ -176,6 +176,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.handleMeme(ctx, chatID, msg.CommandArguments())
 	case "idea":
 		b.cmdIdea(ctx, chatID, msg.CommandArguments())
+	case "aidea":
+		b.cmdAidea(ctx, chatID)
 	case "status":
 		b.cmdStatus(ctx, chatID)
 	case "chatid":
@@ -1345,9 +1347,10 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /meme [count] — получить мем(ы) из пула (count: 1-10, по умолчанию 1)
              /meme — один мем с кнопками действий
              /meme 3 — 3 мема слайдером (медиагруппой)
-/idea [query] — получить идею для видео на основе песни и сгенерировать видео
+/idea [query] — получить идею для видео на основе песни и сгенерировать видео (только eenfinit)
               /idea — выбрать из списка, случайный или поиск
               /idea Dua Lipa — найти треки Dua Lipa и выбрать
+/aidea — получить идею для рилса (без трека)
 /song [query] — скачать трек в формате MP3 или MP4A
               /song — выбрать из списка, случайный или поиск
               /song Dua Lipa — найти треки Dua Lipa и скачать
@@ -2290,14 +2293,28 @@ func (b *TelegramBot) cmdIdea(ctx context.Context, chatID int64, args string) {
 		return
 	}
 
-	// Get songs from storage
+	// Get songs from storage (filtered for eenfinit, excluding dee bill)
 	songs, err := b.svc.GetAllSongs(ctx)
 	if err != nil || len(songs) == 0 {
 		b.replyText(chatID, "❌ Ошибка: нет доступных песен")
 		return
 	}
 
-	b.log.Infof("cmdIdea: got %d songs", len(songs))
+	// Filter to only eenfinit songs (excluding dee bill)
+	var filteredSongs []*model.Song
+	for _, song := range songs {
+		author := strings.ToLower(song.Author)
+		if strings.Contains(author, "eenfinit") && !strings.Contains(author, "dee bill") {
+			filteredSongs = append(filteredSongs, song)
+		}
+	}
+
+	if len(filteredSongs) == 0 {
+		b.replyText(chatID, "❌ Ошибка: нет доступных песен от eenfinit")
+		return
+	}
+
+	b.log.Infof("cmdIdea: got %d songs from eenfinit (filtered from %d total)", len(filteredSongs), len(songs))
 
 	// Create inline keyboard with options
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(
@@ -2312,7 +2329,7 @@ func (b *TelegramBot) cmdIdea(ctx context.Context, chatID int64, args string) {
 		),
 	)
 
-	msg := tgbotapi.NewMessage(chatID, "🎬 Генератор идей для видео\n\nВыберите трек, возьмите случайный или найдите по названию:")
+	msg := tgbotapi.NewMessage(chatID, "🎬 Генератор идей для видео (eenfinit только)\n\nВыберите трек, возьмите случайный или найдите по названию:")
 	msg.ReplyMarkup = keyboard
 	b.tg.Send(msg)
 }
@@ -2325,9 +2342,9 @@ func (b *TelegramBot) handleIdeaGeneration(ctx context.Context, chatID int64, so
 	var err error
 
 	if songID == "random" {
-		song, err = b.svc.GetRandomSong(ctx)
+		song, err = b.svc.GetRandomSongForIdea(ctx)
 	} else {
-		song, err = b.svc.GetSongByID(ctx, songID)
+		song, err = b.svc.GetSongByIDForIdea(ctx, songID)
 	}
 
 	if err != nil {
@@ -2628,8 +2645,8 @@ func (b *TelegramBot) handleIdeaList(ctx context.Context, chatID int64, offset i
 func (b *TelegramBot) handleIdeaSearch(ctx context.Context, chatID int64, query string) {
 	b.log.Infof("handleIdeaSearch: START - query=%s", query)
 
-	// Search for songs matching the query
-	songs, err := b.svc.SearchSongs(ctx, query)
+	// Search for songs matching the query (filtered for eenfinit, excluding dee bill)
+	songs, err := b.svc.SearchSongsForIdea(ctx, query)
 	if err != nil {
 		b.log.Errorf("handleIdeaSearch: search failed: %v", err)
 		b.replyText(chatID, fmt.Sprintf("❌ Ошибка поиска: %v", err))
@@ -2637,7 +2654,7 @@ func (b *TelegramBot) handleIdeaSearch(ctx context.Context, chatID int64, query 
 	}
 
 	if len(songs) == 0 {
-		b.replyText(chatID, fmt.Sprintf("❌ Треков не найдено по запросу: \"%s\"", query))
+		b.replyText(chatID, fmt.Sprintf("❌ Треков от eenfinit не найдено по запросу: \"%s\"", query))
 		return
 	}
 
@@ -2667,7 +2684,7 @@ func (b *TelegramBot) handleIdeaSearch(ctx context.Context, chatID int64, query 
 	}
 
 	keyboard := tgbotapi.NewInlineKeyboardMarkup(rows...)
-	resultMsg := fmt.Sprintf("🔍 Найдено %d треков по запросу \"%s\":\n\nВыберите трек:", displayCount, query)
+	resultMsg := fmt.Sprintf("🔍 Найдено %d треков от eenfinit по запросу \"%s\":\n\nВыберите трек:", displayCount, query)
 	if len(songs) > maxResults {
 		resultMsg += fmt.Sprintf("\n\n(показаны первые %d из %d)", displayCount, len(songs))
 	}
@@ -2675,6 +2692,100 @@ func (b *TelegramBot) handleIdeaSearch(ctx context.Context, chatID int64, query 
 	msg := tgbotapi.NewMessage(chatID, resultMsg)
 	msg.ReplyMarkup = keyboard
 	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) cmdAidea(ctx context.Context, chatID int64) {
+	b.log.Infof("cmdAidea: START")
+
+	// Show processing message
+	procMsgID := b.replyText(chatID, "⏳ Генерирую идею для рилса...")
+
+	// Generate ideas using AI
+	titleGenerator := b.svc.GetTitleGenerator()
+	if titleGenerator == nil {
+		b.log.Errorf("cmdAidea: title generator not available")
+		b.editMessage(chatID, procMsgID, "❌ Ошибка: генератор идей не инициализирован")
+		return
+	}
+
+	ideas, err := titleGenerator.GenerateIdeaForReel(ctx)
+	if err != nil {
+		b.log.Errorf("cmdAidea: generate reel idea failed: %v", err)
+		b.editMessage(chatID, procMsgID, fmt.Sprintf("❌ Ошибка при генерации идеи: %v", err))
+		return
+	}
+
+	b.log.Infof("cmdAidea: idea generated with %d sections", len(ideas))
+
+	// Build result text for file and message
+	scenesText := ""
+	for _, scene := range ideas {
+		scenesText += scene + "\n\n"
+	}
+
+	// First message: Reel idea
+	ideaMsg := fmt.Sprintf("🎬 <b>Идея для рилса</b>\n\n%s", scenesText)
+
+	if err := b.editMessageHTML(chatID, procMsgID, ideaMsg); err != nil {
+		b.log.Errorf("cmdAidea: failed to edit message: %v", err)
+		b.replyHTML(chatID, ideaMsg)
+	}
+
+	// Extract [ПРОМПТ] section for separate Telegram message
+	var aiPromptText string
+	for _, idea := range ideas {
+		if strings.HasPrefix(idea, "[ПРОМПТ]") {
+			aiPromptText = strings.TrimSpace(strings.TrimPrefix(idea, "[ПРОМПТ]"))
+			break
+		}
+	}
+
+	// Send file with full idea
+	fileContent := fmt.Sprintf(
+		"🎬 ИДЕЯ ДЛЯ РИЛСА\n"+
+			"══════════════════════════════════════════════════════════════\n\n"+
+			"%s",
+		scenesText,
+	)
+
+	// Upload file to S3
+	s3Key := fmt.Sprintf("ideas/aidea_%d.txt", time.Now().Unix())
+	err = b.svc.GetS3Client().PutBytes(ctx, s3Key, []byte(fileContent), "text/plain")
+	if err != nil {
+		b.log.Errorf("cmdAidea: failed to save to S3: %v", err)
+		b.replyText(chatID, "❌ Ошибка при сохранении файла идеи")
+		return
+	}
+
+	b.log.Infof("cmdAidea: file uploaded to S3: %s", s3Key)
+
+	// Send file to Telegram
+	msg := tgbotapi.NewDocument(chatID, tgbotapi.FileReader{
+		Name:   fmt.Sprintf("aidea_%d.txt", time.Now().Unix()),
+		Reader: strings.NewReader(fileContent),
+	})
+	msg.Caption = "📄 Идея для рилса (полная версия)"
+	msg.ParseMode = "HTML"
+
+	_, err = b.tg.Send(msg)
+	if err != nil {
+		b.log.Errorf("cmdAidea: failed to send file: %v", err)
+		b.replyText(chatID, "❌ Ошибка при отправке файла идеи")
+		return
+	}
+
+	// Send AI prompt as a separate message for easy copying
+	if aiPromptText != "" {
+		promptMsg := fmt.Sprintf(
+			"🤖 <b>Готовый промпт для ИИ-генерации видео</b>\n"+
+				"<i>(Runway / Luma / Kling)</i>\n\n"+
+				"<code>%s</code>",
+			aiPromptText,
+		)
+		b.replyHTML(chatID, promptMsg)
+	}
+
+	b.log.Infof("cmdAidea: COMPLETE")
 }
 
 func (b *TelegramBot) replyText(chatID int64, text string) int {

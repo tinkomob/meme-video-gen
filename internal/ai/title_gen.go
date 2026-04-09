@@ -29,53 +29,49 @@ func NewTitleGenerator(apiKey string, log *logging.Logger) *TitleGenerator {
 
 func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.Song) (string, error) {
 	if tg.apiKey == "" {
-		tg.log.Infof("ai: no api key, using fallback title")
-		return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+		return "", fmt.Errorf("ai: no api key configured")
 	}
 
 	// Retry strategy: 3 attempts with exponential backoff
 	const maxRetries = 3
 	const initialBackoff = 2 * time.Second
-	
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		title, err := tg.generateTitleWithClient(ctx, song)
-		
+
 		// Success - return immediately
 		if err == nil && title != "" {
 			return title, nil
 		}
-		
+
 		// Check if error is retryable
 		isRetryable := tg.isRetryableError(err)
-		
+
 		// Log the error
 		if attempt < maxRetries && isRetryable {
 			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
-			tg.log.Warnf("ai: generate title failed (attempt %d/%d): %v. Retrying in %v", 
+			tg.log.Warnf("ai: generate title failed (attempt %d/%d): %v. Retrying in %v",
 				attempt, maxRetries, err, backoff)
-			
+
 			// Wait with backoff before retry
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				tg.log.Infof("ai: context cancelled during retry, using fallback title")
-				return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+				return "", fmt.Errorf("context cancelled: %w", ctx.Err())
 			}
 			continue
 		}
-		
+
 		// Last attempt or non-retryable error
 		if attempt == maxRetries && isRetryable {
-			tg.log.Warnf("ai: all %d retry attempts exhausted: %v, using fallback title", maxRetries, err)
-			return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+			return "", fmt.Errorf("all %d retry attempts exhausted: %w", maxRetries, err)
 		}
-		
+
 		// Non-retryable error or empty response on any attempt
-		tg.log.Warnf("ai: using fallback title due to: %v", err)
-		return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+		return "", fmt.Errorf("generate title failed: %w", err)
 	}
 
-	return fmt.Sprintf("Мем под трек: %s", song.Title), nil
+	return "", fmt.Errorf("generate title failed: unknown error")
 }
 
 // generateTitleWithClient makes the actual API call for title generation
@@ -114,53 +110,49 @@ func (tg *TitleGenerator) generateTitleWithClient(ctx context.Context, song *mod
 // Uses exponential backoff retry for API failures (503, 429, 500, etc)
 func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.Song) ([]string, error) {
 	if tg.apiKey == "" {
-		tg.log.Infof("ai: no api key, using fallback ideas")
-		return tg.getFallbackIdeas(song), nil
+		return nil, fmt.Errorf("ai: no api key configured")
 	}
 
 	// Retry strategy: 3 attempts with exponential backoff
 	const maxRetries = 3
 	const initialBackoff = 2 * time.Second
-	
+
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		ideas, err := tg.generateIdeaWithClient(ctx, song)
-		
+
 		// Success - return immediately
 		if err == nil {
 			return ideas, nil
 		}
-		
+
 		// Check if error is retryable (503, 429, 500, timeout, etc)
 		isRetryable := tg.isRetryableError(err)
-		
+
 		// Log the error
 		if attempt < maxRetries && isRetryable {
 			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
-			tg.log.Warnf("ai: generate idea failed (attempt %d/%d): %v. Retrying in %v", 
+			tg.log.Warnf("ai: generate idea failed (attempt %d/%d): %v. Retrying in %v",
 				attempt, maxRetries, err, backoff)
-			
+
 			// Wait with backoff before retry
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				tg.log.Infof("ai: context cancelled during retry, using fallback ideas")
-				return tg.getFallbackIdeas(song), nil
+				return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
 			}
 			continue
 		}
-		
+
 		// Last attempt or non-retryable error
 		if attempt == maxRetries && isRetryable {
-			tg.log.Warnf("ai: all %d retry attempts exhausted: %v, falling back to templates", maxRetries, err)
-			return tg.getFallbackIdeas(song), nil
+			return nil, fmt.Errorf("all %d retry attempts exhausted: %w", maxRetries, err)
 		}
-		
+
 		// Non-retryable error on any attempt
-		tg.log.Errorf("ai: non-retryable error: %v", err)
-		return tg.getFallbackIdeas(song), nil
+		return nil, fmt.Errorf("generate idea failed: %w", err)
 	}
 
-	return tg.getFallbackIdeas(song), nil
+	return nil, fmt.Errorf("generate idea failed: unknown error")
 }
 
 // generateIdeaWithClient makes the actual API call
@@ -248,36 +240,156 @@ func (tg *TitleGenerator) isRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errStr := err.Error()
-	
+
 	// Check for known retryable errors
 	retryablePatterns := []string{
-		"503",      // Service Unavailable
-		"429",      // Too Many Requests
-		"500",      // Internal Server Error
-		"502",      // Bad Gateway
-		"timeout",  // Context timeout
+		"503",         // Service Unavailable
+		"429",         // Too Many Requests
+		"500",         // Internal Server Error
+		"502",         // Bad Gateway
+		"timeout",     // Context timeout
 		"unavailable", // gRPC UNAVAILABLE
 		"temporarily unavailable",
 		"Please try again later",
 		"high demand",
 	}
-	
+
 	for _, pattern := range retryablePatterns {
 		if strings.Contains(errStr, pattern) {
 			return true
 		}
 	}
-	
+
 	// Check if it's an unavailable status code
 	if st, ok := status.FromError(err); ok {
-		return st.Code() == codes.Unavailable || 
-		       st.Code() == codes.DeadlineExceeded ||
-		       st.Code() == codes.ResourceExhausted
+		return st.Code() == codes.Unavailable ||
+			st.Code() == codes.DeadlineExceeded ||
+			st.Code() == codes.ResourceExhausted
 	}
-	
+
 	return false
+}
+
+// GenerateIdeaForReel generates a creative video idea for a reel without a specific track
+// Used for /aidea command
+func (tg *TitleGenerator) GenerateIdeaForReel(ctx context.Context) ([]string, error) {
+	if tg.apiKey == "" {
+		return nil, fmt.Errorf("ai: no api key configured")
+	}
+
+	// Retry strategy: 3 attempts with exponential backoff
+	const maxRetries = 3
+	const initialBackoff = 2 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		ideas, err := tg.generateReelIdeaWithClient(ctx)
+
+		// Success - return immediately
+		if err == nil {
+			return ideas, nil
+		}
+
+		// Check if error is retryable
+		isRetryable := tg.isRetryableError(err)
+
+		// Log the error
+		if attempt < maxRetries && isRetryable {
+			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
+			tg.log.Warnf("ai: generate reel idea failed (attempt %d/%d): %v. Retrying in %v",
+				attempt, maxRetries, err, backoff)
+
+			// Wait with backoff before retry
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return nil, fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+			continue
+		}
+
+		// Last attempt or non-retryable error
+		if attempt == maxRetries && isRetryable {
+			return nil, fmt.Errorf("all %d retry attempts exhausted: %w", maxRetries, err)
+		}
+
+		// Non-retryable error on any attempt
+		return nil, fmt.Errorf("generate reel idea failed: %w", err)
+	}
+
+	return nil, fmt.Errorf("generate reel idea failed: unknown error")
+}
+
+// generateReelIdeaWithClient makes the actual API call for reel idea generation
+func (tg *TitleGenerator) generateReelIdeaWithClient(ctx context.Context) ([]string, error) {
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  tg.apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("genai client: %w", err)
+	}
+
+	prompt := "Роль: Ты — профессиональный Арт-директор и видеогенератор идей для Reels и TikTok.\n\n" +
+		"Твоя задача:\n" +
+		"1. Придумай одну оригинальную, визуально привлекательную концепцию для 12-секундного видео (рилса).\n" +
+		"2. Концепция должна быть универсальной, без привязки к конкретной музыке, но с учетом, что видео может быть под любую музыку.\n" +
+		"3. Предложи детальный промпт на английском языке для генерации видео в ИИ.\n\n" +
+		"Требования:\n" +
+		"- Общий стиль: Cinematic, Minimalist, Aesthetic, или Trendy\n" +
+		"- Палитра: интересная, но не резкая, гармоничная\n" +
+		"- Кадр: Macro-shot, Close-up, или средний план\n" +
+		"- Движение: Плавное, медленное или динамичное, но не резкое\n" +
+		"- Фокус: Хорошая композиция, привлекающая внимание\n" +
+		"- Структура видео: 3-4 сцены на 12 секунд с плавными переходами\n\n" +
+		"Формат ответа (строго соблюдай структуру):\n" +
+		"[ВАЙБ]\n" +
+		"[краткое описание вайба]\n\n" +
+		"[ИДЕЯ]\n" +
+		"[краткая концепция видео]\n\n" +
+		"[ПРОМПТ]\n" +
+		"[готовый промпт на английском языке для ИИ-генерации видео]"
+
+	resp, err := client.Models.GenerateContent(ctx, "gemini-2.5-flash", []*genai.Content{
+		genai.NewContentFromText(prompt, genai.RoleUser),
+	}, nil)
+	if err != nil {
+		return nil, fmt.Errorf("generate content: %w", err)
+	}
+
+	content := resp.Text()
+	if content == "" {
+		return nil, fmt.Errorf("empty response from gemini api")
+	}
+
+	// Parse sections [ВАЙБ], [ИДЕЯ], [ПРОМПТ] from response
+	sections := []string{"[ВАЙБ]", "[ИДЕЯ]", "[ПРОМПТ]"}
+	var result []string
+	for i, section := range sections {
+		start := strings.Index(content, section)
+		if start == -1 {
+			continue
+		}
+		start += len(section)
+		end := len(content)
+		if i+1 < len(sections) {
+			if next := strings.Index(content[start:], sections[i+1]); next != -1 {
+				end = start + next
+			}
+		}
+		body := strings.TrimSpace(content[start:end])
+		if body != "" {
+			result = append(result, section+"\n"+body)
+		}
+	}
+
+	if len(result) > 0 {
+		return result, nil
+	}
+
+	// Fallback if parsing failed
+	return []string{content}, nil
 }
 
 // getFallbackIdeas returns hardcoded fallback ideas for when API is unavailable
