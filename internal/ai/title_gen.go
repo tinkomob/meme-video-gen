@@ -177,10 +177,11 @@ func (tg *TitleGenerator) generateIdeaWithClient(ctx context.Context, song *mode
 			"- Общий стиль: Cinematic, Minimalist, Aesthetic\n"+
 			"- Палитра: тёплая, мягкая, приглушённая, без резких цветовых контрастов\n"+
 			"- Кадр: Macro-shot или Close-up, допускаются редкие средние планы\n"+
-			"- Движение: Очень медленное, плавное, гипнотическое, без резких склеек\n"+
+			"- Движение: Очень медленное и плавное, но с чёткими, выразительными переходами между сценами\n"+
 			"- Освещение: Dramatic lighting, soft glows, атмосферные тени\n"+
 			"- Фокус: Bokeh, Soft focus, лёгкая дымка, чтобы картинка была мягкой и не перегруженной деталями\n"+
-			"- Структура видео: 3-4 сцены общей длительностью 12 секунд, с плавными переходами и без резких монтажных склеек\n"+
+			"- Структура видео: 3-4 сцены общей длительностью 12 секунд с резкими переходами, которые помогают создать эффект зацикливания\n"+
+			"- Зацикливаемость: Концовка должна легко переходить в начало, сохраняя ритм и визуальную энергию\n"+
 			"- Внутренняя вариативность: каждая новая генерация должна быть заметно другой по объекту, свету и фактуре, но оставаться в том же эстетическом семействе\n\n"+
 			"Формат ответа (строго соблюдай структуру):\n"+
 			"[ВАЙБ]\n"+
@@ -340,9 +341,10 @@ func (tg *TitleGenerator) generateReelIdeaWithClient(ctx context.Context) ([]str
 		"- Общий стиль: Cinematic, Minimalist, Aesthetic, или Trendy\n" +
 		"- Палитра: интересная, но не резкая, гармоничная\n" +
 		"- Кадр: Macro-shot, Close-up, или средний план\n" +
-		"- Движение: Плавное, медленное или динамичное, но не резкое\n" +
+		"- Движение: Плавное, медленное или динамичное, но с чёткими и выразительными переходами между сценами\n" +
 		"- Фокус: Хорошая композиция, привлекающая внимание\n" +
-		"- Структура видео: 3-4 сцены на 12 секунд с плавными переходами\n\n" +
+		"- Структура видео: 3-4 сцены на 12 секунд с резкими монтажными переходами, которые делают видео удобным для зацикливания\n" +
+		"- Зацикливаемость: Концовка должна легко переходить в начало, повторяя визуальную тему и ритм\n\n" +
 		"Формат ответа (строго соблюдай структуру):\n" +
 		"[ВАЙБ]\n" +
 		"[краткое описание вайба]\n\n" +
@@ -397,7 +399,7 @@ func (tg *TitleGenerator) getFallbackIdeas(song *model.Song) []string {
 	return []string{
 		"[ВАЙБ]\nАтмосферный трек '" + song.Title + "' с гипнотичным, медитативным настроением, где всё держится на мягком ритме и воздушной фактуре.",
 		"[ИДЕЯ]\n1. Макро-съёмка винила, иглы и лёгкой пыли в луче тёплого света, чтобы подчеркнуть ощущение живого звука.\n2. Медленные крупные планы аудиотехники, ручек микшера и тёплых отражений на металле — очень близкая, почти осязаемая студийная атмосфера.\n3. Абстрактная визуализация звуковых волн через мягкие тени, стекло и дымку, чтобы сохранить музыкальный, но не буквальный образ.\n4. Финальный атмосферный кадр с мягким уходом камеры в свет и лёгкий туман, чтобы завершить 12-секундную историю.",
-		"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, 4K, elegant and hypnotic mood.",
+		"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes and sharp transitions, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, seamless loop-ready ending matching the opening mood, 4K, elegant and hypnotic mood.",
 	}
 }
 func truncateString(s string, maxLen int) string {
