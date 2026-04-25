@@ -26,12 +26,12 @@ type bratuhaCreateOperationRequest struct {
 }
 
 type bratuhaCreateOperationResponse struct {
-	ID           string `json:"id"`
-	Status       string `json:"status"`
-	Tool         string `json:"tool"`
-	Cost         int    `json:"cost"`
-	BalanceAfter int    `json:"balance_after"`
-	CreatedAt    string `json:"created_at"`
+	ID           string  `json:"id"`
+	Status       string  `json:"status"`
+	Tool         string  `json:"tool"`
+	Cost         int     `json:"cost"`
+	BalanceAfter float64 `json:"balance_after"`
+	CreatedAt    string  `json:"created_at"`
 	Error        *struct {
 		Code    string `json:"code"`
 		Message string `json:"message"`
