@@ -420,32 +420,42 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 }
 
 // concatenate joins segment files into a single output MP4.
+// Uses the concat filter (not demuxer) to ensure A/V sync at segment boundaries —
+// the concat demuxer with -c copy can cause audio to lag by one AAC frame delay.
 func (g *Generator) concatenate(ctx context.Context, segments []string, outPath string) error {
-	// Write concat list
-	listPath := outPath + ".txt"
-	var sb strings.Builder
-	for _, p := range segments {
-		sb.WriteString(fmt.Sprintf("file '%s'\n", p))
-	}
-	if err := os.WriteFile(listPath, []byte(sb.String()), 0644); err != nil {
-		return err
-	}
-	defer os.Remove(listPath)
-
 	ffmpegSem <- struct{}{}
 	defer func() { <-ffmpegSem }()
 
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, "ffmpeg",
-		"-hide_banner",
-		"-loglevel", "error",
-		"-f", "concat",
-		"-safe", "0",
-		"-i", listPath,
-		"-c", "copy",
+	// Build -i args and filter_complex concat expression.
+	args := []string{"-hide_banner", "-loglevel", "error"}
+	for _, p := range segments {
+		args = append(args, "-i", p)
+	}
+
+	n := len(segments)
+	var fc strings.Builder
+	for i := 0; i < n; i++ {
+		fmt.Fprintf(&fc, "[%d:v][%d:a]", i, i)
+	}
+	fmt.Fprintf(&fc, "concat=n=%d:v=1:a=1[outv][outa]", n)
+
+	args = append(args,
+		"-filter_complex", fc.String(),
+		"-map", "[outv]",
+		"-map", "[outa]",
+		"-c:v", "libx264",
+		"-preset", "ultrafast",
+		"-x264-params", "threads=1",
+		"-c:a", "aac",
+		"-b:a", "192k",
+		"-pix_fmt", "yuv420p",
+		"-r", "30",
 		"-y",
 		outPath,
 	)
+
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	cmd.Stderr = &stderr
 
 	if err := cmd.Run(); err != nil {
