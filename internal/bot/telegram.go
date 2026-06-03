@@ -2874,7 +2874,7 @@ func (b *TelegramBot) handleMixtapeCommand(ctx context.Context, chatID int64) {
 	msg.Caption = caption
 	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
 		tgbotapi.NewInlineKeyboardRow(
-			tgbotapi.NewInlineKeyboardButtonData("📤 Send", fmt.Sprintf("send_mixtape:%s", m.ID)),
+			tgbotapi.NewInlineKeyboardButtonData("📤 Опубликовать", fmt.Sprintf("send_mixtape:%s", m.ID)),
 		),
 	)
 
