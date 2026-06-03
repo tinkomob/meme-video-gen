@@ -358,9 +358,9 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
 	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
-	// Distinct bright colors per segment for the bottom label
-	segColors := []string{"yellow", "0x00FFFF", "0xFF6600", "0xFF44FF"}
-	bottomColor := segColors[(segNum-1)%len(segColors)]
+	// Random bright color per segment for the bottom label
+	segColors := []string{"yellow", "0x00FFFF", "0xFF6600", "0xFF44FF", "0x00FF88", "0xFF2255", "0xAAFF00", "0xFF9900"}
+	bottomColor := segColors[r.Intn(len(segColors))]
 
 	topText := escapeFfmpegText("What track do you like the most?")
 	bottomText := escapeFfmpegText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle))
