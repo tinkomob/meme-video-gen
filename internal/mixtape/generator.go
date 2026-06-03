@@ -330,23 +330,23 @@ func (g *Generator) downloadThumbnail(ctx context.Context, videoID, dir string, 
 }
 
 // buildSegment creates a video segment: thumbnail image + trimmed audio slice.
-// The thumbnail is upscaled to 3x output size and animated with a bouncing pan
-// (DVD screensaver style) and smooth zoom oscillation between 3x and 4x.
+// The thumbnail is upscaled to 3x output size and animated with a slow bouncing pan
+// (DVD screensaver style) and subtle zoom oscillation between 3x and ~3.15x.
 func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand) error {
 	// Random movement params for each segment
-	xSpeed := 12 + r.Intn(8)                       // 12–19 px/frame horizontal drift
-	ySpeed := 15 + r.Intn(10)                      // 15–24 px/frame vertical drift
+	xSpeed := 4 + r.Intn(4)                        // 4–7 px/frame horizontal drift (slow)
+	ySpeed := 5 + r.Intn(4)                        // 5–8 px/frame vertical drift (slow)
 	xPhase := r.Intn(4320)                         // random start position in x
 	yPhase := r.Intn(7680)                         // random start position in y
-	zoomPeriod := 6 + r.Intn(8)                   // zoom cycle 6–13 seconds
+	zoomPeriod := 18 + r.Intn(12)                 // zoom cycle 18–29 seconds (slow)
 	zoomPhase := r.Float64() * 2 * math.Pi        // random zoom phase
 
 	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
-	// zoompan z oscillates 1.0→1.33, giving effective zoom 3x→4x total.
-	// x/y bounce within the 2160×3840 extra space (3240-1080, 5760-1920).
+	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
+	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
-			"zoompan=z='1+0.165*(1+sin(%.4f+2*PI*on/(30*%d)))':"+
+			"zoompan=z='1+0.025*(1+sin(%.4f+2*PI*on/(30*%d)))':"+
 			"x='abs(mod(on*%d+%d,2*(iw*zoom-ow))-(iw*zoom-ow))':"+
 			"y='abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))':"+
 			"fps=30:d=1:s=1080x1920,setsar=1[out]",
