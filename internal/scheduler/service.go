@@ -518,6 +518,15 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		}
 	}()
 
+	// Run mixtape generation at startup
+	go func() {
+		time.Sleep(3 * time.Second)
+		log.Infof("startup: ensuring mixtapes")
+		if err := mixtapeGen.EnsureMixtapes(context.Background()); err != nil {
+			log.Errorf("startup ensure mixtapes: %v", err)
+		}
+	}()
+
 	// Create and configure resource monitor
 	s.monitor = NewResourceMonitor(s, log)
 	log.Infof("resource monitor initialized")
