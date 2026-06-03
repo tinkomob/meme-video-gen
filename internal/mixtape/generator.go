@@ -139,6 +139,21 @@ func (g *Generator) Delete(ctx context.Context, id string) error {
 	return g.saveIndex(ctx, idx)
 }
 
+// ClearAll deletes all mixtapes from S3 and resets the index.
+func (g *Generator) ClearAll(ctx context.Context) error {
+	idx, err := g.loadIndex(ctx)
+	if err != nil {
+		return err
+	}
+	for _, m := range idx.Items {
+		_ = g.s3.Delete(ctx, m.VideoKey)
+		_ = g.s3.Delete(ctx, m.ThumbKey)
+	}
+	idx.Items = []Mixtape{}
+	idx.UpdatedAt = time.Now()
+	return g.saveIndex(ctx, idx)
+}
+
 // DownloadVideoToTemp streams the mixtape video to a temp file.
 func (g *Generator) DownloadVideoToTemp(ctx context.Context, m *Mixtape) (string, error) {
 	reader, err := g.s3.GetReader(ctx, m.VideoKey)

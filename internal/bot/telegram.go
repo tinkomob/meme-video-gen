@@ -212,6 +212,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdSong(ctx, chatID, msg.CommandArguments())
 	case "mixtape":
 		go b.handleMixtapeCommand(ctx, chatID)
+	case "clearmixtape":
+		go b.handleClearMixtapeCommand(ctx, chatID)
 	default:
 		b.replyText(chatID, "Неизвестная команда. Используйте /help")
 	}
@@ -1359,6 +1361,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
               /song — выбрать из списка, случайный или поиск
               /song Dua Lipa — найти треки Dua Lipa и скачать
 /mixtape — получить случайный микстейп из треков eenfinit/dee bill (кнопка Send для публикации)
+/clearmixtape — удалить все микстейпы из S3
 /status — статус генерации и использование памяти
 /errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID
@@ -2818,6 +2821,17 @@ func (b *TelegramBot) editMessage(chatID int64, messageID int, text string) erro
 	return err
 }
 
+// handleClearMixtapeCommand deletes all mixtapes from S3 and resets the index.
+func (b *TelegramBot) handleClearMixtapeCommand(ctx context.Context, chatID int64) {
+	gen := b.svc.GetMixtapeGenerator()
+	if err := gen.ClearAll(ctx); err != nil {
+		b.log.Errorf("handleClearMixtapeCommand: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка очистки микстейпов: %v", err))
+		return
+	}
+	b.replyText(chatID, "✅ Все микстейпы удалены из S3")
+}
+
 // handleMixtapeCommand handles the /mixtape command — sends a random mixtape with a Send button.
 func (b *TelegramBot) handleMixtapeCommand(ctx context.Context, chatID int64) {
 	gen := b.svc.GetMixtapeGenerator()
@@ -2919,6 +2933,10 @@ func (b *TelegramBot) handleSendMixtape(ctx context.Context, chatID int64, mixta
 	// Remove the Send button from the original message
 	emptyKbd := tgbotapi.NewEditMessageReplyMarkup(chatID, msgID, tgbotapi.InlineKeyboardMarkup{})
 	b.tg.Send(emptyKbd) //nolint:errcheck
+
+	if err := gen.Delete(ctx, mixtapeID); err != nil {
+		b.log.Errorf("handleSendMixtape: delete after send: %v", err)
+	}
 
 	b.replyText(chatID, "✅ Микстейп опубликован!")
 }
