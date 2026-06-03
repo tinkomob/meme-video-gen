@@ -358,23 +358,27 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
 	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
+	// Distinct bright colors per segment for the bottom label
+	segColors := []string{"yellow", "0x00FFFF", "0xFF6600", "0xFF44FF"}
+	bottomColor := segColors[(segNum-1)%len(segColors)]
+
 	topText := escapeFfmpegText("What track do you like the most?")
 	bottomText := escapeFfmpegText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle))
-	textStyle := "fontsize=52:fontcolor=white:borderw=5:bordercolor=black:box=1:boxcolor=black@0.55:boxborderw=14"
+	textStyle := "fontsize=72:fontcolor=white:borderw=6:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=18"
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
 			"zoompan=z='1+0.025*(1+sin(%.4f+2*PI*on/(30*%d)))':"+
 			"x='abs(mod(on*%d+%d,2*(iw*zoom-ow))-(iw*zoom-ow))':"+
 			"y='abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))':"+
 			"fps=30:d=1:s=1080x1920,setsar=1,"+
-			"drawtext=text='%s':%s:x=(w-tw)/2:y=80,"+
-			"drawtext=text='%s':fontsize=46:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.55:boxborderw=12:x=(w-tw)/2:y=h-th-80"+
+			"drawtext=text='%s':%s:x=(w-tw)/2:y=100,"+
+			"drawtext=text='%s':fontsize=64:fontcolor=%s:borderw=6:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=18:x=(w-tw)/2:y=h-th-100"+
 			"[out]",
 		zoomPhase, zoomPeriod,
 		xSpeed, xPhase,
 		ySpeed, yPhase,
 		topText, textStyle,
-		bottomText,
+		bottomText, bottomColor,
 	)
 
 	ffmpegSem <- struct{}{}
