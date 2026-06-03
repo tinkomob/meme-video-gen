@@ -335,6 +335,27 @@ func (g *Generator) downloadThumbnail(ctx context.Context, videoID, dir string, 
 	return "", fmt.Errorf("could not download thumbnail for video %s", videoID)
 }
 
+// wrapText wraps s to at most maxChars per line on word boundaries.
+func wrapText(s string, maxChars int) string {
+	words := strings.Fields(s)
+	var lines []string
+	current := ""
+	for _, w := range words {
+		if current == "" {
+			current = w
+		} else if len(current)+1+len(w) <= maxChars {
+			current += " " + w
+		} else {
+			lines = append(lines, current)
+			current = w
+		}
+	}
+	if current != "" {
+		lines = append(lines, current)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // escapeFfmpegText escapes special characters for use inside an ffmpeg drawtext filter value.
 // In filter_complex context, [ ] , ; are structural characters and must also be escaped.
 func escapeFfmpegText(s string) string {
@@ -364,7 +385,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
 	topText := escapeFfmpegText("What track do you like the most?")
-	bottomText := escapeFfmpegText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle))
+	bottomText := escapeFfmpegText(wrapText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle), 28))
 	textStyle := "fontsize=48:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12"
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
@@ -373,7 +394,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 			"y='abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))':"+
 			"fps=30:d=1:s=1080x1920,setsar=1,"+
 			"drawtext=text='%s':%s:x=(w-tw)/2:y=100,"+
-			"drawtext=text='%s':fontsize=64:fontcolor=%s:borderw=6:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=18:x=(w-tw)/2:y=h-th-100"+
+			"drawtext=text='%s':fontsize=48:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-60"+
 			"[out]",
 		zoomPhase, zoomPeriod,
 		xSpeed, xPhase,
