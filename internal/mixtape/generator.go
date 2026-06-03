@@ -330,10 +330,15 @@ func (g *Generator) downloadThumbnail(ctx context.Context, videoID, dir string, 
 }
 
 // escapeFfmpegText escapes special characters for use inside an ffmpeg drawtext filter value.
+// In filter_complex context, [ ] , ; are structural characters and must also be escaped.
 func escapeFfmpegText(s string) string {
 	s = strings.ReplaceAll(s, `\`, `\\`)
 	s = strings.ReplaceAll(s, `'`, `\'`)
 	s = strings.ReplaceAll(s, `:`, `\:`)
+	s = strings.ReplaceAll(s, `[`, `\[`)
+	s = strings.ReplaceAll(s, `]`, `\]`)
+	s = strings.ReplaceAll(s, `,`, `\,`)
+	s = strings.ReplaceAll(s, `;`, `\;`)
 	return s
 }
 
