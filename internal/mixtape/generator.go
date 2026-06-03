@@ -26,7 +26,7 @@ const (
 	mixtapesJSONKey = "mixtapes.json"
 	mixtapesPrefix  = "mixtapes/"
 	segmentCount    = 4  // segments per mixtape (3-4, we default to 4)
-	segmentDuration = 7  // seconds per segment
+	segmentDuration = 14 // seconds per segment
 	maxMixtapes     = 5
 )
 
@@ -205,13 +205,14 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		}
 		defer os.Remove(audioPath)
 
-		// Determine valid start offset
+		// Determine valid start offset, staying out of the final 25% to avoid fade-outs/silence.
 		duration := song.DurationS
 		if duration <= float64(segmentDuration)+1 {
 			duration = float64(segmentDuration) + 2
 		}
 		r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(i)))
-		maxStart := duration - float64(segmentDuration) - 0.5
+		safeEnd := duration * 0.75
+		maxStart := safeEnd - float64(segmentDuration)
 		if maxStart < 0 {
 			maxStart = 0
 		}
