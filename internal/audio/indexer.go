@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,7 +63,9 @@ func (idx *Indexer) EnsureSongs(ctx context.Context) error {
 
 	idx.log.Infof("audio: found %d playlists", len(playlists))
 
-	client := youtube.Client{}
+	client := youtube.Client{
+		HTTPClient: &http.Client{Transport: http.DefaultTransport},
+	}
 	newSongsCount := 0
 	for playlistIdx, plURL := range playlists {
 		idx.log.Infof("audio: fetching playlist %d/%d: %s", playlistIdx+1, len(playlists), plURL)

@@ -9,6 +9,7 @@ import (
 
 type Logger struct {
 	info  *log.Logger
+	warn  *log.Logger
 	err   *log.Logger
 	errMu sync.Mutex
 	errW  io.WriteCloser
@@ -31,6 +32,7 @@ func New(errorsPath string) (*Logger, error) {
 	errWriter := io.MultiWriter(os.Stdout, f)
 	l := &Logger{
 		info: log.New(os.Stdout, "INFO ", log.LstdFlags|log.Lmicroseconds),
+		warn: log.New(os.Stdout, "WARN ", log.LstdFlags|log.Lmicroseconds),
 		err:  log.New(errWriter, "ERROR ", log.LstdFlags|log.Lmicroseconds|log.Lshortfile),
 		errW: f,
 	}
@@ -51,7 +53,7 @@ func (l *Logger) Infof(format string, args ...any) {
 }
 
 func (l *Logger) Warnf(format string, args ...any) {
-	l.info.Printf(format, args...)
+	l.warn.Printf(format, args...)
 }
 
 func (l *Logger) Errorf(format string, args ...any) {
