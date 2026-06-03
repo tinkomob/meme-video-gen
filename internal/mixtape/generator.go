@@ -315,7 +315,7 @@ func (g *Generator) downloadThumbnail(ctx context.Context, videoID, dir string, 
 
 // buildSegment creates a video segment: thumbnail image + trimmed audio slice.
 func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int) error {
-	filterComplex := "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]"
+	filterComplex := "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[out]"
 
 	ffmpegSem <- struct{}{}
 	defer func() { <-ffmpegSem }()
