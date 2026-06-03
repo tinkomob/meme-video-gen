@@ -124,6 +124,11 @@ func (m *ResourceMonitor) monitorLoop(ctx context.Context) {
 
 // ensureResources checks and ensures all resources meet required counts
 func (m *ResourceMonitor) ensureResources(ctx context.Context) {
+	if m.svc.GetConfig().DisableGeneration {
+		m.log.Infof("resource monitor: generation disabled, skipping")
+		return
+	}
+
 	// First, cleanup old memes (older than 12 hours)
 	m.cleanupOldMemes(ctx)
 
