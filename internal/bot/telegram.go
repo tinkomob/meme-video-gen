@@ -2884,59 +2884,82 @@ func (b *TelegramBot) handleMixtapeCommand(ctx context.Context, chatID int64) {
 	}
 }
 
-// handleSendMixtape publishes the mixtape to the posts channel.
+// handleSendMixtape publishes the mixtape to all platforms (Telegram, YouTube, X).
 func (b *TelegramBot) handleSendMixtape(ctx context.Context, chatID int64, mixtapeID string, msgID int) {
 	gen := b.svc.GetMixtapeGenerator()
+
+	statusMsgID := b.replyText(chatID, "⏳ Публикую микстейп на все платформы...")
 
 	m, err := gen.GetByID(ctx, mixtapeID)
 	if err != nil {
 		b.log.Errorf("handleSendMixtape: get by id: %v", err)
-		b.replyText(chatID, "❌ Микстейп не найден")
+		b.editMessageHTML(chatID, statusMsgID, "❌ Микстейп не найден")
 		return
 	}
 
 	videoPath, err := gen.DownloadVideoToTemp(ctx, m)
 	if err != nil {
 		b.log.Errorf("handleSendMixtape: download: %v", err)
-		b.replyText(chatID, "❌ Ошибка загрузки видео")
+		b.editMessageHTML(chatID, statusMsgID, "❌ Ошибка загрузки видео")
 		return
 	}
 	defer os.Remove(videoPath)
 
-	cfg := b.svc.GetConfig()
-	postsChatID := cfg.PostsChatID
-	if postsChatID == 0 {
-		b.replyText(chatID, "❌ POSTS_CHAT_ID не задан")
+	// Initialize YouTube uploader from S3 if not already done
+	if _, err := b.svc.GetUploadersManager().GetUploader("youtube"); err != nil {
+		if err := b.svc.InitializeYouTubeUploaderFromS3(context.Background()); err != nil {
+			b.log.Warnf("handleSendMixtape: failed to load YouTube uploader from S3: %v", err)
+		}
+	}
+
+	uploaders := b.svc.GetUploadersManager()
+	if uploaders == nil {
+		b.log.Errorf("handleSendMixtape: uploaders manager is nil")
+		b.editMessageHTML(chatID, statusMsgID, "❌ Ошибка: менеджер загрузчиков не инициализирован")
 		return
 	}
 
 	caption := "🎵 Mixtape\n" + strings.Join(m.Titles, " · ")
 
-	tgUp := uploaders_types.NewTelegramUploader(cfg.TelegramToken, fmt.Sprintf("%d", postsChatID))
-	result, err := tgUp.Upload(ctx, &uploaders_types.UploadRequest{
-		VideoPath: videoPath,
-		Title:     caption,
-		Caption:   caption,
-	})
-	if err != nil || !result.Success {
-		msg := ""
-		if result != nil {
-			msg = result.Error
+	uploadReq := &uploaders_types.UploadRequest{
+		VideoPath:   videoPath,
+		Title:       caption,
+		Caption:     caption,
+		Description: strings.Join(m.Titles, "\n"),
+		Privacy:     "public",
+	}
+
+	results := uploaders.UploadToAll(context.Background(), uploadReq)
+
+	success := 0
+	failed := 0
+	var resultLines []string
+	for platform, result := range results {
+		if result.Success {
+			success++
+			if result.URL != "" {
+				resultLines = append(resultLines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", strings.ToUpper(platform), result.URL))
+			} else {
+				resultLines = append(resultLines, fmt.Sprintf("✅ %s: загружено", strings.ToUpper(platform)))
+			}
+			b.log.Infof("handleSendMixtape: ✓ %s uploaded successfully", platform)
 		} else {
-			msg = err.Error()
+			failed++
+			resultLines = append(resultLines, fmt.Sprintf("❌ %s: %s", strings.ToUpper(platform), result.Error))
+			b.log.Errorf("handleSendMixtape: ✗ %s failed: %s", platform, result.Error)
 		}
-		b.log.Errorf("handleSendMixtape: upload failed: %s", msg)
-		b.replyText(chatID, fmt.Sprintf("❌ Ошибка публикации: %s", msg))
-		return
 	}
 
 	// Remove the Send button from the original message
 	emptyKbd := tgbotapi.NewEditMessageReplyMarkup(chatID, msgID, tgbotapi.InlineKeyboardMarkup{})
 	b.tg.Send(emptyKbd) //nolint:errcheck
 
-	if err := gen.Delete(ctx, mixtapeID); err != nil {
-		b.log.Errorf("handleSendMixtape: delete after send: %v", err)
+	if success > 0 {
+		if err := gen.Delete(ctx, mixtapeID); err != nil {
+			b.log.Errorf("handleSendMixtape: delete after send: %v", err)
+		}
+		b.editMessageHTML(chatID, statusMsgID, fmt.Sprintf("📤 Результаты публикации микстейпа:\n\n%s", strings.Join(resultLines, "\n")))
+	} else {
+		b.editMessageHTML(chatID, statusMsgID, fmt.Sprintf("❌ Ошибка публикации микстейпа:\n\n%s", strings.Join(resultLines, "\n")))
 	}
-
-	b.replyText(chatID, "✅ Микстейп опубликован!")
 }
