@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
@@ -202,7 +203,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		startOffset := r.Float64() * maxStart
 
 		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg%d.mp4", i))
-		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration); err != nil {
+		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r); err != nil {
 			return nil, fmt.Errorf("build segment %d: %w", i, err)
 		}
 		segmentPaths = append(segmentPaths, segPath)
@@ -314,8 +315,30 @@ func (g *Generator) downloadThumbnail(ctx context.Context, videoID, dir string, 
 }
 
 // buildSegment creates a video segment: thumbnail image + trimmed audio slice.
-func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int) error {
-	filterComplex := "[0:v]scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1[out]"
+// The thumbnail is upscaled to 3x output size and animated with a bouncing pan
+// (DVD screensaver style) and smooth zoom oscillation between 3x and 4x.
+func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand) error {
+	// Random movement params for each segment
+	xSpeed := 12 + r.Intn(8)                       // 12–19 px/frame horizontal drift
+	ySpeed := 15 + r.Intn(10)                      // 15–24 px/frame vertical drift
+	xPhase := r.Intn(4320)                         // random start position in x
+	yPhase := r.Intn(7680)                         // random start position in y
+	zoomPeriod := 6 + r.Intn(8)                   // zoom cycle 6–13 seconds
+	zoomPhase := r.Float64() * 2 * math.Pi        // random zoom phase
+
+	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
+	// zoompan z oscillates 1.0→1.33, giving effective zoom 3x→4x total.
+	// x/y bounce within the 2160×3840 extra space (3240-1080, 5760-1920).
+	filterComplex := fmt.Sprintf(
+		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
+			"zoompan=z='1+0.165*(1+sin(%.4f+2*PI*on/(30*%d)))':"+
+			"x='abs(mod(on*%d+%d,2*(iw*zoom-ow))-(iw*zoom-ow))':"+
+			"y='abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))':"+
+			"fps=30:d=1:s=1080x1920,setsar=1[out]",
+		zoomPhase, zoomPeriod,
+		xSpeed, xPhase,
+		ySpeed, yPhase,
+	)
 
 	ffmpegSem <- struct{}{}
 	defer func() { <-ffmpegSem }()
@@ -337,7 +360,6 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 		"-map", "1:a",
 		"-c:v", "libx264",
 		"-preset", "ultrafast",
-		"-tune", "stillimage",
 		"-x264-params", "threads=1",
 		"-c:a", "aac",
 		"-b:a", "192k",
