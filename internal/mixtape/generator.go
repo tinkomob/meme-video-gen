@@ -188,6 +188,11 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// Shuffle color palette so each segment in this mixtape gets a unique color.
+	palette := []string{"yellow", "0x00FFFF", "0xFF6600", "0xFF44FF", "0x00FF88", "0xFF2255", "0xAAFF00", "0xFF9900"}
+	rMain := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rMain.Shuffle(len(palette), func(i, j int) { palette[i], palette[j] = palette[j], palette[i] })
+
 	var segmentPaths []string
 	var songIDs, titles []string
 
@@ -219,7 +224,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		startOffset := r.Float64() * maxStart
 
 		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg%d.mp4", i))
-		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title); err != nil {
+		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title, palette[i%len(palette)]); err != nil {
 			return nil, fmt.Errorf("build segment %d: %w", i, err)
 		}
 		segmentPaths = append(segmentPaths, segPath)
@@ -346,7 +351,7 @@ func escapeFfmpegText(s string) string {
 // buildSegment creates a video segment: thumbnail image + trimmed audio slice.
 // The thumbnail is upscaled to 3x output size and animated with a slow bouncing pan
 // (DVD screensaver style) and subtle zoom oscillation between 3x and ~3.15x.
-func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle string) error {
+func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor string) error {
 	// Random movement params for each segment
 	xSpeed := 4 + r.Intn(4)                        // 4–7 px/frame horizontal drift (slow)
 	ySpeed := 5 + r.Intn(4)                        // 5–8 px/frame vertical drift (slow)
@@ -358,10 +363,6 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
 	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
-	// Random bright color per segment for the bottom label
-	segColors := []string{"yellow", "0x00FFFF", "0xFF6600", "0xFF44FF", "0x00FF88", "0xFF2255", "0xAAFF00", "0xFF9900"}
-	bottomColor := segColors[r.Intn(len(segColors))]
-
 	topText := escapeFfmpegText("What track do you like the most?")
 	bottomText := escapeFfmpegText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle))
 	textStyle := "fontsize=72:fontcolor=white:borderw=6:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=18"
