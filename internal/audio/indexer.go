@@ -204,6 +204,10 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "429") ||
 		strings.Contains(errStr, "timeout") ||
 		strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "TLS handshake") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "no such host") ||
 		strings.Contains(errStr, "context deadline") ||
 		strings.Contains(errStr, "EOF")
 }
