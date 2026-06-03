@@ -193,7 +193,7 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 		sc.logIfNotSilent("sources: trying %s: %s", src.name, src.url)
 		asset, err := src.scrape(ctx, src.url)
 		if err != nil {
-			sc.log.Errorf("sources: scrape %s %s failed: %v", src.name, src.url, err)
+			sc.log.Warnf("sources: scrape %s %s failed: %v", src.name, src.url, err)
 			continue
 		}
 

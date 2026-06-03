@@ -5,8 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
+"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -66,8 +65,7 @@ func (sc *Scraper) scrapeReddit(ctx context.Context, subredditURL string) (*mode
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return nil, fmt.Errorf("reddit API returned status %d: %s", resp.StatusCode, string(body))
+		return nil, fmt.Errorf("reddit API returned status %d", resp.StatusCode)
 	}
 
 	// Parse JSON response
