@@ -365,7 +365,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
 	topText := escapeFfmpegText("What track do you like the most?")
 	bottomText := escapeFfmpegText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle))
-	textStyle := "fontsize=72:fontcolor=white:borderw=6:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=18"
+	textStyle := "fontsize=48:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12"
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
 			"zoompan=z='1+0.025*(1+sin(%.4f+2*PI*on/(30*%d)))':"+
