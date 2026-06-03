@@ -451,6 +451,9 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	}
 
 	if _, err := c.AddFunc("0 0 * * * *", func() {
+		if s.cfg.DisableGeneration {
+			return
+		}
 		log.Infof("cron: ensuring sources")
 		if err := impl.EnsureSources(context.Background()); err != nil {
 			log.Errorf("cron ensure sources: %v", err)
@@ -461,6 +464,9 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	}
 
 	if _, err := c.AddFunc("0 0 * * * *", func() {
+		if s.cfg.DisableGeneration {
+			return
+		}
 		log.Infof("cron: ensuring memes")
 		if err := impl.EnsureMemes(context.Background()); err != nil {
 			log.Errorf("cron ensure memes: %v", err)

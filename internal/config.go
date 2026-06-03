@@ -43,9 +43,10 @@ type Config struct {
 	// Sources blacklisted by user dislike won't be reused for this duration
 	DislikedSourceGracePeriod time.Duration
 
-	DailyGenerations int   // количество отправок мемов в день
-	PostsChatID      int64 // chat ID для отправки мемов по расписанию
-	Silent           bool  // если true, не выводить информационные логи о загрузке источников
+	DailyGenerations   int   // количество отправок мемов в день
+	PostsChatID        int64 // chat ID для отправки мемов по расписанию
+	Silent             bool  // если true, не выводить информационные логи о загрузке источников
+	DisableGeneration  bool  // if true, skip source scraping and meme/mixtape generation cron tasks
 }
 
 func LoadConfig() (Config, error) {
@@ -125,6 +126,11 @@ func LoadConfig() (Config, error) {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.DailyGenerations = n
 		}
+	}
+
+	// Load DisableGeneration from env
+	if v := os.Getenv("DISABLE_GENERATION"); v == "true" || v == "1" {
+		cfg.DisableGeneration = true
 	}
 
 	// Load PostsChatID from env
