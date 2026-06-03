@@ -34,19 +34,19 @@ type Config struct {
 	TokensPrefix  string
 	PayloadPrefix string
 
-	MaxSources   int
-	MaxMemes     int
-	MaxMixtapes  int
-	MaxAge       time.Duration
+	MaxSources  int
+	MaxMemes    int
+	MaxMixtapes int
+	MaxAge      time.Duration
 
 	// Disliked sources grace period (default: 24 hours)
 	// Sources blacklisted by user dislike won't be reused for this duration
 	DislikedSourceGracePeriod time.Duration
 
-	DailyGenerations   int   // количество отправок мемов в день
-	PostsChatID        int64 // chat ID для отправки мемов по расписанию
-	Silent             bool  // если true, не выводить информационные логи о загрузке источников
-	DisableGeneration  bool  // if true, skip source scraping and meme/mixtape generation cron tasks
+	DailyGenerations  int   // количество отправок мемов в день
+	PostsChatID       int64 // chat ID для отправки мемов по расписанию
+	Silent            bool  // если true, не выводить информационные логи о загрузке источников
+	DisableGeneration bool  // if true, skip source scraping and meme/mixtape generation cron tasks
 }
 
 func LoadConfig() (Config, error) {
@@ -129,9 +129,9 @@ func LoadConfig() (Config, error) {
 	}
 
 	// Load DisableGeneration from env
-	if v := os.Getenv("DISABLE_GENERATION"); v == "true" || v == "1" {
-		cfg.DisableGeneration = true
-	}
+	// if v := os.Getenv("DISABLE_GENERATION"); v == "true" || v == "1" {
+	cfg.DisableGeneration = true
+	// }
 
 	// Load PostsChatID from env
 	if v := os.Getenv("POSTS_CHATID"); v != "" {
