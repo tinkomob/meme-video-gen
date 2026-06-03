@@ -218,7 +218,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		startOffset := r.Float64() * maxStart
 
 		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg%d.mp4", i))
-		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r); err != nil {
+		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title); err != nil {
 			return nil, fmt.Errorf("build segment %d: %w", i, err)
 		}
 		segmentPaths = append(segmentPaths, segPath)
@@ -329,10 +329,18 @@ func (g *Generator) downloadThumbnail(ctx context.Context, videoID, dir string, 
 	return "", fmt.Errorf("could not download thumbnail for video %s", videoID)
 }
 
+// escapeFfmpegText escapes special characters for use inside an ffmpeg drawtext filter value.
+func escapeFfmpegText(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	s = strings.ReplaceAll(s, `'`, `\'`)
+	s = strings.ReplaceAll(s, `:`, `\:`)
+	return s
+}
+
 // buildSegment creates a video segment: thumbnail image + trimmed audio slice.
 // The thumbnail is upscaled to 3x output size and animated with a slow bouncing pan
 // (DVD screensaver style) and subtle zoom oscillation between 3x and ~3.15x.
-func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand) error {
+func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle string) error {
 	// Random movement params for each segment
 	xSpeed := 4 + r.Intn(4)                        // 4–7 px/frame horizontal drift (slow)
 	ySpeed := 5 + r.Intn(4)                        // 5–8 px/frame vertical drift (slow)
@@ -344,15 +352,23 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
 	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
+	topText := escapeFfmpegText("What track do you like the most?")
+	bottomText := escapeFfmpegText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle))
+	textStyle := "fontsize=52:fontcolor=white:borderw=5:bordercolor=black:box=1:boxcolor=black@0.55:boxborderw=14"
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
 			"zoompan=z='1+0.025*(1+sin(%.4f+2*PI*on/(30*%d)))':"+
 			"x='abs(mod(on*%d+%d,2*(iw*zoom-ow))-(iw*zoom-ow))':"+
 			"y='abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))':"+
-			"fps=30:d=1:s=1080x1920,setsar=1[out]",
+			"fps=30:d=1:s=1080x1920,setsar=1,"+
+			"drawtext=text='%s':%s:x=(w-tw)/2:y=80,"+
+			"drawtext=text='%s':fontsize=46:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.55:boxborderw=12:x=(w-tw)/2:y=h-th-80"+
+			"[out]",
 		zoomPhase, zoomPeriod,
 		xSpeed, xPhase,
 		ySpeed, yPhase,
+		topText, textStyle,
+		bottomText,
 	)
 
 	ffmpegSem <- struct{}{}
