@@ -210,6 +210,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdDownloadFiles(ctx, chatID)
 	case "song":
 		b.cmdSong(ctx, chatID, msg.CommandArguments())
+	case "mixtape":
+		go b.handleMixtapeCommand(ctx, chatID)
 	default:
 		b.replyText(chatID, "Неизвестная команда. Используйте /help")
 	}
@@ -310,6 +312,8 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 	case "songdl":
 		// memeID here is actually songID
 		b.handleSongDownload(ctx, chatID, memeID)
+	case "send_mixtape":
+		go b.handleSendMixtape(ctx, chatID, memeID, cb.Message.MessageID)
 	default:
 		b.replyText(chatID, "❌ Неизвестное действие")
 	}
@@ -1354,6 +1358,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /song [query] — скачать трек в формате MP3 или MP4A
               /song — выбрать из списка, случайный или поиск
               /song Dua Lipa — найти треки Dua Lipa и скачать
+/mixtape — получить случайный микстейп из треков eenfinit/dee bill (кнопка Send для публикации)
 /status — статус генерации и использование памяти
 /errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID
@@ -2811,4 +2816,109 @@ func (b *TelegramBot) editMessage(chatID int64, messageID int, text string) erro
 	edit := tgbotapi.NewEditMessageText(chatID, messageID, text)
 	_, err := b.tg.Send(edit)
 	return err
+}
+
+// handleMixtapeCommand handles the /mixtape command — sends a random mixtape with a Send button.
+func (b *TelegramBot) handleMixtapeCommand(ctx context.Context, chatID int64) {
+	gen := b.svc.GetMixtapeGenerator()
+
+	m, err := gen.GetRandom(ctx)
+	if err != nil {
+		// No mixtapes yet — try to generate one now
+		b.replyText(chatID, "⏳ Генерирую микстейп, подождите...")
+		if genErr := gen.EnsureMixtapes(ctx); genErr != nil {
+			b.log.Errorf("handleMixtapeCommand: EnsureMixtapes: %v", genErr)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка генерации микстейпа: %v", genErr))
+			return
+		}
+		m, err = gen.GetRandom(ctx)
+		if err != nil {
+			b.replyText(chatID, "❌ Не удалось получить микстейп")
+			return
+		}
+	}
+
+	videoPath, err := gen.DownloadVideoToTemp(ctx, m)
+	if err != nil {
+		b.log.Errorf("handleMixtapeCommand: download: %v", err)
+		b.replyText(chatID, "❌ Ошибка загрузки видео")
+		return
+	}
+	defer os.Remove(videoPath)
+
+	f, err := os.Open(videoPath)
+	if err != nil {
+		b.log.Errorf("handleMixtapeCommand: open: %v", err)
+		b.replyText(chatID, "❌ Ошибка открытия видео")
+		return
+	}
+	defer f.Close()
+
+	caption := "🎵 Mixtape\n" + strings.Join(m.Titles, " · ")
+
+	msg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{Name: "mixtape.mp4", Reader: f})
+	msg.Caption = caption
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("📤 Send", fmt.Sprintf("send_mixtape:%s", m.ID)),
+		),
+	)
+
+	if _, err := b.tg.Send(msg); err != nil {
+		b.log.Errorf("handleMixtapeCommand: send video: %v", err)
+		b.replyText(chatID, "❌ Ошибка отправки видео")
+	}
+}
+
+// handleSendMixtape publishes the mixtape to the posts channel.
+func (b *TelegramBot) handleSendMixtape(ctx context.Context, chatID int64, mixtapeID string, msgID int) {
+	gen := b.svc.GetMixtapeGenerator()
+
+	m, err := gen.GetByID(ctx, mixtapeID)
+	if err != nil {
+		b.log.Errorf("handleSendMixtape: get by id: %v", err)
+		b.replyText(chatID, "❌ Микстейп не найден")
+		return
+	}
+
+	videoPath, err := gen.DownloadVideoToTemp(ctx, m)
+	if err != nil {
+		b.log.Errorf("handleSendMixtape: download: %v", err)
+		b.replyText(chatID, "❌ Ошибка загрузки видео")
+		return
+	}
+	defer os.Remove(videoPath)
+
+	cfg := b.svc.GetConfig()
+	postsChatID := cfg.PostsChatID
+	if postsChatID == 0 {
+		b.replyText(chatID, "❌ POSTS_CHAT_ID не задан")
+		return
+	}
+
+	caption := "🎵 Mixtape\n" + strings.Join(m.Titles, " · ")
+
+	tgUp := uploaders_types.NewTelegramUploader(cfg.TelegramToken, fmt.Sprintf("%d", postsChatID))
+	result, err := tgUp.Upload(ctx, &uploaders_types.UploadRequest{
+		VideoPath: videoPath,
+		Title:     caption,
+		Caption:   caption,
+	})
+	if err != nil || !result.Success {
+		msg := ""
+		if result != nil {
+			msg = result.Error
+		} else {
+			msg = err.Error()
+		}
+		b.log.Errorf("handleSendMixtape: upload failed: %s", msg)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка публикации: %s", msg))
+		return
+	}
+
+	// Remove the Send button from the original message
+	emptyKbd := tgbotapi.NewEditMessageReplyMarkup(chatID, msgID, tgbotapi.InlineKeyboardMarkup{})
+	b.tg.Send(emptyKbd) //nolint:errcheck
+
+	b.replyText(chatID, "✅ Микстейп опубликован!")
 }

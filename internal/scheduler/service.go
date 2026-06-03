@@ -16,6 +16,7 @@ import (
 	"meme-video-gen/internal/ai"
 	"meme-video-gen/internal/audio"
 	"meme-video-gen/internal/logging"
+	"meme-video-gen/internal/mixtape"
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/s3"
 	"meme-video-gen/internal/sources"
@@ -51,6 +52,7 @@ type Service struct {
 	cfgMux           sync.Mutex
 	monitor          *ResourceMonitor
 	uploadersManager *uploaders.Manager
+	mixtapeGen       *mixtape.Generator
 
 	// In-memory cache with TTL to reduce S3 traffic
 	cacheMux     sync.RWMutex
@@ -423,6 +425,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	aiGen := ai.NewTitleGenerator(cfg.GeminiAPIKey, log)
 
 	impl := &realImpl{cfg: cfg, s3: s3c, log: log, audio: audioIdx, src: srcScr, video: vidGen, ai: aiGen}
+	mixtapeGen := mixtape.NewGenerator(cfg, s3c, audioIdx, log)
 
 	c := cron.New(cron.WithSeconds())
 	s := &Service{
@@ -433,6 +436,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		s3c:          s3c,
 		cachedCounts: make(map[string]cachedValue),
 		cacheTTL:     90 * time.Second, // 90s TTL > aggressive-monitor interval (1min) to prevent cache miss on every check
+		mixtapeGen:   mixtapeGen,
 	}
 
 	// Hourly maintenance tasks (0 seconds, every hour)
@@ -462,6 +466,15 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 			log.Errorf("cron ensure memes: %v", err)
 		}
 		s.InvalidateCache("memes") // Invalidate cache after updating
+	}); err != nil {
+		return nil, err
+	}
+
+	if _, err := c.AddFunc("0 0 * * * *", func() {
+		log.Infof("cron: ensuring mixtapes")
+		if err := mixtapeGen.EnsureMixtapes(context.Background()); err != nil {
+			log.Errorf("cron ensure mixtapes: %v", err)
+		}
 	}); err != nil {
 		return nil, err
 	}
@@ -765,6 +778,11 @@ func (s *Service) GetSongByIDForIdea(ctx context.Context, songID string) (*model
 	}
 
 	return song, nil
+}
+
+// GetMixtapeGenerator exposes the mixtape generator for the bot.
+func (s *Service) GetMixtapeGenerator() *mixtape.Generator {
+	return s.mixtapeGen
 }
 
 // SearchSongsForIdea searches for songs by title or author from eenfinit (excluding dee bill)

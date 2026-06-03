@@ -34,9 +34,10 @@ type Config struct {
 	TokensPrefix  string
 	PayloadPrefix string
 
-	MaxSources int
-	MaxMemes   int
-	MaxAge     time.Duration
+	MaxSources   int
+	MaxMemes     int
+	MaxMixtapes  int
+	MaxAge       time.Duration
 
 	// Disliked sources grace period (default: 24 hours)
 	// Sources blacklisted by user dislike won't be reused for this duration
@@ -76,6 +77,7 @@ func LoadConfig() (Config, error) {
 
 		MaxSources:                20,
 		MaxMemes:                  10,
+		MaxMixtapes:               5,
 		MaxAge:                    24 * time.Hour,
 		DislikedSourceGracePeriod: 24 * time.Hour, // 24 hours by default
 		DailyGenerations:          5,
@@ -94,6 +96,13 @@ func LoadConfig() (Config, error) {
 	if v := os.Getenv("MAX_MEMES"); v != "" {
 		if n, err := strconv.Atoi(v); err == nil && n > 0 {
 			cfg.MaxMemes = n
+		}
+	}
+
+	// Load MaxMixtapes from env
+	if v := os.Getenv("MAX_MIXTAPES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			cfg.MaxMixtapes = n
 		}
 	}
 
