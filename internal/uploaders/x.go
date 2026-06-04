@@ -113,7 +113,7 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 	defer initResp.Body.Close()
 
 	initBodyBytes, _ := io.ReadAll(initResp.Body)
-	if initResp.StatusCode != http.StatusOK {
+	if initResp.StatusCode != http.StatusOK && initResp.StatusCode != http.StatusAccepted {
 		return "", fmt.Errorf("INIT failed with status %d: %s", initResp.StatusCode, string(initBodyBytes))
 	}
 
@@ -149,7 +149,7 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 			return "", fmt.Errorf("failed to append media chunk: %w", err)
 		}
 
-		if appendResp.StatusCode != http.StatusOK {
+		if appendResp.StatusCode != http.StatusOK && appendResp.StatusCode != http.StatusNoContent {
 			bodyBytes, _ := io.ReadAll(appendResp.Body)
 			appendResp.Body.Close()
 			return "", fmt.Errorf("APPEND failed with status %d: %s", appendResp.StatusCode, string(bodyBytes))
@@ -168,7 +168,7 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 	defer finalizeResp.Body.Close()
 
 	finalizeBodyBytes, _ := io.ReadAll(finalizeResp.Body)
-	if finalizeResp.StatusCode != http.StatusOK {
+	if finalizeResp.StatusCode != http.StatusOK && finalizeResp.StatusCode != http.StatusCreated {
 		return "", fmt.Errorf("FINALIZE failed with status %d: %s", finalizeResp.StatusCode, string(finalizeBodyBytes))
 	}
 
@@ -253,7 +253,7 @@ func (x *XUploader) Upload(ctx context.Context, req *UploadRequest) (*UploadResu
 		return &UploadResult{
 			Success:  false,
 			Platform: "x",
-			Error:    "Media upload failed",
+			Error:    fmt.Sprintf("Media upload failed: %s", err.Error()),
 			Details: map[string]string{
 				"error": err.Error(),
 				"text":  text,
