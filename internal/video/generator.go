@@ -1049,8 +1049,6 @@ func safeLoadVideo(path string) (vid moviego.Video, err error) {
 func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, outputPath string, log *logging.Logger) error {
 	log.Infof("[FFMPEG] determining audio duration from %s...", audioPath)
 
-	// Get audio duration to determine video length
-	// Use context with timeout for ffprobe
 	ctxProbe, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelProbe()
 
@@ -1059,32 +1057,31 @@ func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, out
 	durationBytes, err := probeCmd.Output()
 	if err != nil {
 		log.Infof("[FFMPEG] ffprobe failed (timeout?): %v", err)
-		// Default to 10 seconds if we can't determine audio duration
-		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, log)
+		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, log)
 	}
 
-	var duration float64
-	if _, err := fmt.Sscanf(string(durationBytes), "%f", &duration); err != nil || duration <= 0 {
+	var totalDuration float64
+	if _, err := fmt.Sscanf(string(durationBytes), "%f", &totalDuration); err != nil || totalDuration <= 0 {
 		log.Infof("[FFMPEG] failed to parse duration, using default")
-		duration = 10
+		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, log)
 	}
 
-	// Clamp duration between 8 and 12 seconds
-	if duration < 8 {
-		log.Infof("[FFMPEG] duration too short (%f), clamping to 8s", duration)
-		duration = 8
-	} else if duration > 12 {
-		log.Infof("[FFMPEG] duration too long (%f), clamping to 12s", duration)
-		duration = 12
+	// Clip duration: 10 seconds (capped to actual track length)
+	clipDuration := 10.0
+	if totalDuration < clipDuration {
+		clipDuration = totalDuration
 	}
 
-	log.Infof("[FFMPEG] ✓ determined audio duration: %.2f seconds", duration)
-	return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, duration, log)
+	// Pick a random start offset to avoid always playing the intro/outro
+	startOffset := randomAudioOffset(totalDuration, clipDuration)
+
+	log.Infof("[FFMPEG] ✓ audio: total=%.2fs, clip=%.2fs, start=%.2fs", totalDuration, clipDuration, startOffset)
+	return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, clipDuration, startOffset, log)
 }
 
-// createVideoWithDuration creates video with specific duration
-func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPath string, duration float64, log *logging.Logger) error {
-	log.Infof("[FFMPEG] starting ffmpeg with duration %.2f seconds", duration)
+// createVideoWithDuration creates video with specific duration starting at startOffset within the audio.
+func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPath string, duration, startOffset float64, log *logging.Logger) error {
+	log.Infof("[FFMPEG] starting ffmpeg with duration %.2f seconds (audio offset %.2fs)", duration, startOffset)
 	log.Infof("[FFMPEG] image: %s", imagePath)
 	log.Infof("[FFMPEG] audio: %s", audioPath)
 	log.Infof("[FFMPEG] output: %s", outputPath)
@@ -1097,27 +1094,25 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		return fmt.Errorf("audio file not found: %s (%w)", audioPath, err)
 	}
 
-	// Use ffmpeg to create video from image with audio
-	// Use -f lavfi to generate black background + scale+pad image on top (avoids -loop hanging)
-	// This is more stable than using -loop 1 with images
-
-	// ffmpeg filter: 1. Create black background 2. Scale image 3. Pad to 1080x1920 4. Overlay on background
-	filterComplex := fmt.Sprintf(
-		"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]",
-	)
+	filterComplex := "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]"
 
 	// Acquire semaphore – only one ffmpeg process at a time to avoid exhausting system threads.
 	ffmpegSem <- struct{}{}
 	defer func() { <-ffmpegSem }()
 
-	var stderr bytes.Buffer
-	cmd := exec.Command("ffmpeg",
+	// Build arg list; -ss before -i audioPath seeks within the audio stream.
+	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
-		"-threads", "1", // global thread limit
-		"-filter_threads", "1", // scale/pad filter threads
-		"-filter_complex_threads", "1", // filter_complex graph threads
+		"-threads", "1",
+		"-filter_threads", "1",
+		"-filter_complex_threads", "1",
 		"-i", imagePath,
+	}
+	if startOffset > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", startOffset))
+	}
+	args = append(args,
 		"-i", audioPath,
 		"-filter_complex", filterComplex,
 		"-map", "[out]",
@@ -1125,19 +1120,22 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		"-c:v", "libx264",
 		"-preset", "ultrafast",
 		"-tune", "stillimage",
-		"-x264-params", "threads=1", // libx264 internal thread pool
+		"-x264-params", "threads=1",
 		"-c:a", "aac",
 		"-b:a", "192k",
 		"-pix_fmt", "yuv420p",
 		"-r", "30",
 		"-t", fmt.Sprintf("%.2f", duration),
 		"-y",
-		"-strict", "-2", // Allow experimental codecs
+		"-strict", "-2",
 		outputPath,
 	)
+
+	var stderr bytes.Buffer
+	cmd := exec.Command("ffmpeg", args...)
 	cmd.Stderr = &stderr
 
-	log.Infof("[FFMPEG] executing ffmpeg with filter_complex (duration=%.2fs)", duration)
+	log.Infof("[FFMPEG] executing ffmpeg with filter_complex (duration=%.2fs, offset=%.2fs)", duration, startOffset)
 
 	if err := cmd.Run(); err != nil {
 		errMsg := stderr.String()
@@ -1164,33 +1162,39 @@ func replaceAudioInVideo(ctx context.Context, videoPath, audioPath, outputPath s
 	log.Infof("[FFMPEG] audio: %s", audioPath)
 	log.Infof("[FFMPEG] output: %s", outputPath)
 
-	// Get video duration
-	log.Infof("[FFMPEG] determining video duration from %s...", videoPath)
-	ctxProbe, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
-	defer cancelProbe()
-
-	probeCmd := exec.CommandContext(ctxProbe, "ffprobe", "-v", "error", "-show_entries", "format=duration",
-		"-of", "default=noprint_wrappers=1:nokey=1", videoPath)
-	durationBytes, err := probeCmd.Output()
-	if err != nil {
-		log.Infof("[FFMPEG] ffprobe failed (timeout?): %v", err)
-		// Default to 10 seconds if we can't determine video duration
-		return replaceAudioWithDuration(ctx, videoPath, audioPath, outputPath, 10, log)
+	probeFile := func(path, label string) float64 {
+		ctxP, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		out, err := exec.CommandContext(ctxP, "ffprobe", "-v", "error", "-show_entries", "format=duration",
+			"-of", "default=noprint_wrappers=1:nokey=1", path).Output()
+		if err != nil {
+			log.Infof("[FFMPEG] ffprobe %s failed: %v", label, err)
+			return 0
+		}
+		var d float64
+		fmt.Sscanf(string(out), "%f", &d)
+		return d
 	}
 
-	var duration float64
-	if _, err := fmt.Sscanf(string(durationBytes), "%f", &duration); err != nil || duration <= 0 {
-		log.Infof("[FFMPEG] failed to parse duration, using default")
-		duration = 10
+	videoDuration := probeFile(videoPath, "video")
+	if videoDuration <= 0 {
+		videoDuration = 10
+	}
+	log.Infof("[FFMPEG] ✓ video duration: %.2fs", videoDuration)
+
+	audioDuration := probeFile(audioPath, "audio")
+	startOffset := 0.0
+	if audioDuration > 0 {
+		startOffset = randomAudioOffset(audioDuration, videoDuration)
+		log.Infof("[FFMPEG] ✓ audio: total=%.2fs, clip=%.2fs, start=%.2fs", audioDuration, videoDuration, startOffset)
 	}
 
-	log.Infof("[FFMPEG] ✓ determined video duration: %.2f seconds", duration)
-	return replaceAudioWithDuration(ctx, videoPath, audioPath, outputPath, duration, log)
+	return replaceAudioWithDuration(ctx, videoPath, audioPath, outputPath, videoDuration, startOffset, log)
 }
 
-// replaceAudioWithDuration replaces audio and trims it to match video duration
-func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputPath string, duration float64, log *logging.Logger) error {
-	log.Infof("[FFMPEG] replacing audio (trimmed to %.2f seconds)", duration)
+// replaceAudioWithDuration replaces audio (starting at startOffset) and trims to match video duration.
+func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputPath string, duration, startOffset float64, log *logging.Logger) error {
+	log.Infof("[FFMPEG] replacing audio (offset=%.2fs, clip=%.2fs)", startOffset, duration)
 
 	// Validate input files exist
 	if _, err := os.Stat(videoPath); err != nil {
@@ -1200,21 +1204,23 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 		return fmt.Errorf("audio file not found: %s (%w)", audioPath, err)
 	}
 
-	// Use ffmpeg to replace audio in video with trimmed audio
-	// -i video_input -i audio_input -c:v copy -c:a aac -map 0:v:0 -map 1:a:0 -t duration output
-
 	// Acquire semaphore – only one ffmpeg process at a time.
 	ffmpegSem <- struct{}{}
 	defer func() { <-ffmpegSem }()
 
-	var stderr bytes.Buffer
-	cmd := exec.Command("ffmpeg",
+	// Build arg list; -ss before -i audioPath seeks within the audio stream.
+	args := []string{
 		"-hide_banner",
 		"-loglevel", "error",
-		"-threads", "1", // global thread limit
-		"-filter_threads", "1", // filter graph threads
+		"-threads", "1",
+		"-filter_threads", "1",
 		"-filter_complex_threads", "1",
 		"-i", videoPath,
+	}
+	if startOffset > 0 {
+		args = append(args, "-ss", fmt.Sprintf("%.3f", startOffset))
+	}
+	args = append(args,
 		"-i", audioPath,
 		"-c:v", "copy",
 		"-c:a", "aac",
@@ -1226,9 +1232,12 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 		"-strict", "-2",
 		outputPath,
 	)
+
+	var stderr bytes.Buffer
+	cmd := exec.Command("ffmpeg", args...)
 	cmd.Stderr = &stderr
 
-	log.Infof("[FFMPEG] executing ffmpeg to replace and trim audio (duration=%.2fs)", duration)
+	log.Infof("[FFMPEG] executing ffmpeg to replace audio (duration=%.2fs, offset=%.2fs)", duration, startOffset)
 
 	if err := cmd.Run(); err != nil {
 		errMsg := stderr.String()
@@ -1244,6 +1253,6 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 		return fmt.Errorf("ffmpeg did not create output file: %s (%w)", outputPath, err)
 	}
 
-	log.Infof("[FFMPEG] ✓ audio replaced and trimmed successfully, output file: %s", outputPath)
+	log.Infof("[FFMPEG] ✓ audio replaced successfully (offset=%.2fs), output file: %s", startOffset, outputPath)
 	return nil
 }
