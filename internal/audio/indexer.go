@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -63,9 +63,15 @@ func (idx *Indexer) EnsureSongs(ctx context.Context) error {
 
 	idx.log.Infof("audio: found %d playlists", len(playlists))
 
-	client := youtube.Client{
-		HTTPClient: &http.Client{Transport: http.DefaultTransport},
+	cookiesFile, err := idx.fetchCookiesFile(ctx)
+	if err != nil {
+		idx.log.Warnf("audio: could not load youtube_cookies.txt from S3 (%v), proceeding without cookies", err)
+	} else if cookiesFile != "" {
+		defer os.Remove(cookiesFile)
+		idx.log.Infof("audio: loaded youtube cookies from S3")
 	}
+
+	client := youtube.Client{}
 	newSongsCount := 0
 	for playlistIdx, plURL := range playlists {
 		idx.log.Infof("audio: fetching playlist %d/%d: %s", playlistIdx+1, len(playlists), plURL)
@@ -81,7 +87,7 @@ func (idx *Indexer) EnsureSongs(ctx context.Context) error {
 				continue
 			}
 			idx.log.Infof("audio: downloading new song: %s (%s)", entry.Title, entry.ID)
-			if err := idx.downloadAndStoreSong(ctx, &client, entry, &songsIdx); err != nil {
+			if err := idx.downloadAndStoreSong(ctx, entry, &songsIdx, cookiesFile); err != nil {
 				idx.log.Errorf("download song %s: %v", entry.ID, err)
 			} else {
 				newSongsCount++
@@ -102,11 +108,8 @@ func (idx *Indexer) EnsureSongs(ctx context.Context) error {
 	return nil
 }
 
-func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Client, entry *youtube.PlaylistEntry, songsIdx *model.SongsIndex) error {
-	idx.log.Infof("audio: getting video details for %s", entry.ID)
-
-	// Retry logic for YouTube downloads (403 errors are common)
-	maxRetries := 5
+func (idx *Indexer) downloadAndStoreSong(ctx context.Context, entry *youtube.PlaylistEntry, songsIdx *model.SongsIndex, cookiesFile string) error {
+	maxRetries := 3
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -116,12 +119,11 @@ func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Cl
 			time.Sleep(backoff)
 		}
 
-		lastErr = idx.downloadSongAttempt(ctx, client, entry, songsIdx)
+		lastErr = idx.downloadSongAttempt(ctx, entry, songsIdx, cookiesFile)
 		if lastErr == nil {
 			return nil
 		}
 
-		// Check if error is retryable (403, 429, timeout)
 		if !isRetryableError(lastErr) {
 			idx.log.Errorf("audio: non-retryable error for %s: %v", entry.ID, lastErr)
 			return lastErr
@@ -132,45 +134,34 @@ func (idx *Indexer) downloadAndStoreSong(ctx context.Context, client *youtube.Cl
 	return lastErr
 }
 
-func (idx *Indexer) downloadSongAttempt(ctx context.Context, client *youtube.Client, entry *youtube.PlaylistEntry, songsIdx *model.SongsIndex) error {
-	video, err := client.GetVideo(entry.ID)
-	if err != nil {
-		return fmt.Errorf("get video: %w", err)
-	}
-	formats := video.Formats.WithAudioChannels()
-	if len(formats) == 0 {
-		return fmt.Errorf("no audio formats")
-	}
-	format := formats[0]
-
+func (idx *Indexer) downloadSongAttempt(ctx context.Context, entry *youtube.PlaylistEntry, songsIdx *model.SongsIndex, cookiesFile string) error {
 	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("audio-%s.m4a", entry.ID))
 	defer os.Remove(tmpFile)
 
-	f, err := os.Create(tmpFile)
-	if err != nil {
-		return fmt.Errorf("create temp file: %w", err)
+	args := []string{
+		"-x",
+		"--audio-format", "m4a",
+		"--no-playlist",
+		"--quiet",
+		"-o", tmpFile,
 	}
+	if cookiesFile != "" {
+		args = append(args, "--cookies", cookiesFile)
+	}
+	args = append(args, "--", entry.ID)
 
-	idx.log.Infof("audio: downloading stream for %s", entry.ID)
-	stream, _, err := client.GetStream(video, &format)
-	if err != nil {
-		f.Close()
-		return fmt.Errorf("get stream: %w", err)
+	idx.log.Infof("audio: downloading stream via yt-dlp for %s", entry.ID)
+	var stderr strings.Builder
+	cmd := exec.CommandContext(ctx, "yt-dlp", args...)
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("yt-dlp: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
-
-	if _, err := io.Copy(f, stream); err != nil {
-		f.Close()
-		stream.Close()
-		return fmt.Errorf("copy stream: %w", err)
-	}
-	f.Close()
-	stream.Close()
 	idx.log.Infof("audio: stream downloaded successfully: %s", entry.ID)
 
 	data, err := os.ReadFile(tmpFile)
 	if err != nil {
-		idx.log.Errorf("audio: read temp file: %v", err)
-		return err
+		return fmt.Errorf("read temp file: %w", err)
 	}
 
 	idx.log.Infof("audio: uploading to S3: %s", entry.ID)
@@ -187,7 +178,7 @@ func (idx *Indexer) downloadSongAttempt(ctx context.Context, client *youtube.Cli
 	songsIdx.Items = append(songsIdx.Items, model.Song{
 		ID:         entry.ID,
 		Title:      entry.Title,
-		Author:     cleanAuthorName(video.Author),
+		Author:     entry.Author,
 		SourceURL:  "https://www.youtube.com/watch?v=" + entry.ID,
 		AudioKey:   key,
 		DurationS:  float64(entry.Duration.Seconds()),
@@ -196,6 +187,30 @@ func (idx *Indexer) downloadSongAttempt(ctx context.Context, client *youtube.Cli
 		SHA256:     hash,
 	})
 	return nil
+}
+
+// fetchCookiesFile downloads youtube_cookies.txt from S3 (payload/youtube_cookies.txt)
+// to a temp file and returns its path. Returns ("", nil) if the file doesn't exist in S3.
+func (idx *Indexer) fetchCookiesFile(ctx context.Context) (string, error) {
+	key := idx.cfg.PayloadPrefix + "youtube_cookies.txt"
+	data, _, err := idx.s3.GetBytes(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	if len(data) == 0 {
+		return "", nil
+	}
+	tmp, err := os.CreateTemp("", "yt-cookies-*.txt")
+	if err != nil {
+		return "", fmt.Errorf("create cookies temp file: %w", err)
+	}
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		os.Remove(tmp.Name())
+		return "", fmt.Errorf("write cookies temp file: %w", err)
+	}
+	tmp.Close()
+	return tmp.Name(), nil
 }
 
 func isRetryableError(err error) bool {

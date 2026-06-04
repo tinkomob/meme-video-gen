@@ -18,8 +18,8 @@ type Config struct {
 	GeminiAPIKey  string
 	SerpAPIKey    string
 	BratuhaAPIKey string
-	HumorAPIKey   string
-	APILeagueKey  string
+	HumorAPIKey  string
+	APILeagueKey string
 
 	SongsJSONKey    string
 	SourcesJSONKey  string
@@ -62,8 +62,8 @@ func LoadConfig() (Config, error) {
 		GeminiAPIKey:  firstNonEmpty(os.Getenv("GOOGLE_API_KEY"), os.Getenv("GEMINI_API_KEY")),
 		SerpAPIKey:    os.Getenv("SERPAPI_KEY"),
 		BratuhaAPIKey: os.Getenv("BRATUHA_API_KEY"),
-		HumorAPIKey:   os.Getenv("HUMOR_API_KEY"),
-		APILeagueKey:  os.Getenv("APILEAGUE_API_KEY"),
+		HumorAPIKey:  os.Getenv("HUMOR_API_KEY"),
+		APILeagueKey: os.Getenv("APILEAGUE_API_KEY"),
 
 		SongsJSONKey:    "songs.json",
 		SourcesJSONKey:  "sources.json",

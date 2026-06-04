@@ -28,9 +28,9 @@ RUN apk add --no-cache \
     curl \
     libc6-compat \
     chromium \
+    yt-dlp \
     nss \
     tini
-
 # Create app user for security
 RUN addgroup -g 1000 memebot && \
     adduser -D -u 1000 -G memebot memebot
