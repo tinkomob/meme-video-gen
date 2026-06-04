@@ -544,7 +544,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	// Load or create today's schedule at startup
 	go func() {
 		time.Sleep(2 * time.Second)
-		now := time.Now()
+		now := time.Now().In(time.FixedZone("Asia/Tomsk", 7*3600))
 		sched, err := GetOrCreateSchedule(context.Background(), s3c, &cfg, now)
 		if err != nil {
 			log.Errorf("failed to load schedule: %v", err)
@@ -559,7 +559,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	// Load or create today's mixtape schedule at startup
 	go func() {
 		time.Sleep(3 * time.Second)
-		now := time.Now()
+		now := time.Now().In(time.FixedZone("Asia/Tomsk", 7*3600))
 		ms, err := GetOrCreateMixtapeSchedule(context.Background(), s3c, &cfg, now)
 		if err != nil {
 			log.Errorf("failed to load mixtape schedule: %v", err)

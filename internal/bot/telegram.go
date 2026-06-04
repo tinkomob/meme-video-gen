@@ -1081,6 +1081,7 @@ func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
 			return
 		case <-ticker.C:
 			now := time.Now()
+			tomskNow := now.In(time.FixedZone("Asia/Tomsk", 7*3600))
 
 			// Always get fresh schedule from service (in case it was updated via /setnext)
 			currentSched := b.svc.GetSchedule()
@@ -1089,9 +1090,9 @@ func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
 				continue
 			}
 
-			// Reload schedule if it's a new day
-			if currentSched.Date != now.Format("2006-01-02") {
-				newSched, err := scheduler.GetOrCreateSchedule(ctx, b.svc.GetS3Client(), &cfg, now)
+			// Reload schedule if it's a new day (compare in Asia/Tomsk)
+			if currentSched.Date != tomskNow.Format("2006-01-02") {
+				newSched, err := scheduler.GetOrCreateSchedule(ctx, b.svc.GetS3Client(), &cfg, tomskNow)
 				if err == nil && newSched != nil {
 					currentSched = newSched
 					b.svc.SetSchedule(currentSched)
@@ -1161,14 +1162,15 @@ func (b *TelegramBot) runMixtapePoster(ctx context.Context) {
 			return
 		case <-ticker.C:
 			now := time.Now()
+			tomskNow := now.In(time.FixedZone("Asia/Tomsk", 7*3600))
 
 			currentSched := b.svc.GetMixtapeSchedule()
 			if currentSched == nil {
 				continue
 			}
 
-			if currentSched.Date != now.Format("2006-01-02") {
-				newSched, err := scheduler.GetOrCreateMixtapeSchedule(ctx, b.svc.GetS3Client(), &cfg, now)
+			if currentSched.Date != tomskNow.Format("2006-01-02") {
+				newSched, err := scheduler.GetOrCreateMixtapeSchedule(ctx, b.svc.GetS3Client(), &cfg, tomskNow)
 				if err == nil && newSched != nil {
 					currentSched = newSched
 					b.svc.SetMixtapeSchedule(currentSched)
