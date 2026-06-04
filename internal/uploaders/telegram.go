@@ -68,6 +68,16 @@ func (t *TelegramUploader) Upload(ctx context.Context, req *UploadRequest) (*Upl
 	}
 	defer videoFile.Close()
 
+	// Reject files that exceed Telegram's practical upload limit
+	if stat, err := videoFile.Stat(); err == nil && stat.Size() > 19*1024*1024 {
+		sizeMB := float64(stat.Size()) / 1024 / 1024
+		return &UploadResult{
+			Success:  false,
+			Platform: "telegram",
+			Error:    fmt.Sprintf("video too large for Telegram: %.1f MB (max 19 MB)", sizeMB),
+		}, fmt.Errorf("video too large: %d bytes", stat.Size())
+	}
+
 	// Prepare caption
 	caption := req.Caption
 	if caption == "" && req.Title != "" {
