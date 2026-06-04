@@ -125,7 +125,7 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 	mediaID := initRes.Data.ID
 
 	// Step 2: Upload chunks
-	const chunkSize = 5 * 1024 * 1024 // 5MB
+	const chunkSize = 4 * 1024 * 1024 // 4MB — X API enforces <5MB after multipart overhead
 	for i := 0; i < len(fileData); i += chunkSize {
 		end := i + chunkSize
 		if end > len(fileData) {
