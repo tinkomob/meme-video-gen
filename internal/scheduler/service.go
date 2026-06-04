@@ -270,6 +270,29 @@ func (s *Service) GetSongsCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
+// GetMixtapesCount returns the number of mixtapes in S3 (cached to reduce S3 traffic)
+func (s *Service) GetMixtapesCount(ctx context.Context) (int, error) {
+	s.cacheMux.RLock()
+	if cached, exists := s.cachedCounts["mixtapes"]; exists && time.Since(cached.timestamp) < s.cacheTTL {
+		s.cacheMux.RUnlock()
+		return cached.count, nil
+	}
+	s.cacheMux.RUnlock()
+
+	s.log.Infof("GetMixtapesCount: cache miss, reading from S3")
+	idx, err := s.mixtapeGen.LoadIndex(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	count := len(idx.Items)
+	s.cacheMux.Lock()
+	s.cachedCounts["mixtapes"] = cachedValue{count: count, timestamp: time.Now()}
+	s.cacheMux.Unlock()
+
+	return count, nil
+}
+
 // ClearSources removes all sources from the index and deletes source files from S3
 func (s *Service) ClearSources(ctx context.Context) error {
 	s.log.Infof("clearing all sources")

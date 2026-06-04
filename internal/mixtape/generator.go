@@ -584,6 +584,11 @@ func (g *Generator) maxMixtapes() int {
 	return maxMixtapes
 }
 
+// LoadIndex reads the current mixtape index from S3.
+func (g *Generator) LoadIndex(ctx context.Context) (MixtapeIndex, error) {
+	return g.loadIndex(ctx)
+}
+
 func (g *Generator) loadIndex(ctx context.Context) (MixtapeIndex, error) {
 	var idx MixtapeIndex
 	found, err := g.s3.ReadJSON(ctx, mixtapesJSONKey, &idx)

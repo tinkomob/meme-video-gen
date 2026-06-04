@@ -1759,19 +1759,23 @@ func (b *TelegramBot) cmdStatus(ctx context.Context, chatID int64) {
 		memesCount = -1
 	}
 
-	var sourcesStr, songsStr string
-	if sourcesCount == -1 {
-		sourcesStr = "Ошибка"
-	} else {
-		sourcesStr = fmt.Sprintf("%d", sourcesCount)
-	}
-	if songsCount == -1 {
-		songsStr = "Ошибка"
-	} else {
-		songsStr = fmt.Sprintf("%d", songsCount)
+	mixtapesCount, err := b.svc.GetMixtapesCount(ctx)
+	if err != nil {
+		b.log.Errorf("get mixtapes count: %v", err)
+		mixtapesCount = -1
 	}
 
-	status := fmt.Sprintf("📊 Статус системы:\n\n✅ Scheduler: работает\n✅ Errors.log: доступен\n📁 Загруженных источников: %s\n🎵 Загруженных аудио: %s\n🎥 Сгенерировано мемов: %d", sourcesStr, songsStr, memesCount)
+	fmtCount := func(n int) string {
+		if n == -1 {
+			return "Ошибка"
+		}
+		return fmt.Sprintf("%d", n)
+	}
+
+	status := fmt.Sprintf(
+		"📊 Статус системы:\n\n✅ Scheduler: работает\n✅ Errors.log: доступен\n📁 Загруженных источников: %s\n🎵 Загруженных аудио: %s\n🎥 Сгенерировано мемов: %s\n🎛 Микстейпов в S3: %s",
+		fmtCount(sourcesCount), fmtCount(songsCount), fmtCount(memesCount), fmtCount(mixtapesCount),
+	)
 	b.replyText(chatID, status)
 }
 
