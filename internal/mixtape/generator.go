@@ -442,7 +442,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
 			"zoompan=z='%s':x='%s':y='%s':fps=30:d=1:s=1080x1920,setsar=1,"+
 			"drawtext=text='%s':%s:x=(w-tw)/2:y=100,"+
-			"drawtext=text='%s':fontsize=64:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-60"+
+			"drawtext=text='%s':fontsize=64:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-160"+
 			"[out]",
 		pan.zExpr, pan.xExpr, pan.yExpr,
 		topText, textStyle,
