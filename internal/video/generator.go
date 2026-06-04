@@ -284,7 +284,7 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		if !exists {
 			g.log.Warnf("source %s file not found in S3 (%s), removing from index", src.ID, src.MediaKey)
 			if err := g.sourcesScr.RemoveSourceFromIndex(ctx, src.ID); err != nil {
-				g.log.Errorf("failed to remove source from index: %v", err)
+				g.log.Warnf("failed to remove source from index (may already be removed): %v", err)
 			}
 			continue
 		}
