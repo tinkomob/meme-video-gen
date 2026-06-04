@@ -1223,6 +1223,10 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int6
 		return
 	}
 
+	tomsk, _ := time.LoadLocation("Asia/Tomsk")
+	nowHour := time.Now().In(tomsk).Hour()
+	silent := nowHour < 10 // 00:00–09:59 → silent
+
 	title := m.Title
 	if title == "" {
 		title = mixtape_pkg.TopLabelText()
@@ -1233,6 +1237,7 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int6
 		Caption:     mixtapeCaption(m),
 		Description: mixtapeDescription(m),
 		Privacy:     "public",
+		Silent:      silent,
 	}
 
 	results := mgr.UploadToAll(ctx, uploadReq)
@@ -1258,10 +1263,10 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int6
 		if err := gen.Delete(ctx, m.ID); err != nil {
 			b.log.Errorf("sendScheduledMixtape: delete from S3: %v", err)
 		}
-		b.replyHTML(adminChatID, fmt.Sprintf("📤 Микстейп опубликован по расписанию:\n\n%s", strings.Join(resultLines, "\n")))
-		b.log.Infof("sendScheduledMixtape: sent and deleted mixtape %s", m.ID)
+		b.replyHTMLSilent(adminChatID, fmt.Sprintf("📤 Микстейп опубликован по расписанию:\n\n%s", strings.Join(resultLines, "\n")), silent)
+		b.log.Infof("sendScheduledMixtape: sent and deleted mixtape %s (silent=%v)", m.ID, silent)
 	} else {
-		b.replyHTML(adminChatID, fmt.Sprintf("❌ Ошибка публикации микстейпа по расписанию:\n\n%s", strings.Join(resultLines, "\n")))
+		b.replyHTMLSilent(adminChatID, fmt.Sprintf("❌ Ошибка публикации микстейпа по расписанию:\n\n%s", strings.Join(resultLines, "\n")), silent)
 	}
 }
 
@@ -3121,6 +3126,14 @@ func (b *TelegramBot) replyText(chatID int64, text string) int {
 func (b *TelegramBot) replyHTML(chatID int64, text string) int {
 	m := tgbotapi.NewMessage(chatID, text)
 	m.ParseMode = tgbotapi.ModeHTML
+	sent, _ := b.tg.Send(m)
+	return sent.MessageID
+}
+
+func (b *TelegramBot) replyHTMLSilent(chatID int64, text string, silent bool) int {
+	m := tgbotapi.NewMessage(chatID, text)
+	m.ParseMode = tgbotapi.ModeHTML
+	m.DisableNotification = silent
 	sent, _ := b.tg.Send(m)
 	return sent.MessageID
 }

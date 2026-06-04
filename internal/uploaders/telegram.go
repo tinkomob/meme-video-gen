@@ -111,6 +111,9 @@ func (t *TelegramUploader) Upload(ctx context.Context, req *UploadRequest) (*Upl
 	_ = writer.WriteField("chat_id", t.chatID)
 	_ = writer.WriteField("caption", caption)
 	_ = writer.WriteField("parse_mode", "HTML")
+	if req.Silent {
+		_ = writer.WriteField("disable_notification", "true")
+	}
 
 	err = writer.Close()
 	if err != nil {

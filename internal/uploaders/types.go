@@ -20,6 +20,7 @@ type UploadRequest struct {
 	Caption       string
 	Tags          []string
 	Privacy       string // public, unlisted, private
+	Silent        bool   // disable push notification (Telegram only)
 }
 
 // Uploader is an interface for uploading videos to social media platforms
