@@ -133,9 +133,9 @@ func LoadConfig() (Config, error) {
 	}
 
 	// Load DisableGeneration from env
-	// if v := os.Getenv("DISABLE_GENERATION"); v == "true" || v == "1" {
-	cfg.DisableGeneration = true
-	// }
+	if v := os.Getenv("DISABLE_GENERATION"); v == "true" || v == "1" {
+		cfg.DisableGeneration = true
+	}
 
 	// Load PostsChatID from env
 	if v := os.Getenv("POSTS_CHATID"); v != "" {
