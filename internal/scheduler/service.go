@@ -49,6 +49,9 @@ type Service struct {
 	scheduleMux sync.Mutex
 	schedule    *DailySchedule
 
+	mixtapeScheduleMux sync.Mutex
+	mixtapeSchedule    *DailyMixtapeSchedule
+
 	cfgMux           sync.Mutex
 	monitor          *ResourceMonitor
 	uploadersManager *uploaders.Manager
@@ -113,6 +116,18 @@ func (s *Service) SetSchedule(sched *DailySchedule) {
 	s.scheduleMux.Lock()
 	defer s.scheduleMux.Unlock()
 	s.schedule = sched
+}
+
+func (s *Service) GetMixtapeSchedule() *DailyMixtapeSchedule {
+	s.mixtapeScheduleMux.Lock()
+	defer s.mixtapeScheduleMux.Unlock()
+	return s.mixtapeSchedule
+}
+
+func (s *Service) SetMixtapeSchedule(sched *DailyMixtapeSchedule) {
+	s.mixtapeScheduleMux.Lock()
+	defer s.mixtapeScheduleMux.Unlock()
+	s.mixtapeSchedule = sched
 }
 
 func (s *Service) SavePostsChatID(ctx context.Context, chatID int64) error {
@@ -518,9 +533,24 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		}
 	}()
 
-	// Run mixtape generation at startup
+	// Load or create today's mixtape schedule at startup
 	go func() {
 		time.Sleep(3 * time.Second)
+		now := time.Now()
+		ms, err := GetOrCreateMixtapeSchedule(context.Background(), s3c, &cfg, now)
+		if err != nil {
+			log.Errorf("failed to load mixtape schedule: %v", err)
+		} else {
+			s.SetMixtapeSchedule(ms)
+			if ms != nil && len(ms.Entries) > 0 {
+				log.Infof("loaded mixtape schedule for %s with %d entries", ms.Date, len(ms.Entries))
+			}
+		}
+	}()
+
+	// Run mixtape generation at startup
+	go func() {
+		time.Sleep(4 * time.Second)
 		log.Infof("startup: ensuring mixtapes")
 		if err := mixtapeGen.EnsureMixtapes(context.Background()); err != nil {
 			log.Errorf("startup ensure mixtapes: %v", err)

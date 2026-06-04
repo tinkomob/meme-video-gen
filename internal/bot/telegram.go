@@ -98,8 +98,9 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 	updates := b.tg.GetUpdatesChan(u)
 	b.log.Infof("telegram bot started as @%s", b.tg.Self.UserName)
 
-	// Start schedule poster goroutine
+	// Start schedule poster goroutines
 	go b.runSchedulePoster(ctx)
+	go b.runMixtapePoster(ctx)
 
 	// Start background maintenance ticker: cleans up expired caches every 2 minutes.
 	go b.runMaintenanceTicker(ctx)
@@ -217,6 +218,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		go b.handleMixtapeCommand(ctx, chatID)
 	case "clearmixtape":
 		go b.handleClearMixtapeCommand(ctx, chatID)
+	case "setmixtapes":
+		b.cmdSetMixtapes(ctx, chatID, msg.CommandArguments())
 	default:
 		b.replyText(chatID, "Неизвестная команда. Используйте /help")
 	}
@@ -1121,6 +1124,258 @@ func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
 	}
 }
 
+// runMixtapePoster runs in background and sends a random mixtape at each scheduled time.
+// After sending, the mixtape is deleted from S3. Messages are silent between 00:00–10:00 Asia/Tomsk.
+func (b *TelegramBot) runMixtapePoster(ctx context.Context) {
+	time.Sleep(5 * time.Second)
+
+	cfg := b.svc.GetConfig()
+	chatID := cfg.PostsChatID
+	if chatID == 0 {
+		if v := os.Getenv("POSTS_CHAT_ID"); v != "" {
+			fmt.Sscanf(v, "%d", &chatID)
+		}
+	}
+	if chatID == 0 {
+		b.log.Errorf("POSTS_CHAT_ID not set, mixtape poster disabled")
+		return
+	}
+
+	sched := b.svc.GetMixtapeSchedule()
+	if sched == nil {
+		b.log.Errorf("mixtape schedule not loaded, poster disabled")
+		return
+	}
+	b.log.Infof("mixtape poster started, chatID=%d, entries=%d", chatID, len(sched.Entries))
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	sentTimes := make(map[string]bool)
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			now := time.Now()
+
+			currentSched := b.svc.GetMixtapeSchedule()
+			if currentSched == nil {
+				continue
+			}
+
+			if currentSched.Date != now.Format("2006-01-02") {
+				newSched, err := scheduler.GetOrCreateMixtapeSchedule(ctx, b.svc.GetS3Client(), &cfg, now)
+				if err == nil && newSched != nil {
+					currentSched = newSched
+					b.svc.SetMixtapeSchedule(currentSched)
+					sentTimes = make(map[string]bool)
+					b.log.Infof("reloaded mixtape schedule for %s with %d entries", currentSched.Date, len(currentSched.Entries))
+				}
+			}
+
+			for _, entry := range currentSched.Entries {
+				timeKey := entry.Time.Format("15:04:05")
+				if sentTimes[timeKey] {
+					continue
+				}
+				timeDiff := now.Sub(entry.Time)
+				if timeDiff >= 0 && timeDiff < 1*time.Minute {
+					b.log.Infof("runMixtapePoster: sending mixtape at scheduled time %s", entry.Time.Format("15:04:05"))
+					go b.sendScheduledMixtape(context.Background(), chatID)
+					sentTimes[timeKey] = true
+				}
+			}
+		}
+	}
+}
+
+// sendScheduledMixtape picks a random mixtape, sends it to chatID, then deletes it from S3.
+func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, chatID int64) {
+	gen := b.svc.GetMixtapeGenerator()
+
+	m, err := gen.GetRandom(ctx)
+	if err != nil {
+		b.log.Errorf("sendScheduledMixtape: no mixtapes available: %v", err)
+		return
+	}
+
+	videoPath, err := gen.DownloadVideoToTemp(ctx, m)
+	if err != nil {
+		b.log.Errorf("sendScheduledMixtape: download: %v", err)
+		return
+	}
+	defer os.Remove(videoPath)
+
+	f, err := os.Open(videoPath)
+	if err != nil {
+		b.log.Errorf("sendScheduledMixtape: open: %v", err)
+		return
+	}
+	defer f.Close()
+
+	loc := time.FixedZone("Asia/Tomsk", 7*3600)
+	hour := time.Now().In(loc).Hour()
+	silent := hour >= 0 && hour < 10
+
+	msg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{Name: "mixtape.mp4", Reader: f})
+	msg.Caption = mixtapeCaption(m)
+	if silent {
+		msg.DisableNotification = true
+	}
+
+	if _, err := b.tg.Send(msg); err != nil {
+		b.log.Errorf("sendScheduledMixtape: send: %v", err)
+		return
+	}
+
+	if err := gen.Delete(ctx, m.ID); err != nil {
+		b.log.Errorf("sendScheduledMixtape: delete from S3: %v", err)
+	} else {
+		b.log.Infof("sendScheduledMixtape: sent and deleted mixtape %s (silent=%v)", m.ID, silent)
+	}
+}
+
+// cmdSetMixtapes shows or updates the mixtape schedule.
+// Without args: shows today's schedule. With args "<index> <time>": updates an entry.
+func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args string) {
+	args = strings.TrimSpace(args)
+
+	// No args → show schedule
+	if args == "" {
+		sched := b.svc.GetMixtapeSchedule()
+		if sched == nil {
+			b.replyText(chatID, "❌ Расписание микстейпов не загружено")
+			return
+		}
+		now := time.Now()
+		lines := []string{fmt.Sprintf("📅 Расписание микстейпов на %s:", sched.Date)}
+		for i, entry := range sched.Entries {
+			status := "⏳"
+			if entry.Time.Before(now) {
+				status = "✅"
+			}
+			lines = append(lines, fmt.Sprintf("#%d — %s %s", i+1, entry.Time.Format("15:04"), status))
+		}
+		b.replyText(chatID, strings.Join(lines, "\n"))
+		return
+	}
+
+	// With args → update entry
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		b.replyText(chatID, "Использование: /setmixtapes <index> <HH:MM | +30m | +2h | YYYY-MM-DD HH:MM>")
+		return
+	}
+
+	var idx int
+	if _, err := fmt.Sscanf(parts[0], "%d", &idx); err != nil {
+		b.replyText(chatID, "Первый параметр должен быть индексом (#) из /setmixtapes")
+		return
+	}
+
+	sched := b.svc.GetMixtapeSchedule()
+	if sched == nil {
+		b.replyText(chatID, "❌ Расписание микстейпов не загружено")
+		return
+	}
+	if idx < 1 || idx > len(sched.Entries) {
+		b.replyText(chatID, "❌ Неверный индекс")
+		return
+	}
+
+	rawTime := strings.Join(parts[1:], " ")
+	baseDt := sched.Entries[idx-1].Time
+
+	var targetTime time.Time
+
+	if strings.HasPrefix(rawTime, "+") || strings.HasPrefix(rawTime, "-") {
+		sign := 1
+		if strings.HasPrefix(rawTime, "-") {
+			sign = -1
+		}
+		rawTime = strings.TrimPrefix(strings.TrimPrefix(rawTime, "+"), "-")
+		var num int
+		var unit rune
+		if _, err := fmt.Sscanf(rawTime, "%d%c", &num, &unit); err != nil {
+			b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h")
+			return
+		}
+		var delta time.Duration
+		switch unit {
+		case 'm':
+			delta = time.Duration(sign*num) * time.Minute
+		case 'h':
+			delta = time.Duration(sign*num) * time.Hour
+		case 'd':
+			delta = time.Duration(sign*num) * 24 * time.Hour
+		default:
+			b.replyText(chatID, "❌ Неизвестная единица времени. Используйте: m, h, d")
+			return
+		}
+		targetTime = baseDt.Add(delta)
+	} else if strings.Contains(rawTime, ":") && !strings.Contains(rawTime, "-") {
+		timeParts := strings.Split(rawTime, ":")
+		if len(timeParts) != 2 {
+			b.replyText(chatID, "❌ Неверный формат HH:MM")
+			return
+		}
+		var hour, min int
+		if _, err := fmt.Sscanf(timeParts[0], "%d", &hour); err != nil {
+			b.replyText(chatID, "❌ Неверный формат HH:MM")
+			return
+		}
+		if _, err := fmt.Sscanf(timeParts[1], "%d", &min); err != nil {
+			b.replyText(chatID, "❌ Неверный формат HH:MM")
+			return
+		}
+		targetTime = baseDt.
+			Add(-time.Duration(baseDt.Hour()) * time.Hour).
+			Add(-time.Duration(baseDt.Minute()) * time.Minute).
+			Add(-time.Duration(baseDt.Second()) * time.Second).
+			Add(time.Duration(hour) * time.Hour).
+			Add(time.Duration(min) * time.Minute)
+	} else {
+		rawTime = strings.ReplaceAll(rawTime, "T", " ")
+		parsedTime, err := time.Parse("2006-01-02 15:04", rawTime)
+		if err != nil {
+			b.replyText(chatID, "❌ Не удалось распарсить время. Примеры:\n• 14:30\n• +30m\n• 2025-01-28 14:30")
+			return
+		}
+		targetTime = parsedTime
+	}
+
+	if targetTime.Before(time.Now()) {
+		b.replyText(chatID, "❌ Нельзя установить время в прошлом")
+		return
+	}
+
+	updatedEntries := make([]scheduler.MixtapeScheduleEntry, len(sched.Entries))
+	for i, entry := range sched.Entries {
+		if i == idx-1 {
+			updatedEntries[i] = scheduler.MixtapeScheduleEntry{Time: targetTime}
+		} else {
+			updatedEntries[i] = entry
+		}
+	}
+
+	updatedSched := &scheduler.DailyMixtapeSchedule{
+		Date:      sched.Date,
+		Entries:   updatedEntries,
+		UpdatedAt: time.Now(),
+	}
+
+	cfg := b.svc.GetConfig()
+	if err := scheduler.SaveMixtapeSchedule(ctx, b.svc.GetS3Client(), &cfg, updatedSched); err != nil {
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка сохранения расписания: %v", err))
+		return
+	}
+
+	b.svc.SetMixtapeSchedule(updatedSched)
+	b.replyText(chatID, fmt.Sprintf("✅ Время микстейпа #%d обновлено на %s. /setmixtapes для просмотра.", idx, targetTime.Format("15:04")))
+}
+
 // getCachedOrDownloadMeme retrieves cached meme file or downloads from S3 with caching
 // Optimization: avoids re-downloading same meme multiple times within TTL (default 5 minutes)
 // This significantly reduces S3 egress traffic during scheduled posting
@@ -1366,6 +1621,8 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
               /song Dua Lipa — найти треки Dua Lipa и скачать
 /mixtape — получить случайный микстейп из треков eenfinit/dee bill (кнопка Send для публикации)
 /clearmixtape — удалить все микстейпы из S3
+/setmixtapes — расписание авто-отправки микстейпов (5 в день по всем 24 часам)
+/setmixtapes <index> <time> — изменить время отправки микстейпа по индексу
 /status — статус генерации и использование памяти
 /errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID

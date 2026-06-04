@@ -21,10 +21,11 @@ type Config struct {
 	HumorAPIKey  string
 	APILeagueKey string
 
-	SongsJSONKey    string
-	SourcesJSONKey  string
-	MemesJSONKey    string
-	ScheduleJSONKey string
+	SongsJSONKey           string
+	SourcesJSONKey         string
+	MemesJSONKey           string
+	ScheduleJSONKey        string
+	MixtapeScheduleJSONKey string
 
 	ImageHashIndexKey      string // "image_hashes.json" - blacklist of image hashes
 	VideoHashIndexKey      string // "video_hashes.json" - blacklist of video hashes
@@ -65,10 +66,11 @@ func LoadConfig() (Config, error) {
 		HumorAPIKey:  os.Getenv("HUMOR_API_KEY"),
 		APILeagueKey: os.Getenv("APILEAGUE_API_KEY"),
 
-		SongsJSONKey:    "songs.json",
-		SourcesJSONKey:  "sources.json",
-		MemesJSONKey:    "memes.json",
-		ScheduleJSONKey: "schedule.json",
+		SongsJSONKey:           "songs.json",
+		SourcesJSONKey:         "sources.json",
+		MemesJSONKey:           "memes.json",
+		ScheduleJSONKey:        "schedule.json",
+		MixtapeScheduleJSONKey: "mixtape_schedule.json",
 
 		ImageHashIndexKey:      "image_hashes.json",
 		VideoHashIndexKey:      "video_hashes.json",
