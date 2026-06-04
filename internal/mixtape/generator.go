@@ -388,7 +388,12 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
 	topText := escapeFfmpegText(TopLabelText)
-	bottomText := escapeFfmpegText(wrapText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle), 28))
+	labelText := fmt.Sprintf("#%d %s - %s", segNum, author, songTitle)
+	// Wrap only if text is too wide for 1080px at fontsize 64 (~22px/char ≈ 49 chars)
+	if len(labelText) > 49 {
+		labelText = wrapText(labelText, 49)
+	}
+	bottomText := escapeFfmpegText(labelText)
 	textStyle := "fontsize=48:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12"
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
@@ -397,7 +402,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 			"y='abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))':"+
 			"fps=30:d=1:s=1080x1920,setsar=1,"+
 			"drawtext=text='%s':%s:x=(w-tw)/2:y=100,"+
-			"drawtext=text='%s':fontsize=48:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-60"+
+			"drawtext=text='%s':fontsize=64:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-60"+
 			"[out]",
 		zoomPhase, zoomPeriod,
 		xSpeed, xPhase,
