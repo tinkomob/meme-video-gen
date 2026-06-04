@@ -2822,6 +2822,19 @@ func (b *TelegramBot) editMessage(chatID int64, messageID int, text string) erro
 	return err
 }
 
+// mixtapeText builds the shared title + numbered song list used for YouTube and Telegram.
+// YouTube uses Title=TopLabelText and Description=mixtapeText; Telegram caption = mixtapeText.
+func mixtapeText(m *mixtape_pkg.Mixtape) string {
+	lines := []string{mixtape_pkg.TopLabelText, ""}
+	for i, t := range m.Titles {
+		lines = append(lines, fmt.Sprintf("%d. %s", i+1, t))
+	}
+	return strings.Join(lines, "\n")
+}
+
+func mixtapeCaption(m *mixtape_pkg.Mixtape) string    { return mixtapeText(m) }
+func mixtapeDescription(m *mixtape_pkg.Mixtape) string { return mixtapeText(m) }
+
 // handleClearMixtapeCommand deletes all mixtapes from S3 and resets the index.
 func (b *TelegramBot) handleClearMixtapeCommand(ctx context.Context, chatID int64) {
 	gen := b.svc.GetMixtapeGenerator()
@@ -2869,7 +2882,7 @@ func (b *TelegramBot) handleMixtapeCommand(ctx context.Context, chatID int64) {
 	}
 	defer f.Close()
 
-	caption := "🎵 Mixtape\n" + strings.Join(m.Titles, " · ")
+	caption := mixtapeCaption(m)
 
 	msg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{Name: "mixtape.mp4", Reader: f})
 	msg.Caption = caption
@@ -2920,16 +2933,9 @@ func (b *TelegramBot) handleSendMixtape(ctx context.Context, chatID int64, mixta
 		return
 	}
 
-	caption := "🎵 Mixtape\n" + strings.Join(m.Titles, " · ")
-
-	var ytDescLines []string
-	ytDescLines = append(ytDescLines, mixtape_pkg.TopLabelText)
-	ytDescLines = append(ytDescLines, "")
-	for i, t := range m.Titles {
-		ytDescLines = append(ytDescLines, fmt.Sprintf("%d. %s", i+1, t))
-	}
-	ytDescription := strings.Join(ytDescLines, "\n")
-	ytTitle := "What song will you choose?"
+	ytTitle := mixtape_pkg.TopLabelText
+	ytDescription := mixtapeDescription(m)
+	caption := mixtapeCaption(m)
 
 	uploadReq := &uploaders_types.UploadRequest{
 		VideoPath:   videoPath,
