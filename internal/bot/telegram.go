@@ -1191,8 +1191,9 @@ func (b *TelegramBot) runMixtapePoster(ctx context.Context) {
 	}
 }
 
-// sendScheduledMixtape picks a random mixtape, sends it to chatID, then deletes it from S3.
-func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, chatID int64) {
+// sendScheduledMixtape picks a random mixtape, publishes it to all platforms (channel, X, YouTube),
+// sends a notification to adminChatID, then deletes it from S3.
+func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int64) {
 	gen := b.svc.GetMixtapeGenerator()
 
 	m, err := gen.GetRandom(ctx)
@@ -1208,32 +1209,53 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, chatID int64) {
 	}
 	defer os.Remove(videoPath)
 
-	f, err := os.Open(videoPath)
-	if err != nil {
-		b.log.Errorf("sendScheduledMixtape: open: %v", err)
-		return
-	}
-	defer f.Close()
-
-	loc := time.FixedZone("Asia/Tomsk", 7*3600)
-	hour := time.Now().In(loc).Hour()
-	silent := hour >= 0 && hour < 10
-
-	msg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{Name: "mixtape.mp4", Reader: f})
-	msg.Caption = mixtapeCaption(m)
-	if silent {
-		msg.DisableNotification = true
+	if _, err := b.svc.GetUploadersManager().GetUploader("youtube"); err != nil {
+		if err := b.svc.InitializeYouTubeUploaderFromS3(ctx); err != nil {
+			b.log.Warnf("sendScheduledMixtape: failed to load YouTube uploader from S3: %v", err)
+		}
 	}
 
-	if _, err := b.tg.Send(msg); err != nil {
-		b.log.Errorf("sendScheduledMixtape: send: %v", err)
+	mgr := b.svc.GetUploadersManager()
+	if mgr == nil {
+		b.log.Errorf("sendScheduledMixtape: uploaders manager is nil")
 		return
 	}
 
-	if err := gen.Delete(ctx, m.ID); err != nil {
-		b.log.Errorf("sendScheduledMixtape: delete from S3: %v", err)
+	uploadReq := &uploaders_types.UploadRequest{
+		VideoPath:   videoPath,
+		Title:       mixtape_pkg.TopLabelText,
+		Caption:     mixtapeCaption(m),
+		Description: mixtapeDescription(m),
+		Privacy:     "public",
+	}
+
+	results := mgr.UploadToAll(ctx, uploadReq)
+
+	success := 0
+	var resultLines []string
+	for platform, result := range results {
+		if result.Success {
+			success++
+			if result.URL != "" {
+				resultLines = append(resultLines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", strings.ToUpper(platform), result.URL))
+			} else {
+				resultLines = append(resultLines, fmt.Sprintf("✅ %s: загружено", strings.ToUpper(platform)))
+			}
+			b.log.Infof("sendScheduledMixtape: ✓ %s uploaded successfully", platform)
+		} else {
+			resultLines = append(resultLines, fmt.Sprintf("❌ %s: %s", strings.ToUpper(platform), result.Error))
+			b.log.Errorf("sendScheduledMixtape: ✗ %s failed: %s", platform, result.Error)
+		}
+	}
+
+	if success > 0 {
+		if err := gen.Delete(ctx, m.ID); err != nil {
+			b.log.Errorf("sendScheduledMixtape: delete from S3: %v", err)
+		}
+		b.replyHTML(adminChatID, fmt.Sprintf("📤 Микстейп опубликован по расписанию:\n\n%s", strings.Join(resultLines, "\n")))
+		b.log.Infof("sendScheduledMixtape: sent and deleted mixtape %s", m.ID)
 	} else {
-		b.log.Infof("sendScheduledMixtape: sent and deleted mixtape %s (silent=%v)", m.ID, silent)
+		b.replyHTML(adminChatID, fmt.Sprintf("❌ Ошибка публикации микстейпа по расписанию:\n\n%s", strings.Join(resultLines, "\n")))
 	}
 }
 
