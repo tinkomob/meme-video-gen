@@ -359,17 +359,12 @@ func wrapText(s string, maxChars int) string {
 	return strings.Join(lines, `\n`)
 }
 
-// escapeFfmpegText escapes special characters for use inside an ffmpeg drawtext filter value.
-// In filter_complex context, [ ] , ; are structural characters and must also be escaped.
-func escapeFfmpegText(s string) string {
-	s = strings.ReplaceAll(s, `\`, `\\`)
-	s = strings.ReplaceAll(s, `'`, `\'`)
-	s = strings.ReplaceAll(s, `:`, `\:`)
-	s = strings.ReplaceAll(s, `[`, `\[`)
-	s = strings.ReplaceAll(s, `]`, `\]`)
-	s = strings.ReplaceAll(s, `,`, `\,`)
-	s = strings.ReplaceAll(s, `;`, `\;`)
-	return s
+// escapeFfmpegPath escapes a file path for use inside a single-quoted FFmpeg filter option
+// (e.g. textfile='...'). Only backslash and colon need escaping for typical temp paths.
+func escapeFfmpegPath(p string) string {
+	p = strings.ReplaceAll(p, `\`, `\\`)
+	p = strings.ReplaceAll(p, `:`, `\:`)
+	return p
 }
 
 // panStyle describes one distinct animation pattern for a segment.
@@ -431,22 +426,38 @@ func pickPanStyle(segIdx int, r *rand.Rand) panStyle {
 func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor string) error {
 	pan := pickPanStyle(segNum-1, r)
 
-	topText := escapeFfmpegText(TopLabelText)
 	labelText := fmt.Sprintf("#%d %s - %s", segNum, author, songTitle)
 	if len(labelText) > 49 {
 		labelText = wrapText(labelText, 49)
 	}
-	bottomText := escapeFfmpegText(labelText)
+
+	// Write text content to temp files to avoid filter_complex quoting issues.
+	// In FFmpeg single-quoted strings, ' always terminates the string with no backslash
+	// escaping, so apostrophes in song titles break inline text= values.
+	topFile := outPath + ".top.txt"
+	bottomFile := outPath + ".bottom.txt"
+	if err := os.WriteFile(topFile, []byte(TopLabelText), 0644); err != nil {
+		return fmt.Errorf("write top textfile: %w", err)
+	}
+	defer os.Remove(topFile)
+	if err := os.WriteFile(bottomFile, []byte(labelText), 0644); err != nil {
+		return fmt.Errorf("write bottom textfile: %w", err)
+	}
+	defer os.Remove(bottomFile)
+
+	topFilePath := escapeFfmpegPath(topFile)
+	bottomFilePath := escapeFfmpegPath(bottomFile)
+
 	textStyle := "fontsize=48:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12"
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
 			"zoompan=z='%s':x='%s':y='%s':fps=30:d=1:s=1080x1920,setsar=1,"+
-			"drawtext=text='%s':%s:x=(w-tw)/2:y=100,"+
-			"drawtext=text='%s':fontsize=64:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-160"+
+			"drawtext=textfile='%s':%s:x=(w-tw)/2:y=100,"+
+			"drawtext=textfile='%s':fontsize=64:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-160"+
 			"[out]",
 		pan.zExpr, pan.xExpr, pan.yExpr,
-		topText, textStyle,
-		bottomText, bottomColor,
+		topFilePath, textStyle,
+		bottomFilePath, bottomColor,
 	)
 
 	ffmpegSem <- struct{}{}
