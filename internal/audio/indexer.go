@@ -159,6 +159,19 @@ func (idx *Indexer) downloadSongAttempt(ctx context.Context, entry *youtube.Play
 	}
 	idx.log.Infof("audio: stream downloaded successfully: %s", entry.ID)
 
+	var probeStderr strings.Builder
+	probeCmd := exec.CommandContext(ctx, "ffprobe",
+		"-v", "error",
+		"-select_streams", "a:0",
+		"-show_entries", "stream=duration",
+		"-of", "default=noprint_wrappers=1",
+		tmpFile,
+	)
+	probeCmd.Stderr = &probeStderr
+	if err := probeCmd.Run(); err != nil {
+		return fmt.Errorf("ffprobe validation failed (corrupt m4a): %s", strings.TrimSpace(probeStderr.String()))
+	}
+
 	data, err := os.ReadFile(tmpFile)
 	if err != nil {
 		return fmt.Errorf("read temp file: %w", err)
@@ -330,9 +343,14 @@ func (idx *Indexer) DownloadSongToTemp(ctx context.Context, song *model.Song) (s
 	}
 	defer f.Close()
 
-	if _, err := io.Copy(f, reader.Reader); err != nil {
+	written, err := io.Copy(f, reader.Reader)
+	if err != nil {
 		os.Remove(tmpFile)
 		return "", fmt.Errorf("copy from S3 stream: %w", err)
+	}
+	if reader.Size > 0 && written != reader.Size {
+		os.Remove(tmpFile)
+		return "", fmt.Errorf("S3 stream truncated: got %d bytes, expected %d", written, reader.Size)
 	}
 	return tmpFile, nil
 }
