@@ -292,11 +292,11 @@ func (m *ResourceMonitor) ForceCheck(ctx context.Context) {
 	m.ensureResources(ctx)
 }
 
-// cleanupOldMemes removes memes older than 12 hours
+// cleanupOldMemes removes memes older than 48 hours
 func (m *ResourceMonitor) cleanupOldMemes(ctx context.Context) {
-	m.log.Infof("resource monitor: cleaning up memes older than 12 hours")
+	m.log.Infof("resource monitor: cleaning up memes older than 48 hours")
 
-	if err := m.svc.DeleteMemesOlderThan(ctx, 12*time.Hour); err != nil {
+	if err := m.svc.DeleteMemesOlderThan(ctx, 48*time.Hour); err != nil {
 		m.log.Errorf("resource monitor: cleanup old memes failed: %v", err)
 	} else {
 		m.log.Infof("resource monitor: old memes cleanup completed")

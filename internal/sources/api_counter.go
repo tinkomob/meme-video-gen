@@ -2,6 +2,7 @@ package sources
 
 import (
 	"context"
+	"sync"
 	"time"
 )
 
@@ -11,6 +12,34 @@ type apiCallCounts struct {
 	Date           string `json:"date"`
 	HumorAPICalls  int    `json:"humor_api_calls"`
 	APILeagueCalls int    `json:"apileague_calls"`
+}
+
+// memeAPIRateLimiter enforces max 5 requests per minute for meme-api.com.
+var memeAPIRateLimiter = &rateLimiter{
+	maxPerMinute: 5,
+}
+
+type rateLimiter struct {
+	mu           sync.Mutex
+	windowStart  time.Time
+	callsInWindow int
+	maxPerMinute int
+}
+
+// allow returns true if a request is permitted within the rate limit.
+func (r *rateLimiter) allow() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := time.Now()
+	if now.Sub(r.windowStart) >= time.Minute {
+		r.windowStart = now
+		r.callsInWindow = 0
+	}
+	if r.callsInWindow >= r.maxPerMinute {
+		return false
+	}
+	r.callsInWindow++
+	return true
 }
 
 func today() string {

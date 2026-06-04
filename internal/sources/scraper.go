@@ -117,72 +117,75 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 		scrape func(ctx context.Context) (*model.SourceAsset, error)
 	}
 
-	allSources := []sourceFunc{
-		{name: "memeapi", scrape: sc.scrapeMemeAPI},
+	// Primary sources with daily limits — shuffle for variety.
+	primarySources := []sourceFunc{
 		{name: "humorapi", scrape: sc.scrapeHumorAPI},
 		{name: "apileague", scrape: sc.scrapeAPILeague},
 	}
-
-	if len(allSources) == 0 {
-		sc.logIfNotSilent("sources: no sources configured")
-		sourcesIdx.UpdatedAt = time.Now()
-		_ = sc.s3.WriteJSON(ctx, sc.cfg.SourcesJSONKey, &sourcesIdx)
-		return nil
-	}
-
-	// Shuffle sources for random selection
-	rand.Shuffle(len(allSources), func(i, j int) {
-		allSources[i], allSources[j] = allSources[j], allSources[i]
+	rand.Shuffle(len(primarySources), func(i, j int) {
+		primarySources[i], primarySources[j] = primarySources[j], primarySources[i]
 	})
 
-	// Try sources in random order until we have enough or run out of sources.
-	// Loop multiple times so we can collect more than len(allSources) assets.
+	// memeapi is the fallback: unlimited but capped at 5 req/min.
+	fallbackSource := sourceFunc{name: "memeapi", scrape: sc.scrapeMemeAPI}
+
+	tryAdd := func(src sourceFunc) bool {
+		sc.logIfNotSilent("sources: trying %s", src.name)
+		asset, err := src.scrape(ctx)
+		if err != nil {
+			sc.log.Warnf("sources: scrape %s failed: %v", src.name, err)
+			return false
+		}
+		if asset == nil {
+			return false
+		}
+		if sc.assetExists(sourcesIdx, asset.SHA256) {
+			sc.logIfNotSilent("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
+			return false
+		}
+		if asset.ImageHash != 0 && sc.assetExistsByImageHash(sourcesIdx, asset.ImageHash) {
+			sc.logIfNotSilent("sources: ⚠️  visual duplicate detected! Skipping %s asset (ImageHash already exists)", src.name)
+			return false
+		}
+		if asset.ImageHash != 0 {
+			inBlacklist, err := sc.IsHashInBlacklist(ctx, asset.ImageHash)
+			if err != nil {
+				sc.log.Warnf("sources: failed to check blacklist: %v", err)
+			} else if inBlacklist {
+				sc.logIfNotSilent("sources: ⚠️  blacklisted visual duplicate! Skipping %s asset (ImageHash in history)", src.name)
+				return false
+			}
+		}
+		newAssets = append(newAssets, *asset)
+		sourcesIdx.Items = append(sourcesIdx.Items, *asset)
+		sourcesIdx.UpdatedAt = time.Now()
+		sc.logIfNotSilent("sources: ✓ added %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
+		return true
+	}
+
+	// Phase 1: try primary sources (humorapi, apileague) until depleted or enough.
 	for len(newAssets) < needed {
 		progressed := false
-		for _, src := range allSources {
+		for _, src := range primarySources {
 			if len(newAssets) >= needed {
 				break
 			}
-
-			sc.logIfNotSilent("sources: trying %s", src.name)
-			asset, err := src.scrape(ctx)
-			if err != nil {
-				sc.log.Warnf("sources: scrape %s failed: %v", src.name, err)
-				continue
-			}
-
-			if asset != nil {
-				if sc.assetExists(sourcesIdx, asset.SHA256) {
-					sc.logIfNotSilent("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
-					continue
-				}
-
-				// Also check for visual duplicates by image hash in active index
-				if asset.ImageHash != 0 && sc.assetExistsByImageHash(sourcesIdx, asset.ImageHash) {
-					sc.logIfNotSilent("sources: ⚠️  visual duplicate detected! Skipping %s asset (ImageHash already exists)", src.name)
-					continue
-				}
-
-				// Check against blacklist of historical hashes
-				if asset.ImageHash != 0 {
-					inBlacklist, err := sc.IsHashInBlacklist(ctx, asset.ImageHash)
-					if err != nil {
-						sc.log.Warnf("sources: failed to check blacklist: %v", err)
-					} else if inBlacklist {
-						sc.logIfNotSilent("sources: ⚠️  blacklisted visual duplicate! Skipping %s asset (ImageHash in history)", src.name)
-						continue
-					}
-				}
-
+			if tryAdd(src) {
 				progressed = true
-				newAssets = append(newAssets, *asset)
-				sourcesIdx.Items = append(sourcesIdx.Items, *asset)
-				sourcesIdx.UpdatedAt = time.Now()
-				sc.logIfNotSilent("sources: ✓ added %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
 			}
 		}
 		if !progressed {
 			break
+		}
+	}
+
+	// Phase 2: fill remaining slots from memeapi (respects 5 req/min rate limit).
+	if len(newAssets) < needed {
+		sc.logIfNotSilent("sources: primary sources exhausted, falling back to memeapi")
+		for len(newAssets) < needed {
+			if !tryAdd(fallbackSource) {
+				break
+			}
 		}
 	}
 

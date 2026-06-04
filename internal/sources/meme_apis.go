@@ -16,6 +16,9 @@ const (
 )
 
 func (sc *Scraper) scrapeMemeAPI(ctx context.Context) (*model.SourceAsset, error) {
+	if !memeAPIRateLimiter.allow() {
+		return nil, fmt.Errorf("meme-api: rate limit reached (5 req/min)")
+	}
 	req, err := http.NewRequestWithContext(ctx, "GET", "https://meme-api.com/gimme", nil)
 	if err != nil {
 		return nil, err
