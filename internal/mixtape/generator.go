@@ -30,7 +30,7 @@ const (
 	maxMixtapes     = 5
 
 	// TopLabelText is the question overlaid on every segment and reused in YouTube descriptions.
-	TopLabelText = "What track do you like the most?"
+	TopLabelText = "What song do you like the most?"
 )
 
 // ffmpeg semaphore — one encoding process at a time
