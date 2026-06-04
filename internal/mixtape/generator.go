@@ -28,10 +28,31 @@ const (
 	segmentCount    = 4  // segments per mixtape (3-4, we default to 4)
 	segmentDuration = 14 // seconds per segment
 	maxMixtapes     = 5
-
-	// TopLabelText is the question overlaid on every segment and reused in YouTube descriptions.
-	TopLabelText = "What song do you like the most?"
 )
+
+var topLabelVariants = []string{
+	"What's your favorite song?",
+	"Which song do you like best?",
+	"What's the song you enjoy most?",
+	"Do you have a favorite song?",
+	"What song resonates with you the most?",
+	"Which song speaks to you?",
+	"What song could you listen to on repeat?",
+	"Is there a song that stands out to you?",
+	"What song means the most to you?",
+	"Which song do you find yourself coming back to?",
+	"What's a song that's stuck with you?",
+	"What song captures something you care about?",
+	"What song are you vibing with these days?",
+	"What's on repeat for you?",
+	"What song do you like the most?",
+}
+
+// TopLabelText returns a random question label for mixtape overlays and descriptions.
+func TopLabelText() string {
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	return topLabelVariants[r.Intn(len(topLabelVariants))]
+}
 
 // ffmpeg semaphore — one encoding process at a time
 var ffmpegSem = make(chan struct{}, 1)
@@ -436,7 +457,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// escaping, so apostrophes in song titles break inline text= values.
 	topFile := outPath + ".top.txt"
 	bottomFile := outPath + ".bottom.txt"
-	if err := os.WriteFile(topFile, []byte(TopLabelText), 0644); err != nil {
+	if err := os.WriteFile(topFile, []byte(TopLabelText()), 0644); err != nil {
 		return fmt.Errorf("write top textfile: %w", err)
 	}
 	defer os.Remove(topFile)

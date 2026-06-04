@@ -1223,7 +1223,7 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int6
 
 	uploadReq := &uploaders_types.UploadRequest{
 		VideoPath:   videoPath,
-		Title:       mixtape_pkg.TopLabelText,
+		Title:       mixtape_pkg.TopLabelText(),
 		Caption:     mixtapeCaption(m),
 		Description: mixtapeDescription(m),
 		Privacy:     "public",
@@ -3129,7 +3129,7 @@ func (b *TelegramBot) editMessage(chatID int64, messageID int, text string) erro
 // mixtapeText builds the shared title + numbered song list used for YouTube and Telegram.
 // YouTube uses Title=TopLabelText and Description=mixtapeText; Telegram caption = mixtapeText.
 func mixtapeText(m *mixtape_pkg.Mixtape) string {
-	lines := []string{mixtape_pkg.TopLabelText, ""}
+	lines := []string{mixtape_pkg.TopLabelText(), ""}
 	for i, t := range m.Titles {
 		lines = append(lines, fmt.Sprintf("%d. %s", i+1, t))
 	}
@@ -3237,7 +3237,7 @@ func (b *TelegramBot) handleSendMixtape(ctx context.Context, chatID int64, mixta
 		return
 	}
 
-	ytTitle := mixtape_pkg.TopLabelText
+	ytTitle := mixtape_pkg.TopLabelText()
 	ytDescription := mixtapeDescription(m)
 	caption := mixtapeCaption(m)
 
