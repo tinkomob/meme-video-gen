@@ -17,6 +17,7 @@ import (
 
 	"meme-video-gen/internal/ai"
 	"meme-video-gen/internal/logging"
+	mixtape_pkg "meme-video-gen/internal/mixtape"
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/scheduler"
 	uploaders_types "meme-video-gen/internal/uploaders"
@@ -2921,11 +2922,20 @@ func (b *TelegramBot) handleSendMixtape(ctx context.Context, chatID int64, mixta
 
 	caption := "🎵 Mixtape\n" + strings.Join(m.Titles, " · ")
 
+	var ytDescLines []string
+	ytDescLines = append(ytDescLines, mixtape_pkg.TopLabelText)
+	ytDescLines = append(ytDescLines, "")
+	for i, t := range m.Titles {
+		ytDescLines = append(ytDescLines, fmt.Sprintf("%d. %s", i+1, t))
+	}
+	ytDescription := strings.Join(ytDescLines, "\n")
+	ytTitle := "What song will you choose?"
+
 	uploadReq := &uploaders_types.UploadRequest{
 		VideoPath:   videoPath,
-		Title:       caption,
+		Title:       ytTitle,
 		Caption:     caption,
-		Description: strings.Join(m.Titles, "\n"),
+		Description: ytDescription,
 		Privacy:     "public",
 	}
 

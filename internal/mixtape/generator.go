@@ -28,6 +28,9 @@ const (
 	segmentCount    = 4  // segments per mixtape (3-4, we default to 4)
 	segmentDuration = 14 // seconds per segment
 	maxMixtapes     = 5
+
+	// TopLabelText is the question overlaid on every segment and reused in YouTube descriptions.
+	TopLabelText = "What track do you like the most?"
 )
 
 // ffmpeg semaphore — one encoding process at a time
@@ -384,7 +387,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
 	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
 	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
-	topText := escapeFfmpegText("What track do you like the most?")
+	topText := escapeFfmpegText(TopLabelText)
 	bottomText := escapeFfmpegText(wrapText(fmt.Sprintf("#%d - %s - %s", segNum, author, songTitle), 28))
 	textStyle := "fontsize=48:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12"
 	filterComplex := fmt.Sprintf(
