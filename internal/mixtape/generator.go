@@ -356,7 +356,7 @@ func wrapText(s string, maxChars int) string {
 	if current != "" {
 		lines = append(lines, current)
 	}
-	return strings.Join(lines, "\n")
+	return strings.Join(lines, `\n`)
 }
 
 // escapeFfmpegText escapes special characters for use inside an ffmpeg drawtext filter value.
