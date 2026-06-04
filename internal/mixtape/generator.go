@@ -372,24 +372,67 @@ func escapeFfmpegText(s string) string {
 	return s
 }
 
-// buildSegment creates a video segment: thumbnail image + trimmed audio slice.
-// The thumbnail is upscaled to 3x output size and animated with a slow bouncing pan
-// (DVD screensaver style) and subtle zoom oscillation between 3x and ~3.15x.
-func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor string) error {
-	// Random movement params for each segment
-	xSpeed := 4 + r.Intn(4)                        // 4–7 px/frame horizontal drift (slow)
-	ySpeed := 5 + r.Intn(4)                        // 5–8 px/frame vertical drift (slow)
-	xPhase := r.Intn(4320)                         // random start position in x
-	yPhase := r.Intn(7680)                         // random start position in y
-	zoomPeriod := 18 + r.Intn(12)                 // zoom cycle 18–29 seconds (slow)
-	zoomPhase := r.Float64() * 2 * math.Pi        // random zoom phase
+// panStyle describes one distinct animation pattern for a segment.
+type panStyle struct {
+	xExpr string
+	yExpr string
+	zExpr string
+}
 
-	// Scale thumbnail to 3x output (3240×5760) so there's room to pan.
-	// zoompan z oscillates 1.0→1.05, giving a subtle zoom (was 1.0→1.33).
-	// x/y bounce slowly within the 2160×3840 extra space (3240-1080, 5760-1920).
+// pickPanStyle returns a deterministically unique pan style for the given segment index.
+// Each style is visually distinct so adjacent segments look noticeably different.
+func pickPanStyle(segIdx int, r *rand.Rand) panStyle {
+	// Available pan range: iw*zoom-ow (≈2160) horizontal, ih*zoom-oh (≈3840) vertical.
+	// `on` = output frame number (30fps). All expressions must be valid ffmpeg math.
+	styles := []panStyle{
+		// 0: DVD-bounce — triangular wave on both axes (different speeds)
+		{
+			xExpr: fmt.Sprintf("abs(mod(on*%d+%d,2*(iw*zoom-ow))-(iw*zoom-ow))", 5+r.Intn(3), r.Intn(4320)),
+			yExpr: fmt.Sprintf("abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))", 7+r.Intn(4), r.Intn(7680)),
+			zExpr: fmt.Sprintf("1+0.02*(1+sin(%.4f+2*PI*on/(30*%d)))", r.Float64()*2*math.Pi, 20+r.Intn(10)),
+		},
+		// 1: Slow diagonal sweep left-to-right, top-to-bottom, then hold
+		{
+			xExpr: fmt.Sprintf("min(on*%d+%d,(iw*zoom-ow))", 3+r.Intn(3), r.Intn(500)),
+			yExpr: fmt.Sprintf("min(on*%d+%d,(ih*zoom-oh))", 4+r.Intn(3), r.Intn(800)),
+			zExpr: "1.05",
+		},
+		// 2: Circular motion (sin/cos orbit around center)
+		{
+			xExpr: fmt.Sprintf("(iw*zoom-ow)/2+((iw*zoom-ow)/2)*sin(%.4f+2*PI*on/(30*%d))", r.Float64()*2*math.Pi, 18+r.Intn(10)),
+			yExpr: fmt.Sprintf("(ih*zoom-oh)/2+((ih*zoom-oh)/2)*cos(%.4f+2*PI*on/(30*%d))", r.Float64()*2*math.Pi, 18+r.Intn(10)),
+			zExpr: "1.0",
+		},
+		// 3: Slow vertical drift only (horizontal centered)
+		{
+			xExpr: "(iw*zoom-ow)/2",
+			yExpr: fmt.Sprintf("abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))", 6+r.Intn(5), r.Intn(7680)),
+			zExpr: fmt.Sprintf("1+0.03*(1+sin(%.4f+2*PI*on/(30*%d)))", r.Float64()*2*math.Pi, 15+r.Intn(8)),
+		},
+		// 4: Slow horizontal drift only (vertical centered)
+		{
+			xExpr: fmt.Sprintf("abs(mod(on*%d+%d,2*(iw*zoom-ow))-(iw*zoom-ow))", 6+r.Intn(5), r.Intn(4320)),
+			yExpr: "(ih*zoom-oh)/2",
+			zExpr: fmt.Sprintf("1+0.03*(1+sin(%.4f+2*PI*on/(30*%d)))", r.Float64()*2*math.Pi, 15+r.Intn(8)),
+		},
+		// 5: Zoom pulse — stays centered, pulses in/out
+		{
+			xExpr: "(iw*zoom-ow)/2",
+			yExpr: "(ih*zoom-oh)/2",
+			zExpr: fmt.Sprintf("1+0.08*(1+sin(%.4f+2*PI*on/(30*%d)))", r.Float64()*2*math.Pi, 8+r.Intn(6)),
+		},
+	}
+	// Assign style by segment index so sequential segments always differ.
+	return styles[segIdx%len(styles)]
+}
+
+// buildSegment creates a video segment: thumbnail image + trimmed audio slice.
+// Each segment gets a distinct pan/zoom animation style.
+func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor string) error {
+	pan := pickPanStyle(segNum-1, r)
+
 	topText := escapeFfmpegText(TopLabelText)
 	labelText := fmt.Sprintf("#%d %s - %s", segNum, author, songTitle)
-	// Wrap only if text is too wide for 1080px at fontsize 64 (~22px/char ≈ 49 chars)
 	if len(labelText) > 49 {
 		labelText = wrapText(labelText, 49)
 	}
@@ -397,16 +440,11 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	textStyle := "fontsize=48:fontcolor=white:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12"
 	filterComplex := fmt.Sprintf(
 		"[0:v]scale=3240:5760:force_original_aspect_ratio=increase,crop=3240:5760,"+
-			"zoompan=z='1+0.025*(1+sin(%.4f+2*PI*on/(30*%d)))':"+
-			"x='abs(mod(on*%d+%d,2*(iw*zoom-ow))-(iw*zoom-ow))':"+
-			"y='abs(mod(on*%d+%d,2*(ih*zoom-oh))-(ih*zoom-oh))':"+
-			"fps=30:d=1:s=1080x1920,setsar=1,"+
+			"zoompan=z='%s':x='%s':y='%s':fps=30:d=1:s=1080x1920,setsar=1,"+
 			"drawtext=text='%s':%s:x=(w-tw)/2:y=100,"+
 			"drawtext=text='%s':fontsize=64:fontcolor=%s:borderw=4:bordercolor=black:box=1:boxcolor=black@0.6:boxborderw=12:x=(w-tw)/2:y=h-th-60"+
 			"[out]",
-		zoomPhase, zoomPeriod,
-		xSpeed, xPhase,
-		ySpeed, yPhase,
+		pan.zExpr, pan.xExpr, pan.yExpr,
 		topText, textStyle,
 		bottomText, bottomColor,
 	)
