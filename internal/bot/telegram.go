@@ -218,6 +218,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		go b.handleMixtapeCommand(ctx, chatID)
 	case "clearmixtape":
 		go b.handleClearMixtapeCommand(ctx, chatID)
+	case "gmix":
+		go b.handleGmixCommand(ctx, chatID)
 	case "setmixtapes":
 		b.cmdSetMixtapes(ctx, chatID, msg.CommandArguments())
 	default:
@@ -1642,6 +1644,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
               /song — выбрать из списка, случайный или поиск
               /song Dua Lipa — найти треки Dua Lipa и скачать
 /mixtape — получить случайный микстейп из треков eenfinit/dee bill (кнопка Send для публикации)
+/gmix — очистить все микстейпы и сгенерировать новые
 /clearmixtape — удалить все микстейпы из S3
 /setmixtapes — расписание авто-отправки микстейпов (5 в день по всем 24 часам)
 /setmixtapes <index> <time> — изменить время отправки микстейпа по индексу
@@ -3148,6 +3151,23 @@ func (b *TelegramBot) handleClearMixtapeCommand(ctx context.Context, chatID int6
 		return
 	}
 	b.replyText(chatID, "✅ Все микстейпы удалены из S3")
+}
+
+// handleGmixCommand clears all mixtapes and regenerates a full pool in the background.
+func (b *TelegramBot) handleGmixCommand(ctx context.Context, chatID int64) {
+	gen := b.svc.GetMixtapeGenerator()
+	if err := gen.ClearAll(ctx); err != nil {
+		b.log.Errorf("handleGmixCommand: ClearAll: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка очистки микстейпов: %v", err))
+		return
+	}
+	b.replyText(chatID, "🗑 Микстейпы удалены. Генерирую новые...")
+	if err := gen.EnsureMixtapes(ctx); err != nil {
+		b.log.Errorf("handleGmixCommand: EnsureMixtapes: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка генерации микстейпов: %v", err))
+		return
+	}
+	b.replyText(chatID, "✅ Новые микстейпы готовы")
 }
 
 // handleMixtapeCommand handles the /mixtape command — sends a random mixtape with a Send button.
