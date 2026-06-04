@@ -105,13 +105,6 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 		return nil
 	}
 
-	sc.logIfNotSilent("sources: loading source URLs")
-	pinterestURLs, _ := sc.loadSourceURLs(ctx, "pinterest_urls.json")
-	redditURLs, _ := sc.loadSourceURLs(ctx, "reddit_sources.json")
-	twitterURLs, _ := sc.loadSourceURLs(ctx, "twitter_urls.json")
-
-	sc.logIfNotSilent("sources: found %d pinterest, %d reddit, %d twitter URLs", len(pinterestURLs), len(redditURLs), len(twitterURLs))
-
 	needed := sc.cfg.MaxSources - len(sourcesIdx.Items)
 	if needed <= 0 {
 		return nil
@@ -119,57 +112,15 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 
 	var newAssets []model.SourceAsset
 
-	// Create a list of all available sources with their scrapers
 	type sourceFunc struct {
 		name   string
-		url    string
-		scrape func(ctx context.Context, url string) (*model.SourceAsset, error)
+		scrape func(ctx context.Context) (*model.SourceAsset, error)
 	}
 
-	var allSources []sourceFunc
-
-	// Add Google Images if configured
-	if sc.cfg.SerpAPIKey != "" {
-		allSources = append(allSources, sourceFunc{
-			name: "google",
-			url:  "google_images",
-			scrape: func(ctx context.Context, _ string) (*model.SourceAsset, error) {
-				return sc.scrapeGoogleImages(ctx)
-			},
-		})
-	}
-
-	// Add Pinterest sources
-	for _, u := range pinterestURLs {
-		allSources = append(allSources, sourceFunc{
-			name: "pinterest",
-			url:  u,
-			scrape: func(ctx context.Context, url string) (*model.SourceAsset, error) {
-				return sc.ScrapePinterest(ctx, url)
-			},
-		})
-	}
-
-	// Add Reddit sources
-	for _, u := range redditURLs {
-		allSources = append(allSources, sourceFunc{
-			name: "reddit",
-			url:  u,
-			scrape: func(ctx context.Context, url string) (*model.SourceAsset, error) {
-				return sc.scrapeReddit(ctx, url)
-			},
-		})
-	}
-
-	// Add Twitter sources
-	for _, u := range twitterURLs {
-		allSources = append(allSources, sourceFunc{
-			name: "twitter",
-			url:  u,
-			scrape: func(ctx context.Context, url string) (*model.SourceAsset, error) {
-				return sc.scrapeTwitter(ctx, url)
-			},
-		})
+	allSources := []sourceFunc{
+		{name: "memeapi", scrape: sc.scrapeMemeAPI},
+		{name: "humorapi", scrape: sc.scrapeHumorAPI},
+		{name: "apileague", scrape: sc.scrapeAPILeague},
 	}
 
 	if len(allSources) == 0 {
@@ -184,46 +135,54 @@ func (sc *Scraper) EnsureSources(ctx context.Context) error {
 		allSources[i], allSources[j] = allSources[j], allSources[i]
 	})
 
-	// Try sources in random order until we have enough or run out of sources
-	for _, src := range allSources {
-		if len(newAssets) >= needed {
-			break
-		}
+	// Try sources in random order until we have enough or run out of sources.
+	// Loop multiple times so we can collect more than len(allSources) assets.
+	for len(newAssets) < needed {
+		progressed := false
+		for _, src := range allSources {
+			if len(newAssets) >= needed {
+				break
+			}
 
-		sc.logIfNotSilent("sources: trying %s: %s", src.name, src.url)
-		asset, err := src.scrape(ctx, src.url)
-		if err != nil {
-			sc.log.Warnf("sources: scrape %s %s failed: %v", src.name, src.url, err)
-			continue
-		}
-
-		if asset != nil {
-			if sc.assetExists(sourcesIdx, asset.SHA256) {
-				sc.logIfNotSilent("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
+			sc.logIfNotSilent("sources: trying %s", src.name)
+			asset, err := src.scrape(ctx)
+			if err != nil {
+				sc.log.Warnf("sources: scrape %s failed: %v", src.name, err)
 				continue
 			}
 
-			// Also check for visual duplicates by image hash in active index
-			if asset.ImageHash != 0 && sc.assetExistsByImageHash(sourcesIdx, asset.ImageHash) {
-				sc.logIfNotSilent("sources: ⚠️  visual duplicate detected! Skipping %s asset (ImageHash already exists)", src.name)
-				continue
-			}
-
-			// Check against blacklist of historical hashes
-			if asset.ImageHash != 0 {
-				inBlacklist, err := sc.IsHashInBlacklist(ctx, asset.ImageHash)
-				if err != nil {
-					sc.log.Warnf("sources: failed to check blacklist: %v", err)
-				} else if inBlacklist {
-					sc.logIfNotSilent("sources: ⚠️  blacklisted visual duplicate! Skipping %s asset (ImageHash in history)", src.name)
+			if asset != nil {
+				if sc.assetExists(sourcesIdx, asset.SHA256) {
+					sc.logIfNotSilent("sources: ⚠️  duplicate detected! Skipping %s asset (SHA256 already exists)", src.name)
 					continue
 				}
-			}
 
-			newAssets = append(newAssets, *asset)
-			sourcesIdx.Items = append(sourcesIdx.Items, *asset)
-			sourcesIdx.UpdatedAt = time.Now()
-			sc.logIfNotSilent("sources: ✓ added %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
+				// Also check for visual duplicates by image hash in active index
+				if asset.ImageHash != 0 && sc.assetExistsByImageHash(sourcesIdx, asset.ImageHash) {
+					sc.logIfNotSilent("sources: ⚠️  visual duplicate detected! Skipping %s asset (ImageHash already exists)", src.name)
+					continue
+				}
+
+				// Check against blacklist of historical hashes
+				if asset.ImageHash != 0 {
+					inBlacklist, err := sc.IsHashInBlacklist(ctx, asset.ImageHash)
+					if err != nil {
+						sc.log.Warnf("sources: failed to check blacklist: %v", err)
+					} else if inBlacklist {
+						sc.logIfNotSilent("sources: ⚠️  blacklisted visual duplicate! Skipping %s asset (ImageHash in history)", src.name)
+						continue
+					}
+				}
+
+				progressed = true
+				newAssets = append(newAssets, *asset)
+				sourcesIdx.Items = append(sourcesIdx.Items, *asset)
+				sourcesIdx.UpdatedAt = time.Now()
+				sc.logIfNotSilent("sources: ✓ added %s asset (%d/%d, total=%d/%d)", src.name, len(newAssets), needed, len(sourcesIdx.Items), sc.cfg.MaxSources)
+			}
+		}
+		if !progressed {
+			break
 		}
 	}
 

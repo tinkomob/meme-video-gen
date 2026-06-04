@@ -26,6 +26,9 @@ const (
 	SourceKindReddit    SourceKind = "reddit"
 	SourceKindTwitter   SourceKind = "twitter"
 	SourceKindUnknown   SourceKind = "unknown"
+	SourceKindMemeAPI   SourceKind = "memeapi"
+	SourceKindHumorAPI  SourceKind = "humorapi"
+	SourceKindAPILeague SourceKind = "apileague"
 )
 
 type SourceAsset struct {
