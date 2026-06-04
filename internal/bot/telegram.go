@@ -3146,7 +3146,11 @@ func mixtapeText(m *mixtape_pkg.Mixtape) string {
 	}
 	lines := []string{title, ""}
 	for i, t := range m.Titles {
-		lines = append(lines, fmt.Sprintf("%d. %s", i+1, t))
+		if i < len(m.Authors) && m.Authors[i] != "" {
+			lines = append(lines, fmt.Sprintf("%d. %s - %s", i+1, m.Authors[i], t))
+		} else {
+			lines = append(lines, fmt.Sprintf("%d. %s", i+1, t))
+		}
 	}
 	return strings.Join(lines, "\n")
 }
