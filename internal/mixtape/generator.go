@@ -59,6 +59,7 @@ var ffmpegSem = make(chan struct{}, 1)
 
 type Mixtape struct {
 	ID        string    `json:"id"`
+	Title     string    `json:"title"`
 	VideoKey  string    `json:"video_key"`
 	ThumbKey  string    `json:"thumb_key"`
 	SongIDs   []string  `json:"song_ids"`
@@ -217,6 +218,9 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 	rMain := rand.New(rand.NewSource(time.Now().UnixNano()))
 	rMain.Shuffle(len(palette), func(i, j int) { palette[i], palette[j] = palette[j], palette[i] })
 
+	// Pick one title for the entire mixtape so it remains consistent across all segments.
+	mixtapeTitle := TopLabelText()
+
 	var segmentPaths []string
 	var songIDs, titles []string
 
@@ -248,7 +252,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		startOffset := r.Float64() * maxStart
 
 		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg%d.mp4", i))
-		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title, palette[i%len(palette)]); err != nil {
+		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title, palette[i%len(palette)], mixtapeTitle); err != nil {
 			return nil, fmt.Errorf("build segment %d: %w", i, err)
 		}
 		segmentPaths = append(segmentPaths, segPath)
@@ -287,6 +291,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 
 	return &Mixtape{
 		ID:        id,
+		Title:     mixtapeTitle,
 		VideoKey:  videoKey,
 		ThumbKey:  thumbKey,
 		SongIDs:   songIDs,
@@ -444,7 +449,7 @@ func pickPanStyle(segIdx int, r *rand.Rand) panStyle {
 
 // buildSegment creates a video segment: thumbnail image + trimmed audio slice.
 // Each segment gets a distinct pan/zoom animation style.
-func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor string) error {
+func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor, topLabel string) error {
 	pan := pickPanStyle(segNum-1, r)
 
 	labelText := fmt.Sprintf("#%d %s - %s", segNum, author, songTitle)
@@ -457,7 +462,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	// escaping, so apostrophes in song titles break inline text= values.
 	topFile := outPath + ".top.txt"
 	bottomFile := outPath + ".bottom.txt"
-	if err := os.WriteFile(topFile, []byte(TopLabelText()), 0644); err != nil {
+	if err := os.WriteFile(topFile, []byte(topLabel), 0644); err != nil {
 		return fmt.Errorf("write top textfile: %w", err)
 	}
 	defer os.Remove(topFile)
