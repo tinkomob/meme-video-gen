@@ -211,6 +211,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdDownloadFiles(ctx, chatID)
 	case "song":
 		b.cmdSong(ctx, chatID, msg.CommandArguments())
+	case "songs":
+		go b.cmdSongs(ctx, chatID)
 	case "mixtape":
 		go b.handleMixtapeCommand(ctx, chatID)
 	case "clearmixtape":
@@ -1358,6 +1360,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
               /idea — выбрать из списка, случайный или поиск
               /idea Dua Lipa — найти треки Dua Lipa и выбрать
 /aidea — получить идею для рилса (без трека)
+/songs — загрузить новые треки в S3 (songs/)
 /song [query] — скачать трек в формате MP3 или MP4A
               /song — выбрать из списка, случайный или поиск
               /song Dua Lipa — найти треки Dua Lipa и скачать
@@ -1398,6 +1401,28 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 Мемы отправляются N раз в день по расписанию (10:00-23:59).
 Команда /meme отправляет случайное видео из уже сгенерированных.`
 	b.replyText(chatID, help)
+}
+
+func (b *TelegramBot) cmdSongs(ctx context.Context, chatID int64) {
+	countBefore, err := b.svc.GetSongsCount(ctx)
+	if err != nil {
+		b.replyText(chatID, fmt.Sprintf("Ошибка при получении количества треков: %v", err))
+		return
+	}
+	b.replyText(chatID, fmt.Sprintf("Треков сейчас: %d. Запускаю загрузку новых треков...", countBefore))
+
+	if err := b.svc.Impl().EnsureSongs(ctx); err != nil {
+		b.replyText(chatID, fmt.Sprintf("Ошибка при загрузке треков: %v", err))
+		return
+	}
+
+	countAfter, err := b.svc.GetSongsCount(ctx)
+	if err != nil {
+		b.replyText(chatID, "Треки загружены, но не удалось получить итоговое количество.")
+		return
+	}
+	added := countAfter - countBefore
+	b.replyText(chatID, fmt.Sprintf("Готово! Добавлено треков: %d. Итого: %d.", added, countAfter))
 }
 
 func (b *TelegramBot) cmdErrors(chatID int64) {
