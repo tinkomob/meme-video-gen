@@ -64,6 +64,7 @@ type Mixtape struct {
 	ThumbKey  string    `json:"thumb_key"`
 	SongIDs   []string  `json:"song_ids"`
 	Titles    []string  `json:"titles"`
+	Authors   []string  `json:"authors"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -222,7 +223,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 	mixtapeTitle := TopLabelText()
 
 	var segmentPaths []string
-	var songIDs, titles []string
+	var songIDs, titles, authors []string
 
 	for i, song := range songs {
 		g.log.Infof("mixtape: building segment %d — %s", i+1, song.Title)
@@ -258,6 +259,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		segmentPaths = append(segmentPaths, segPath)
 		songIDs = append(songIDs, song.ID)
 		titles = append(titles, song.Title)
+		authors = append(authors, song.Author)
 	}
 
 	// Concatenate segments
@@ -296,6 +298,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		ThumbKey:  thumbKey,
 		SongIDs:   songIDs,
 		Titles:    titles,
+		Authors:   authors,
 		CreatedAt: time.Now(),
 	}, nil
 }
