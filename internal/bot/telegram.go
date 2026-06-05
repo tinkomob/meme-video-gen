@@ -1874,31 +1874,38 @@ func (b *TelegramBot) cmdSetMemes(ctx context.Context, chatID int64, args string
 	var targetTime time.Time
 
 	if strings.HasPrefix(rawTime, "+") || strings.HasPrefix(rawTime, "-") {
-		sign := 1
-		if strings.HasPrefix(rawTime, "-") {
-			sign = -1
+		compact := strings.ReplaceAll(rawTime, " ", "")
+
+		// Support day shorthand (e.g. +1d) and use ParseDuration for everything else.
+		if strings.HasSuffix(compact, "d") {
+			daysStr := strings.TrimSuffix(compact, "d")
+			if daysStr == "" || daysStr == "+" || daysStr == "-" {
+				b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h, +1d")
+				return
+			}
+			for i, c := range daysStr {
+				if i == 0 && (c == '+' || c == '-') {
+					continue
+				}
+				if c < '0' || c > '9' {
+					b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h, +1d")
+					return
+				}
+			}
+			var days int
+			if _, scanErr := fmt.Sscanf(daysStr, "%d", &days); scanErr != nil {
+				b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h, +1d")
+				return
+			}
+			targetTime = baseDt.Add(time.Duration(days) * 24 * time.Hour)
+		} else {
+			delta, parseErr := time.ParseDuration(compact)
+			if parseErr != nil {
+				b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h")
+				return
+			}
+			targetTime = baseDt.Add(delta)
 		}
-		rawTime = strings.TrimPrefix(strings.TrimPrefix(rawTime, "+"), "-")
-		var num int
-		var unit rune
-		_, scanErr := fmt.Sscanf(rawTime, "%d%c", &num, &unit)
-		if scanErr != nil {
-			b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h")
-			return
-		}
-		var delta time.Duration
-		switch unit {
-		case 'm':
-			delta = time.Duration(sign*num) * time.Minute
-		case 'h':
-			delta = time.Duration(sign*num) * time.Hour
-		case 'd':
-			delta = time.Duration(sign*num) * 24 * time.Hour
-		default:
-			b.replyText(chatID, "❌ Неизвестная единица времени. Используйте: m (минуты), h (часы), d (дни)")
-			return
-		}
-		targetTime = baseDt.Add(delta)
 	} else if strings.Contains(rawTime, ":") && !strings.Contains(rawTime, "-") {
 		timeParts := strings.Split(rawTime, ":")
 		if len(timeParts) != 2 {
