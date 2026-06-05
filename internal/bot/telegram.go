@@ -184,6 +184,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdStatus(ctx, chatID)
 	case "chatid":
 		b.cmdChatID(chatID)
+	case "setmemes":
+		b.cmdSetMemes(ctx, chatID, msg.CommandArguments())
 	case "scheduleinfo":
 		b.cmdScheduleInfo(chatID)
 	case "setnext":
@@ -1662,12 +1664,12 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /status — статус генерации и использование памяти
 /errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID
-/scheduleinfo — расписание отправок мемов на сегодня
-/setnext <index> <time> — изменить время отправки по индексу
-                   /setnext 1 14:30 (на 14:30)
-                   /setnext 2 +30m (через 30 минут)
-                   /setnext 3 +2h (через 2 часа)
-                   /setnext 4 2025-01-28 14:30 (конкретная дата и время)
+/setmemes — расписание авто-отправки мемов на сегодня
+/setmemes <index> <time> — изменить время отправки мема по индексу
+                   /setmemes 1 14:30 (на 14:30)
+                   /setmemes 2 +30m (через 30 минут)
+                   /setmemes 3 +2h (через 2 часа)
+                   /setmemes 4 2025-01-28 14:30 (конкретная дата и время)
 /runscheduled — запустить генерацию 3 мемов сейчас (с кнопками действий)
 /clearschedule — удалить schedule.json и сгенерировать расписание заново
 /clearsources — очистить папку источников
@@ -1801,6 +1803,188 @@ func (b *TelegramBot) savePostsChatIDIfNeeded(ctx context.Context, chatID int64)
 		return
 	}
 	b.log.Infof("saved POSTS_CHAT_ID=%d", chatID)
+}
+
+func (b *TelegramBot) cmdSetMemes(ctx context.Context, chatID int64, args string) {
+	args = strings.TrimSpace(args)
+
+	// No args → show schedule
+	if args == "" {
+		sched := b.svc.GetSchedule()
+		if sched == nil {
+			b.replyText(chatID, "📅 Расписание ещё не загружено. Попробуй позже.")
+			return
+		}
+		now := time.Now()
+		lines := []string{
+			fmt.Sprintf("📅 Расписание мемов на %s:", sched.Date),
+			fmt.Sprintf("Всего отправок: %d", len(sched.Entries)),
+			"",
+		}
+		for i, entry := range sched.Entries {
+			status := "⏳"
+			if entry.Time.Before(now) {
+				status = "✅"
+			}
+			lines = append(lines, fmt.Sprintf("#%d — %s %s", i+1, entry.Time.Format("15:04"), status))
+		}
+		b.replyText(chatID, strings.Join(lines, "\n"))
+		return
+	}
+
+	// With args → update entry
+	parts := strings.Fields(args)
+	if len(parts) < 2 {
+		b.replyText(chatID, "Использование: /setmemes <index> <HH:MM | +30m | +2h | YYYY-MM-DD HH:MM>")
+		return
+	}
+
+	b.log.Infof("cmdSetMemes: START - args=%v", parts)
+
+	var idx int
+	idxStr := parts[0]
+	for _, c := range idxStr {
+		if c < '0' || c > '9' {
+			b.replyText(chatID, "Первый параметр должен быть индексом (#) из /setmemes")
+			return
+		}
+	}
+	_, err := fmt.Sscanf(idxStr, "%d", &idx)
+	if err != nil {
+		b.log.Errorf("cmdSetMemes: invalid index: %v", err)
+		b.replyText(chatID, "Первый параметр должен быть индексом (#) из /setmemes")
+		return
+	}
+
+	sched := b.svc.GetSchedule()
+	if sched == nil {
+		b.replyText(chatID, "❌ Расписание не загружено")
+		return
+	}
+
+	if idx < 1 || idx > len(sched.Entries) {
+		b.replyText(chatID, "❌ Неверный индекс")
+		return
+	}
+
+	rawTime := strings.Join(parts[1:], " ")
+	b.log.Infof("cmdSetMemes: parsing time format: %q", rawTime)
+	baseDt := sched.Entries[idx-1].Time
+
+	var targetTime time.Time
+
+	if strings.HasPrefix(rawTime, "+") || strings.HasPrefix(rawTime, "-") {
+		compact := strings.ReplaceAll(rawTime, " ", "")
+
+		// Support day shorthand (e.g. +1d) and use ParseDuration for everything else.
+		if strings.HasSuffix(compact, "d") {
+			daysStr := strings.TrimSuffix(compact, "d")
+			if daysStr == "" || daysStr == "+" || daysStr == "-" {
+				b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h, +1d")
+				return
+			}
+			for i, c := range daysStr {
+				if i == 0 && (c == '+' || c == '-') {
+					continue
+				}
+				if c < '0' || c > '9' {
+					b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h, +1d")
+					return
+				}
+			}
+			var days int
+			if _, scanErr := fmt.Sscanf(daysStr, "%d", &days); scanErr != nil {
+				b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h, +1d")
+				return
+			}
+			targetTime = baseDt.Add(time.Duration(days) * 24 * time.Hour)
+		} else {
+			delta, parseErr := time.ParseDuration(compact)
+			if parseErr != nil {
+				b.replyText(chatID, "❌ Не удалось распарсить относительное время. Примеры: +30m, +2h, -1h")
+				return
+			}
+			targetTime = baseDt.Add(delta)
+		}
+	} else if strings.Contains(rawTime, ":") && !strings.Contains(rawTime, "-") {
+		timeParts := strings.Split(rawTime, ":")
+		if len(timeParts) != 2 {
+			b.replyText(chatID, "❌ Неверный формат HH:MM")
+			return
+		}
+
+		hour := 0
+		for _, c := range timeParts[0] {
+			if c < '0' || c > '9' {
+				b.replyText(chatID, "❌ Неверный формат HH:MM")
+				return
+			}
+			hour = hour*10 + int(c-'0')
+		}
+		min := 0
+		for _, c := range timeParts[1] {
+			if c < '0' || c > '9' {
+				b.replyText(chatID, "❌ Неверный формат HH:MM")
+				return
+			}
+			min = min*10 + int(c-'0')
+		}
+		if hour < 0 || hour > 23 || min < 0 || min > 59 {
+			b.replyText(chatID, "❌ Неверный формат HH:MM")
+			return
+		}
+
+		targetTime = baseDt.
+			Add(-time.Duration(baseDt.Hour()) * time.Hour).
+			Add(-time.Duration(baseDt.Minute()) * time.Minute).
+			Add(-time.Duration(baseDt.Second()) * time.Second).
+			Add(time.Duration(hour) * time.Hour).
+			Add(time.Duration(min) * time.Minute)
+	} else {
+		rawTime = strings.ReplaceAll(rawTime, "T", " ")
+		loc := baseDt.Location()
+		parsedTime, parseErr := time.ParseInLocation("2006-01-02 15:04", rawTime, loc)
+		if parseErr != nil {
+			b.replyText(chatID, "❌ Не удалось распарсить время. Примеры:\n• 14:30 (HH:MM)\n• +30m (относительное)\n• 2025-01-28 14:30 (полная дата)")
+			return
+		}
+		if parsedTime.Format("2006-01-02") != sched.Date {
+			b.replyText(chatID, fmt.Sprintf("❌ Дата должна быть %s (расписание только на этот день)", sched.Date))
+			return
+		}
+		targetTime = parsedTime
+	}
+
+	if targetTime.Before(time.Now()) {
+		b.replyText(chatID, "❌ Нельзя установить время в прошлом")
+		return
+	}
+
+	updatedEntries := make([]scheduler.ScheduleEntry, len(sched.Entries))
+	for i, entry := range sched.Entries {
+		if i == idx-1 {
+			updatedEntries[i] = scheduler.ScheduleEntry{Time: targetTime}
+		} else {
+			updatedEntries[i] = entry
+		}
+	}
+
+	updatedSched := &scheduler.DailySchedule{
+		Date:      sched.Date,
+		Entries:   updatedEntries,
+		UpdatedAt: time.Now(),
+	}
+
+	cfg := b.svc.GetConfig()
+	if saveErr := scheduler.SaveSchedule(ctx, b.svc.GetS3Client(), &cfg, updatedSched); saveErr != nil {
+		b.log.Errorf("cmdSetMemes: save schedule: %v", saveErr)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка сохранения расписания: %v", saveErr))
+		return
+	}
+
+	b.svc.SetSchedule(updatedSched)
+	b.log.Infof("cmdSetMemes: updated entry[%d] to %s", idx, targetTime.Format("15:04"))
+	b.replyText(chatID, fmt.Sprintf("✅ Время мема #%d обновлено на %s. /setmemes для просмотра.", idx, targetTime.Format("15:04")))
 }
 
 func (b *TelegramBot) cmdScheduleInfo(chatID int64) {
