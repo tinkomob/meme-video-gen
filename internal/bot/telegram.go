@@ -1905,13 +1905,28 @@ func (b *TelegramBot) cmdSetMemes(ctx context.Context, chatID int64, args string
 			b.replyText(chatID, "❌ Неверный формат HH:MM")
 			return
 		}
-		var hour, min int
-		_, hErr := fmt.Sscanf(timeParts[0], "%d", &hour)
-		_, mErr := fmt.Sscanf(timeParts[1], "%d", &min)
-		if hErr != nil || mErr != nil {
+
+		hour := 0
+		for _, c := range timeParts[0] {
+			if c < '0' || c > '9' {
+				b.replyText(chatID, "❌ Неверный формат HH:MM")
+				return
+			}
+			hour = hour*10 + int(c-'0')
+		}
+		min := 0
+		for _, c := range timeParts[1] {
+			if c < '0' || c > '9' {
+				b.replyText(chatID, "❌ Неверный формат HH:MM")
+				return
+			}
+			min = min*10 + int(c-'0')
+		}
+		if hour < 0 || hour > 23 || min < 0 || min > 59 {
 			b.replyText(chatID, "❌ Неверный формат HH:MM")
 			return
 		}
+
 		targetTime = baseDt.
 			Add(-time.Duration(baseDt.Hour()) * time.Hour).
 			Add(-time.Duration(baseDt.Minute()) * time.Minute).
