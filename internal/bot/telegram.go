@@ -1935,9 +1935,14 @@ func (b *TelegramBot) cmdSetMemes(ctx context.Context, chatID int64, args string
 			Add(time.Duration(min) * time.Minute)
 	} else {
 		rawTime = strings.ReplaceAll(rawTime, "T", " ")
-		parsedTime, parseErr := time.Parse("2006-01-02 15:04", rawTime)
+		loc := baseDt.Location()
+		parsedTime, parseErr := time.ParseInLocation("2006-01-02 15:04", rawTime, loc)
 		if parseErr != nil {
 			b.replyText(chatID, "❌ Не удалось распарсить время. Примеры:\n• 14:30 (HH:MM)\n• +30m (относительное)\n• 2025-01-28 14:30 (полная дата)")
+			return
+		}
+		if parsedTime.Format("2006-01-02") != sched.Date {
+			b.replyText(chatID, fmt.Sprintf("❌ Дата должна быть %s (расписание только на этот день)", sched.Date))
 			return
 		}
 		targetTime = parsedTime
