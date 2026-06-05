@@ -1225,7 +1225,7 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int6
 		return
 	}
 
-	tomsk, _ := time.LoadLocation("Asia/Tomsk")
+	tomsk := time.FixedZone("Asia/Tomsk", 7*3600)
 	nowHour := time.Now().In(tomsk).Hour()
 	silent := nowHour < 10 // 00:00–09:59 → silent
 
