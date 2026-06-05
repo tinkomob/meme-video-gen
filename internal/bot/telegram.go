@@ -1842,7 +1842,14 @@ func (b *TelegramBot) cmdSetMemes(ctx context.Context, chatID int64, args string
 	b.log.Infof("cmdSetMemes: START - args=%v", parts)
 
 	var idx int
-	_, err := fmt.Sscanf(parts[0], "%d", &idx)
+	idxStr := parts[0]
+	for _, c := range idxStr {
+		if c < '0' || c > '9' {
+			b.replyText(chatID, "Первый параметр должен быть индексом (#) из /setmemes")
+			return
+		}
+	}
+	_, err := fmt.Sscanf(idxStr, "%d", &idx)
 	if err != nil {
 		b.log.Errorf("cmdSetMemes: invalid index: %v", err)
 		b.replyText(chatID, "Первый параметр должен быть индексом (#) из /setmemes")
