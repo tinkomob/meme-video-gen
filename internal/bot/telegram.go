@@ -56,7 +56,7 @@ type TelegramBot struct {
 	memeFileCache        map[string]string    // memeID -> file path
 	memeCacheTTL         map[string]time.Time // memeID -> expiration time
 	memeCacheMux         sync.RWMutex
-	memeCacheTTLDuration time.Duration // default 5 minutes
+	memeCacheTTLDuration time.Duration // default 2 hours
 
 	// sliderMemes TTL: evict stale entries if user never publishes
 	sliderMemesTTL map[int64]time.Time
@@ -88,7 +88,7 @@ func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath stri
 		trackSearchMode:      make(map[int64]string),
 		memeFileCache:        make(map[string]string),
 		memeCacheTTL:         make(map[string]time.Time),
-		memeCacheTTLDuration: 5 * time.Minute,
+		memeCacheTTLDuration: 2 * time.Hour,
 	}, nil
 }
 
