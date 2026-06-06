@@ -224,6 +224,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		go b.handleGmixCommand(ctx, chatID)
 	case "setmixtapes":
 		b.cmdSetMixtapes(ctx, chatID, msg.CommandArguments())
+	case "testmixdesc":
+		go b.cmdTestMixDesc(ctx, chatID)
 	default:
 		b.replyText(chatID, "Неизвестная команда. Используйте /help")
 	}
@@ -3370,6 +3372,18 @@ func (b *TelegramBot) buildMixtapeDescription(ctx context.Context, m *mixtape_pk
 		return base
 	}
 	return base + "\n\n" + blurb
+}
+
+// cmdTestMixDesc picks a random mixtape and prints its full description (track list + AI blurb).
+func (b *TelegramBot) cmdTestMixDesc(ctx context.Context, chatID int64) {
+	gen := b.svc.GetMixtapeGenerator()
+	m, err := gen.GetRandom(ctx)
+	if err != nil {
+		b.replyText(chatID, fmt.Sprintf("❌ No mixtapes available: %v", err))
+		return
+	}
+	desc := b.buildMixtapeDescription(ctx, m)
+	b.replyText(chatID, desc)
 }
 
 // handleClearMixtapeCommand deletes all mixtapes from S3 and resets the index.
