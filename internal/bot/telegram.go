@@ -1712,6 +1712,11 @@ func (b *TelegramBot) sendBestOfMixtape(ctx context.Context, chatID int64) {
 		_ = gen.Delete(ctx, m.ID)
 		return
 	}
+	if _, err := mgr.GetUploader("youtube"); err != nil {
+		if err := b.svc.InitializeYouTubeUploaderFromS3(ctx); err != nil {
+			b.log.Warnf("sendBestOfMixtape: failed to load YouTube uploader from S3: %v", err)
+		}
+	}
 
 	caption := m.Title + "\n\n"
 	for i, t := range m.Titles {
@@ -1854,6 +1859,11 @@ func (b *TelegramBot) sendWannaKnowTeaser(ctx context.Context, chatID int64) {
 		b.replyHTMLSilent(chatID, "❌ Teaser: менеджер загрузчиков не инициализирован", silent)
 		_ = gen.Delete(ctx, m.ID)
 		return
+	}
+	if _, err := mgr.GetUploader("youtube"); err != nil {
+		if err := b.svc.InitializeYouTubeUploaderFromS3(ctx); err != nil {
+			b.log.Warnf("sendWannaKnowTeaser: failed to load YouTube uploader from S3: %v", err)
+		}
 	}
 
 	uploadReq := &uploaders_types.UploadRequest{
