@@ -1239,7 +1239,7 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int6
 		VideoPath:   videoPath,
 		Title:       title,
 		Caption:     mixtapeCaption(m),
-		Description: mixtapeDescription(m),
+		Description: b.buildMixtapeDescription(ctx, m),
 		Privacy:     "public",
 		Silent:      silent,
 	}
@@ -3320,8 +3320,23 @@ func mixtapeText(m *mixtape_pkg.Mixtape) string {
 	return strings.Join(lines, "\n")
 }
 
-func mixtapeCaption(m *mixtape_pkg.Mixtape) string    { return mixtapeText(m) }
-func mixtapeDescription(m *mixtape_pkg.Mixtape) string { return mixtapeText(m) }
+func mixtapeCaption(m *mixtape_pkg.Mixtape) string { return mixtapeText(m) }
+
+// buildMixtapeDescription returns the track list plus an AI-generated story/joke/haiku.
+// Falls back to plain track list if AI is unavailable.
+func (b *TelegramBot) buildMixtapeDescription(ctx context.Context, m *mixtape_pkg.Mixtape) string {
+	base := mixtapeText(m)
+	gen := b.svc.GetTitleGenerator()
+	if gen == nil {
+		return base
+	}
+	blurb, err := gen.GenerateMixtapeBlurb(ctx, m.Titles, m.Authors)
+	if err != nil {
+		b.log.Warnf("buildMixtapeDescription: AI blurb failed: %v", err)
+		return base
+	}
+	return base + "\n\n" + blurb
+}
 
 // handleClearMixtapeCommand deletes all mixtapes from S3 and resets the index.
 func (b *TelegramBot) handleClearMixtapeCommand(ctx context.Context, chatID int64) {
@@ -3442,7 +3457,7 @@ func (b *TelegramBot) handleSendMixtape(ctx context.Context, chatID int64, mixta
 	if ytTitle == "" {
 		ytTitle = mixtape_pkg.TopLabelText()
 	}
-	ytDescription := mixtapeDescription(m)
+	ytDescription := b.buildMixtapeDescription(ctx, m)
 	caption := mixtapeCaption(m)
 
 	uploadReq := &uploaders_types.UploadRequest{

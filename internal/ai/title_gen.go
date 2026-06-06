@@ -402,6 +402,77 @@ func (tg *TitleGenerator) getFallbackIdeas(song *model.Song) []string {
 		"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes and sharp transitions, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, seamless loop-ready ending matching the opening mood, 4K, elegant and hypnotic mood.",
 	}
 }
+// GenerateMixtapeBlurb generates a short creative text (story, joke, or haiku) based on
+// the mixtape's track names and authors, for use in YouTube descriptions.
+func (tg *TitleGenerator) GenerateMixtapeBlurb(ctx context.Context, titles []string, authors []string) (string, error) {
+	if tg.apiKey == "" {
+		return "", fmt.Errorf("ai: no api key configured")
+	}
+
+	const maxRetries = 3
+	const initialBackoff = 2 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		blurb, err := tg.generateMixtapeBlurbWithClient(ctx, titles, authors)
+		if err == nil && blurb != "" {
+			return blurb, nil
+		}
+		if attempt < maxRetries && tg.isRetryableError(err) {
+			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
+			tg.log.Warnf("ai: generate mixtape blurb failed (attempt %d/%d): %v. Retrying in %v",
+				attempt, maxRetries, err, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return "", fmt.Errorf("context cancelled: %w", ctx.Err())
+			}
+			continue
+		}
+		return "", fmt.Errorf("generate mixtape blurb failed: %w", err)
+	}
+	return "", fmt.Errorf("generate mixtape blurb failed: unknown error")
+}
+
+func (tg *TitleGenerator) generateMixtapeBlurbWithClient(ctx context.Context, titles []string, authors []string) (string, error) {
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  tg.apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return "", fmt.Errorf("genai client: %w", err)
+	}
+
+	var trackList strings.Builder
+	for i, t := range titles {
+		if i < len(authors) && authors[i] != "" {
+			fmt.Fprintf(&trackList, "%d. %s — %s\n", i+1, authors[i], t)
+		} else {
+			fmt.Fprintf(&trackList, "%d. %s\n", i+1, t)
+		}
+	}
+
+	prompt := fmt.Sprintf(
+		"Вот треки из музыкального микстейпа:\n%s\n"+
+			"Напиши ОДНО из трёх (выбери случайно): короткий рассказ, шутку или хайку — "+
+			"вдохновлённые названиями или настроением этих треков. "+
+			"На русском языке. Не более 300 символов. Только текст, без заголовков и пояснений.",
+		trackList.String(),
+	)
+
+	resp, err := client.Models.GenerateContent(ctx, "gemini-2.0-flash", []*genai.Content{
+		genai.NewContentFromText(prompt, genai.RoleUser),
+	}, nil)
+	if err != nil {
+		return "", fmt.Errorf("generate content: %w", err)
+	}
+
+	blurb := strings.TrimSpace(resp.Text())
+	if blurb == "" {
+		return "", fmt.Errorf("empty response from gemini api")
+	}
+	return blurb, nil
+}
+
 func truncateString(s string, maxLen int) string {
 	if len(s) <= maxLen {
 		return s
