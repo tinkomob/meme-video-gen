@@ -1227,6 +1227,11 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 	if startOffset > 0 {
 		args = append(args, "-ss", fmt.Sprintf("%.3f", startOffset))
 	}
+	fadeOutStart := duration - 0.5
+	if fadeOutStart < 0 {
+		fadeOutStart = 0
+	}
+	audioFilter := fmt.Sprintf("afade=t=in:d=0.5,afade=t=out:st=%.3f:d=0.5", fadeOutStart)
 	args = append(args,
 		"-i", audioPath,
 		"-c:v", "copy",
@@ -1234,6 +1239,7 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 		"-b:a", "192k",
 		"-map", "0:v:0",
 		"-map", "1:a:0",
+		"-af", audioFilter,
 		"-t", fmt.Sprintf("%.2f", duration),
 		"-y",
 		"-strict", "-2",
