@@ -136,10 +136,28 @@ func (s *Service) SetMixtapeSchedule(sched *DailyMixtapeSchedule) {
 func (s *Service) GetEngagementConfig() *MixtapeEngagementConfig {
 	s.engagementMux.Lock()
 	defer s.engagementMux.Unlock()
-	if s.engagementConfig == nil {
-		return DefaultEngagementConfig()
+
+	src := s.engagementConfig
+	if src == nil {
+		src = DefaultEngagementConfig()
 	}
-	return s.engagementConfig
+
+	cp := *src
+	cp.BestOf.Artists = append([]string(nil), src.BestOf.Artists...)
+	return &cp
+}
+
+func (s *Service) SetEngagementConfig(cfg *MixtapeEngagementConfig) {
+	s.engagementMux.Lock()
+	defer s.engagementMux.Unlock()
+
+	if cfg == nil {
+		s.engagementConfig = nil
+		return
+	}
+	cp := *cfg
+	cp.BestOf.Artists = append([]string(nil), cfg.BestOf.Artists...)
+	s.engagementConfig = &cp
 }
 
 func (s *Service) SetEngagementConfig(cfg *MixtapeEngagementConfig) {
