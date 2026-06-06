@@ -1623,8 +1623,7 @@ func (b *TelegramBot) runBestOfPoster(ctx context.Context) {
 			if !ec.BestOf.LastPostedAt.IsZero() && time.Since(ec.BestOf.LastPostedAt) < time.Duration(intervalDays)*24*time.Hour {
 				continue
 			}
-			go b.sendBestOfMixtape(context.Background(), chatID)
-		}
+			go b.sendBestOfMixtape(ctx, chatID)
 	}
 }
 
