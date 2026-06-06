@@ -1806,16 +1806,24 @@ func (b *TelegramBot) sendWannaKnowTeaser(ctx context.Context, chatID int64) {
 		results := mgr.UploadToAll(ctx, uploadReq)
 		success := 0
 		var lines []string
+		esc := strings.NewReplacer(
+			"&", "&amp;",
+			"<", "&lt;",
+			">", "&gt;",
+			"\"", "&quot;",
+		)
 		for platform, r := range results {
+			p := esc.Replace(strings.ToUpper(platform))
 			if r.Success {
 				success++
 				if r.URL != "" {
-					lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", strings.ToUpper(platform), r.URL))
+					url := esc.Replace(r.URL)
+					lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", p, url))
 				} else {
-					lines = append(lines, fmt.Sprintf("✅ %s: загружено", strings.ToUpper(platform)))
+					lines = append(lines, fmt.Sprintf("✅ %s: загружено", p))
 				}
 			} else {
-				lines = append(lines, fmt.Sprintf("❌ %s: %s", strings.ToUpper(platform), r.Error))
+				lines = append(lines, fmt.Sprintf("❌ %s: %s", p, esc.Replace(r.Error)))
 			}
 		}
 		if success > 0 {
