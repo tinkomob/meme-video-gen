@@ -496,6 +496,12 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 	ffmpegSem <- struct{}{}
 	defer func() { <-ffmpegSem }()
 
+	fadeOutStart := float64(dur) - 0.5
+	if fadeOutStart < 0 {
+		fadeOutStart = 0
+	}
+	audioFilter := fmt.Sprintf("afade=t=in:d=0.5,afade=t=out:st=%.3f:d=0.5", fadeOutStart)
+
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, "ffmpeg",
 		"-hide_banner",
@@ -505,8 +511,8 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 		"-filter_complex_threads", "1",
 		"-loop", "1",
 		"-i", thumbPath,
-		"-i", audioPath,
 		"-ss", fmt.Sprintf("%.2f", startOffset),
+		"-i", audioPath,
 		"-t", fmt.Sprintf("%d", dur),
 		"-filter_complex", filterComplex,
 		"-map", "[out]",
@@ -518,6 +524,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 		"-x264-params", "threads=1",
 		"-c:a", "aac",
 		"-b:a", "192k",
+		"-af", audioFilter,
 		"-pix_fmt", "yuv420p",
 		"-r", "30",
 		"-shortest",
