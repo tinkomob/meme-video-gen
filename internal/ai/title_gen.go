@@ -402,12 +402,19 @@ func (tg *TitleGenerator) getFallbackIdeas(song *model.Song) []string {
 		"[ПРОМПТ]\nExtreme close-up of a vinyl record, turntable needle, and subtle dust particles floating in a warm amber light beam, designed as a 12-second video with 3-4 slow scenes and sharp transitions, soft bokeh background, cinematic minimalist aesthetic, gentle camera drift, soft focus edges, atmospheric shadows, seamless loop-ready ending matching the opening mood, 4K, elegant and hypnotic mood.",
 	}
 }
+const mixtapeBlurbMaxRunes = 300
+
 // GenerateMixtapeBlurb generates a short creative text (story, joke, or haiku) based on
 // the mixtape's track names and authors, for use in YouTube descriptions.
+// The call is bounded to 15 seconds total to avoid blocking upload flows indefinitely.
 func (tg *TitleGenerator) GenerateMixtapeBlurb(ctx context.Context, titles []string, authors []string) (string, error) {
 	if tg.apiKey == "" {
 		return "", fmt.Errorf("ai: no api key configured")
 	}
+
+	// Cap total time so a slow/hung Gemini call never stalls publishing.
+	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
 
 	const maxRetries = 3
 	const initialBackoff = 2 * time.Second
@@ -424,7 +431,7 @@ func (tg *TitleGenerator) GenerateMixtapeBlurb(ctx context.Context, titles []str
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				return "", fmt.Errorf("context cancelled: %w", ctx.Err())
+				return "", fmt.Errorf("context deadline exceeded: %w", ctx.Err())
 			}
 			continue
 		}
@@ -469,6 +476,9 @@ func (tg *TitleGenerator) generateMixtapeBlurbWithClient(ctx context.Context, ti
 	blurb := strings.TrimSpace(resp.Text())
 	if blurb == "" {
 		return "", fmt.Errorf("empty response from gemini api")
+	}
+	if runes := []rune(blurb); len(runes) > mixtapeBlurbMaxRunes {
+		blurb = string(runes[:mixtapeBlurbMaxRunes])
 	}
 	return blurb, nil
 }
