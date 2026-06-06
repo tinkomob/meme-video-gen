@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
@@ -1793,6 +1794,7 @@ func (b *TelegramBot) runTeaserPoster(ctx context.Context) {
 	defer ticker.Stop()
 
 	tomsk := time.FixedZone("Asia/Tomsk", 7*3600)
+	var running atomic.Bool
 
 	teaserDue := func() bool {
 		ec := b.svc.GetEngagementConfig()
@@ -1815,8 +1817,17 @@ func (b *TelegramBot) runTeaserPoster(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if teaserDue() {
-				go b.sendWannaKnowTeaser(ctx, chatID)
+			if teaserDue() && running.CompareAndSwap(false, true) {
+				// Mark as posted immediately so re-checks in the next 10s don't fire again.
+				ec := b.svc.GetEngagementConfig()
+				ec.Teaser.LastPostedAt = time.Now()
+				cfg2 := b.svc.GetConfig()
+				_ = scheduler.SaveEngagementConfig(ctx, b.svc.GetS3Client(), &cfg2, ec)
+				b.svc.SetEngagementConfig(ec)
+				go func() {
+					defer running.Store(false)
+					b.sendWannaKnowTeaser(ctx, chatID)
+				}()
 			}
 		}
 	}
@@ -1901,14 +1912,6 @@ func (b *TelegramBot) sendWannaKnowTeaser(ctx context.Context, chatID int64) {
 		b.replyHTMLSilent(chatID, fmt.Sprintf("🎵 Teaser опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
 	} else {
 		b.replyHTMLSilent(chatID, fmt.Sprintf("❌ Teaser не удалось опубликовать:\n%s", strings.Join(lines, "\n")), silent)
-	}
-
-	if success > 0 {
-		ec2 := b.svc.GetEngagementConfig()
-		ec2.Teaser.LastPostedAt = time.Now()
-		cfg2 := b.svc.GetConfig()
-		_ = scheduler.SaveEngagementConfig(ctx, b.svc.GetS3Client(), &cfg2, ec2)
-		b.svc.SetEngagementConfig(ec2)
 	}
 
 	_ = gen.Delete(ctx, m.ID)
