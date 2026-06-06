@@ -1284,10 +1284,11 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 	args = strings.TrimSpace(args)
 
 	// Route engagement subcommands
-	if strings.HasPrefix(args, "bestof") || strings.HasPrefix(args, "teaser") {
-		parts := strings.Fields(args)
+	parts := strings.Fields(args)
+	if len(parts) > 0 && (parts[0] == "bestof" || parts[0] == "teaser") {
 		b.cmdSetMixtapesEngagement(ctx, chatID, parts[0], parts[1:])
 		return
+	}
 	}
 
 	// No args → show schedule + engagement status
