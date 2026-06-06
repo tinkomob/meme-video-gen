@@ -452,10 +452,10 @@ func (tg *TitleGenerator) generateMixtapeBlurbWithClient(ctx context.Context, ti
 	}
 
 	prompt := fmt.Sprintf(
-		"Вот треки из музыкального микстейпа:\n%s\n"+
-			"Напиши ОДНО из трёх (выбери случайно): короткий рассказ, шутку или хайку — "+
-			"вдохновлённые названиями или настроением этих треков. "+
-			"На русском языке. Не более 300 символов. Только текст, без заголовков и пояснений.",
+		"Here are the tracks from a music mixtape:\n%s\n"+
+			"Write ONE of the following (pick randomly): a short story, a joke, or a haiku — "+
+			"inspired by the track names or the mood they evoke. "+
+			"In English. No more than 300 characters. Plain text only, no labels or explanations.",
 		trackList.String(),
 	)
 
