@@ -621,8 +621,11 @@ func (g *Generator) saveIndex(ctx context.Context, idx MixtapeIndex) error {
 func (g *Generator) pickSongsByAuthor(ctx context.Context, author string, n int) ([]*model.Song, error) {
 	var songsIdx model.SongsIndex
 	found, err := g.s3.ReadJSON(ctx, g.cfg.SongsJSONKey, &songsIdx)
-	if err != nil || !found {
+	if err != nil {
 		return nil, fmt.Errorf("read songs.json: %w", err)
+	}
+	if !found {
+		return nil, fmt.Errorf("songs index not found: %s", g.cfg.SongsJSONKey)
 	}
 
 	lowerAuthor := strings.ToLower(author)
