@@ -618,8 +618,12 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 
 	// Load engagement config at startup
 	go func() {
-		time.Sleep(5 * time.Second)
-		ec, err := LoadEngagementConfig(context.Background(), s3c, &cfg)
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+		ec, err := LoadEngagementConfig(ctx, s3c, &cfg)
 		if err != nil {
 			log.Errorf("failed to load engagement config: %v", err)
 		} else {
