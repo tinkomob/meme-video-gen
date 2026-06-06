@@ -1307,7 +1307,10 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 			lines = append(lines, fmt.Sprintf("#%d — %s %s", i+1, entry.Time.Format("15:04"), status))
 		}
 		ec := b.svc.GetEngagementConfig()
-		loc, _ := time.LoadLocation("Asia/Tomsk")
+		loc, err := time.LoadLocation("Asia/Tomsk")
+		if err != nil {
+			loc = time.FixedZone("UTC+7", 7*3600)
+		}
 		nowTomsk := time.Now().In(loc)
 
 		bestofStatus := "выкл"
