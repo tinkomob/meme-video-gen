@@ -1642,6 +1642,24 @@ func (b *TelegramBot) runBestOfPoster(ctx context.Context) {
 		return
 	}
 
+	checkAndSend := func() {
+		ec := b.svc.GetEngagementConfig()
+		if !ec.BestOf.Enabled || len(ec.BestOf.Artists) == 0 {
+			return
+		}
+		intervalDays := ec.BestOf.IntervalDays
+		if intervalDays <= 0 {
+			intervalDays = 3
+		}
+		if !ec.BestOf.LastPostedAt.IsZero() && time.Since(ec.BestOf.LastPostedAt) < time.Duration(intervalDays)*24*time.Hour {
+			return
+		}
+		go b.sendBestOfMixtape(ctx, chatID)
+	}
+
+	// Check immediately at startup (in case the bot was restarted and a send is overdue).
+	checkAndSend()
+
 	ticker := time.NewTicker(1 * time.Hour)
 	defer ticker.Stop()
 
@@ -1650,18 +1668,7 @@ func (b *TelegramBot) runBestOfPoster(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			ec := b.svc.GetEngagementConfig()
-			if !ec.BestOf.Enabled || len(ec.BestOf.Artists) == 0 {
-				continue
-			}
-			intervalDays := ec.BestOf.IntervalDays
-			if intervalDays <= 0 {
-				intervalDays = 3
-			}
-			if !ec.BestOf.LastPostedAt.IsZero() && time.Since(ec.BestOf.LastPostedAt) < time.Duration(intervalDays)*24*time.Hour {
-				continue
-			}
-			go b.sendBestOfMixtape(ctx, chatID)
+			checkAndSend()
 		}
 	}
 }
@@ -1781,24 +1788,29 @@ func (b *TelegramBot) runTeaserPoster(ctx context.Context) {
 	defer ticker.Stop()
 
 	tomsk := time.FixedZone("Asia/Tomsk", 7*3600)
-	sentDate := ""
+
+	teaserDue := func() bool {
+		ec := b.svc.GetEngagementConfig()
+		if !ec.Teaser.Enabled {
+			return false
+		}
+		now := time.Now().In(tomsk)
+		today := now.Format("2006-01-02")
+		// Already sent today
+		if !ec.Teaser.LastPostedAt.IsZero() && ec.Teaser.LastPostedAt.In(tomsk).Format("2006-01-02") == today {
+			return false
+		}
+		// Scheduled time has arrived (or already passed today)
+		scheduled := time.Date(now.Year(), now.Month(), now.Day(), ec.Teaser.Hour, ec.Teaser.Minute, 0, 0, tomsk)
+		return !now.Before(scheduled)
+	}
 
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			ec := b.svc.GetEngagementConfig()
-			if !ec.Teaser.Enabled {
-				continue
-			}
-			now := time.Now().In(tomsk)
-			today := now.Format("2006-01-02")
-			if sentDate == today {
-				continue
-			}
-			if now.Hour() == ec.Teaser.Hour && now.Minute() == ec.Teaser.Minute {
-				sentDate = today
+			if teaserDue() {
 				go b.sendWannaKnowTeaser(ctx, chatID)
 			}
 		}
@@ -1879,6 +1891,14 @@ func (b *TelegramBot) sendWannaKnowTeaser(ctx context.Context, chatID int64) {
 		b.replyHTMLSilent(chatID, fmt.Sprintf("🎵 Teaser опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
 	} else {
 		b.replyHTMLSilent(chatID, fmt.Sprintf("❌ Teaser не удалось опубликовать:\n%s", strings.Join(lines, "\n")), silent)
+	}
+
+	if success > 0 {
+		ec2 := b.svc.GetEngagementConfig()
+		ec2.Teaser.LastPostedAt = time.Now()
+		cfg2 := b.svc.GetConfig()
+		_ = scheduler.SaveEngagementConfig(ctx, b.svc.GetS3Client(), &cfg2, ec2)
+		b.svc.SetEngagementConfig(ec2)
 	}
 
 	_ = gen.Delete(ctx, m.ID)

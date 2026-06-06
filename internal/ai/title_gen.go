@@ -21,10 +21,18 @@ import (
 type TitleGenerator struct {
 	apiKey string
 	log    *logging.Logger
+	client *genai.Client
 }
 
-func NewTitleGenerator(apiKey string, log *logging.Logger) *TitleGenerator {
-	return &TitleGenerator{apiKey: apiKey, log: log}
+func NewTitleGenerator(ctx context.Context, apiKey string, log *logging.Logger) (*TitleGenerator, error) {
+	client, err := genai.NewClient(ctx, &genai.ClientConfig{
+		APIKey:  apiKey,
+		Backend: genai.BackendGeminiAPI,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("genai client: %w", err)
+	}
+	return &TitleGenerator{apiKey: apiKey, log: log, client: client}, nil
 }
 
 func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.Song) (string, error) {
@@ -76,13 +84,7 @@ func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.
 
 // generateTitleWithClient makes the actual API call for title generation
 func (tg *TitleGenerator) generateTitleWithClient(ctx context.Context, song *model.Song) (string, error) {
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  tg.apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return "", fmt.Errorf("genai client: %w", err)
-	}
+	client := tg.client
 
 	prompt := fmt.Sprintf(
 		"Ты — креативный копирайтер для коротких видео. "+
@@ -157,13 +159,7 @@ func (tg *TitleGenerator) GenerateIdeaForSong(ctx context.Context, song *model.S
 
 // generateIdeaWithClient makes the actual API call
 func (tg *TitleGenerator) generateIdeaWithClient(ctx context.Context, song *model.Song) ([]string, error) {
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  tg.apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("genai client: %w", err)
-	}
+	client := tg.client
 
 	prompt := fmt.Sprintf(
 		"Роль: Ты — профессиональный Арт-директор и эксперт по визуализации звука. "+
@@ -324,13 +320,7 @@ func (tg *TitleGenerator) GenerateIdeaForReel(ctx context.Context) ([]string, er
 
 // generateReelIdeaWithClient makes the actual API call for reel idea generation
 func (tg *TitleGenerator) generateReelIdeaWithClient(ctx context.Context) ([]string, error) {
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  tg.apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("genai client: %w", err)
-	}
+	client := tg.client
 
 	prompt := "Роль: Ты — профессиональный Арт-директор и видеогенератор идей для Reels и TikTok.\n\n" +
 		"Твоя задача:\n" +
@@ -441,13 +431,7 @@ func (tg *TitleGenerator) GenerateMixtapeBlurb(ctx context.Context, titles []str
 }
 
 func (tg *TitleGenerator) generateMixtapeBlurbWithClient(ctx context.Context, titles []string, authors []string) (string, error) {
-	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  tg.apiKey,
-		Backend: genai.BackendGeminiAPI,
-	})
-	if err != nil {
-		return "", fmt.Errorf("genai client: %w", err)
-	}
+	client := tg.client
 
 	var trackList strings.Builder
 	for i, t := range titles {

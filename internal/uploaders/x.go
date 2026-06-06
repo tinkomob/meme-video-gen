@@ -159,7 +159,8 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 
 	// Step 3: Finalize upload
 	finalizeURL := fmt.Sprintf("https://api.x.com/2/media/upload/%s/finalize", mediaID)
-	finalizeReq, _ := http.NewRequestWithContext(ctx, "POST", finalizeURL, nil)
+	finalizeReq, _ := http.NewRequestWithContext(ctx, "POST", finalizeURL, http.NoBody)
+	finalizeReq.Header.Set("Content-Length", "0")
 
 	finalizeResp, err := x.httpClient.Do(finalizeReq)
 	if err != nil {

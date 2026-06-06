@@ -23,9 +23,10 @@ type BestOfEngagementConfig struct {
 
 // TeaserEngagementConfig controls the daily "Wanna know this song?" teaser.
 type TeaserEngagementConfig struct {
-	Enabled bool `json:"enabled"`
-	Hour    int  `json:"hour"`
-	Minute  int  `json:"minute"`
+	Enabled      bool      `json:"enabled"`
+	Hour         int       `json:"hour"`
+	Minute       int       `json:"minute"`
+	LastPostedAt time.Time `json:"last_posted_at"`
 }
 
 // MixtapeEngagementConfig holds engagement settings for Best Of and Teaser features.
