@@ -1699,49 +1699,54 @@ func (b *TelegramBot) sendBestOfMixtape(ctx context.Context, chatID int64) {
 	silent := time.Now().In(tomsk).Hour() < 10
 
 	mgr := b.svc.GetUploadersManager()
-	if mgr != nil {
-		caption := m.Title + "\n\n"
-		for i, t := range m.Titles {
-			if i < len(m.Authors) {
-				caption += fmt.Sprintf("%d. %s — %s\n", i+1, m.Authors[i], t)
-			}
+	if mgr == nil {
+		b.log.Errorf("sendBestOfMixtape: uploaders manager is nil")
+		b.replyHTMLSilent(chatID, "❌ Best Of: менеджер загрузчиков не инициализирован", silent)
+		_ = gen.Delete(ctx, m.ID)
+		return
+	}
+
+	caption := m.Title + "\n\n"
+	for i, t := range m.Titles {
+		if i < len(m.Authors) {
+			caption += fmt.Sprintf("%d. %s — %s\n", i+1, m.Authors[i], t)
 		}
-		uploadReq := &uploaders_types.UploadRequest{
-			VideoPath:   videoPath,
-			Title:       m.Title,
-			Caption:     caption,
-			Description: caption,
-			Privacy:     "public",
-			Silent:      silent,
-		}
-		results := mgr.UploadToAll(ctx, uploadReq)
-		success := 0
-		var lines []string
-		esc := strings.NewReplacer(
-			"&", "&amp;",
-			"<", "&lt;",
-			">", "&gt;",
-			"\"", "&quot;",
-		)
-		for platform, r := range results {
-			p := esc.Replace(strings.ToUpper(platform))
-			if r.Success {
-				success++
-				if r.URL != "" {
-					url := esc.Replace(r.URL)
-					lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", p, url))
-				} else {
-					lines = append(lines, fmt.Sprintf("✅ %s: загружено", p))
-				}
+	}
+	uploadReq := &uploaders_types.UploadRequest{
+		VideoPath:   videoPath,
+		Title:       m.Title,
+		Caption:     caption,
+		Description: caption,
+		Privacy:     "public",
+		Silent:      silent,
+	}
+	results := mgr.UploadToAll(ctx, uploadReq)
+	success := 0
+	var lines []string
+	esc := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		"\"", "&quot;",
+	)
+	for platform, r := range results {
+		p := esc.Replace(strings.ToUpper(platform))
+		if r.Success {
+			success++
+			if r.URL != "" {
+				url := esc.Replace(r.URL)
+				lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", p, url))
 			} else {
-				lines = append(lines, fmt.Sprintf("❌ %s: %s", p, esc.Replace(r.Error)))
+				lines = append(lines, fmt.Sprintf("✅ %s: загружено", p))
 			}
-		}
-		if success > 0 {
-			b.replyHTMLSilent(chatID, fmt.Sprintf("🎤 Best Of опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
 		} else {
-			b.replyHTMLSilent(chatID, fmt.Sprintf("❌ Best Of не удалось опубликовать:\n%s", strings.Join(lines, "\n")), silent)
+			lines = append(lines, fmt.Sprintf("❌ %s: %s", p, esc.Replace(r.Error)))
 		}
+	}
+	if success > 0 {
+		b.replyHTMLSilent(chatID, fmt.Sprintf("🎤 Best Of опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
+	} else {
+		b.replyHTMLSilent(chatID, fmt.Sprintf("❌ Best Of не удалось опубликовать:\n%s", strings.Join(lines, "\n")), silent)
 	}
 
 	_ = gen.Delete(ctx, m.ID)
@@ -1832,41 +1837,48 @@ func (b *TelegramBot) sendWannaKnowTeaser(ctx context.Context, chatID int64) {
 	}
 
 	mgr := b.svc.GetUploadersManager()
-	if mgr != nil {
-		uploadReq := &uploaders_types.UploadRequest{
-			VideoPath:   videoPath,
-			Title:       m.Title,
-			Caption:     caption,
-			Description: caption,
-			Privacy:     "public",
-			Silent:      silent,
-		}
-		results := mgr.UploadToAll(ctx, uploadReq)
-		success := 0
-		var lines []string
-		esc := strings.NewReplacer(
-			"&", "&amp;",
-			"<", "&lt;",
-			">", "&gt;",
-			"\"", "&quot;",
-		)
-		for platform, r := range results {
-			p := esc.Replace(strings.ToUpper(platform))
-			if r.Success {
-				success++
-				if r.URL != "" {
-					url := esc.Replace(r.URL)
-					lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", p, url))
-				} else {
-					lines = append(lines, fmt.Sprintf("✅ %s: загружено", p))
-				}
+	if mgr == nil {
+		b.log.Errorf("sendWannaKnowTeaser: uploaders manager is nil")
+		b.replyHTMLSilent(chatID, "❌ Teaser: менеджер загрузчиков не инициализирован", silent)
+		_ = gen.Delete(ctx, m.ID)
+		return
+	}
+
+	uploadReq := &uploaders_types.UploadRequest{
+		VideoPath:   videoPath,
+		Title:       m.Title,
+		Caption:     caption,
+		Description: caption,
+		Privacy:     "public",
+		Silent:      silent,
+	}
+	results := mgr.UploadToAll(ctx, uploadReq)
+	success := 0
+	var lines []string
+	esc := strings.NewReplacer(
+		"&", "&amp;",
+		"<", "&lt;",
+		">", "&gt;",
+		"\"", "&quot;",
+	)
+	for platform, r := range results {
+		p := esc.Replace(strings.ToUpper(platform))
+		if r.Success {
+			success++
+			if r.URL != "" {
+				url := esc.Replace(r.URL)
+				lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", p, url))
 			} else {
-				lines = append(lines, fmt.Sprintf("❌ %s: %s", p, esc.Replace(r.Error)))
+				lines = append(lines, fmt.Sprintf("✅ %s: загружено", p))
 			}
+		} else {
+			lines = append(lines, fmt.Sprintf("❌ %s: %s", p, esc.Replace(r.Error)))
 		}
-		if success > 0 {
-			b.replyHTMLSilent(chatID, fmt.Sprintf("🎵 Teaser опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
-		}
+	}
+	if success > 0 {
+		b.replyHTMLSilent(chatID, fmt.Sprintf("🎵 Teaser опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
+	} else {
+		b.replyHTMLSilent(chatID, fmt.Sprintf("❌ Teaser не удалось опубликовать:\n%s", strings.Join(lines, "\n")), silent)
 	}
 
 	_ = gen.Delete(ctx, m.ID)
