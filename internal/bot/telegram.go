@@ -101,6 +101,8 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 	// Start schedule poster goroutines
 	go b.runSchedulePoster(ctx)
 	go b.runMixtapePoster(ctx)
+	go b.runBestOfPoster(ctx)
+	go b.runTeaserPoster(ctx)
 
 	// Start background maintenance ticker: cleans up expired caches every 2 minutes.
 	go b.runMaintenanceTicker(ctx)
@@ -1281,7 +1283,14 @@ func (b *TelegramBot) sendScheduledMixtape(ctx context.Context, adminChatID int6
 func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args string) {
 	args = strings.TrimSpace(args)
 
-	// No args → show schedule
+	// Route engagement subcommands
+	if strings.HasPrefix(args, "bestof") || strings.HasPrefix(args, "teaser") {
+		parts := strings.Fields(args)
+		b.cmdSetMixtapesEngagement(ctx, chatID, parts[0], parts[1:])
+		return
+	}
+
+	// No args → show schedule + engagement status
 	if args == "" {
 		sched := b.svc.GetMixtapeSchedule()
 		if sched == nil {
@@ -1297,6 +1306,22 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 			}
 			lines = append(lines, fmt.Sprintf("#%d — %s %s", i+1, entry.Time.Format("15:04"), status))
 		}
+		ec := b.svc.GetEngagementConfig()
+		bestofStatus := "выкл"
+		if ec.BestOf.Enabled {
+			bestofStatus = fmt.Sprintf("вкл, каждые %d дня", ec.BestOf.IntervalDays)
+		}
+		teaserStatus := "выкл"
+		if ec.Teaser.Enabled {
+			teaserStatus = fmt.Sprintf("вкл, %02d:%02d", ec.Teaser.Hour, ec.Teaser.Minute)
+		}
+		lines = append(lines, "",
+			fmt.Sprintf("🎤 Best Of: %s", bestofStatus),
+			fmt.Sprintf("🎵 Teaser: %s", teaserStatus),
+			"",
+			"/setmixtapes bestof — управление Best Of",
+			"/setmixtapes teaser — управление Teaser",
+		)
 		b.replyText(chatID, strings.Join(lines, "\n"))
 		return
 	}
@@ -1413,6 +1438,384 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 
 	b.svc.SetMixtapeSchedule(updatedSched)
 	b.replyText(chatID, fmt.Sprintf("✅ Время микстейпа #%d обновлено на %s. /setmixtapes для просмотра.", idx, targetTime.Format("15:04")))
+}
+
+// cmdSetMixtapesEngagement handles /setmixtapes bestof/teaser subcommands.
+func (b *TelegramBot) cmdSetMixtapesEngagement(ctx context.Context, chatID int64, sub string, rest []string) {
+	cfg := b.svc.GetConfig()
+	ec := b.svc.GetEngagementConfig()
+
+	save := func() bool {
+		if err := scheduler.SaveEngagementConfig(ctx, b.svc.GetS3Client(), &cfg, ec); err != nil {
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка сохранения: %v", err))
+			return false
+		}
+		b.svc.SetEngagementConfig(ec)
+		return true
+	}
+
+	switch sub {
+	case "bestof":
+		if len(rest) == 0 {
+			artists := strings.Join(ec.BestOf.Artists, ", ")
+			if artists == "" {
+				artists = "(none)"
+			}
+			status := "выкл"
+			if ec.BestOf.Enabled {
+				status = "вкл"
+			}
+			var nextPost string
+			if !ec.BestOf.LastPostedAt.IsZero() {
+				nextPost = ec.BestOf.LastPostedAt.Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour).Format("2006-01-02 15:04")
+			} else {
+				nextPost = "при первом запуске"
+			}
+			b.replyText(chatID, fmt.Sprintf(
+				"🎤 Best Of — %s\nАртисты: %s\nСегментов: %d\nИнтервал: каждые %d дня\nСледующий: %s\n\n/setmixtapes bestof on|off\n/setmixtapes bestof add <artist>\n/setmixtapes bestof remove <artist>",
+				status, artists, ec.BestOf.SegmentCount, ec.BestOf.IntervalDays, nextPost,
+			))
+			return
+		}
+		switch rest[0] {
+		case "on":
+			ec.BestOf.Enabled = true
+			if save() {
+				b.replyText(chatID, "✅ Best Of включён")
+			}
+		case "off":
+			ec.BestOf.Enabled = false
+			if save() {
+				b.replyText(chatID, "✅ Best Of выключен")
+			}
+		case "add":
+			if len(rest) < 2 {
+				b.replyText(chatID, "Использование: /setmixtapes bestof add <artist>")
+				return
+			}
+			artist := strings.Join(rest[1:], " ")
+			for _, a := range ec.BestOf.Artists {
+				if strings.EqualFold(a, artist) {
+					b.replyText(chatID, "Артист уже в списке")
+					return
+				}
+			}
+			ec.BestOf.Artists = append(ec.BestOf.Artists, artist)
+			if save() {
+				b.replyText(chatID, fmt.Sprintf("✅ Артист %q добавлен", artist))
+			}
+		case "remove":
+			if len(rest) < 2 {
+				b.replyText(chatID, "Использование: /setmixtapes bestof remove <artist>")
+				return
+			}
+			artist := strings.Join(rest[1:], " ")
+			var kept []string
+			found := false
+			for _, a := range ec.BestOf.Artists {
+				if strings.EqualFold(a, artist) {
+					found = true
+					continue
+				}
+				kept = append(kept, a)
+			}
+			if !found {
+				b.replyText(chatID, "Артист не найден в списке")
+				return
+			}
+			ec.BestOf.Artists = kept
+			if save() {
+				b.replyText(chatID, fmt.Sprintf("✅ Артист %q удалён", artist))
+			}
+		default:
+			b.replyText(chatID, "Использование: /setmixtapes bestof [on|off|add <artist>|remove <artist>]")
+		}
+
+	case "teaser":
+		if len(rest) == 0 {
+			status := "выкл"
+			if ec.Teaser.Enabled {
+				status = "вкл"
+			}
+			b.replyText(chatID, fmt.Sprintf(
+				"🎵 Wanna Know Teaser — %s\nВремя: %02d:%02d (Tomsk)\n\n/setmixtapes teaser on|off\n/setmixtapes teaser time HH:MM",
+				status, ec.Teaser.Hour, ec.Teaser.Minute,
+			))
+			return
+		}
+		switch rest[0] {
+		case "on":
+			ec.Teaser.Enabled = true
+			if save() {
+				b.replyText(chatID, "✅ Teaser включён")
+			}
+		case "off":
+			ec.Teaser.Enabled = false
+			if save() {
+				b.replyText(chatID, "✅ Teaser выключен")
+			}
+		case "time":
+			if len(rest) < 2 {
+				b.replyText(chatID, "Использование: /setmixtapes teaser time HH:MM")
+				return
+			}
+			timeParts := strings.Split(rest[1], ":")
+			if len(timeParts) != 2 {
+				b.replyText(chatID, "❌ Неверный формат HH:MM")
+				return
+			}
+			var hour, min int
+			if _, err := fmt.Sscanf(timeParts[0], "%d", &hour); err != nil || hour < 0 || hour > 23 {
+				b.replyText(chatID, "❌ Неверный час")
+				return
+			}
+			if _, err := fmt.Sscanf(timeParts[1], "%d", &min); err != nil || min < 0 || min > 59 {
+				b.replyText(chatID, "❌ Неверные минуты")
+				return
+			}
+			ec.Teaser.Hour = hour
+			ec.Teaser.Minute = min
+			if save() {
+				b.replyText(chatID, fmt.Sprintf("✅ Teaser время: %02d:%02d", hour, min))
+			}
+		default:
+			b.replyText(chatID, "Использование: /setmixtapes teaser [on|off|time HH:MM]")
+		}
+
+	default:
+		b.replyText(chatID, "Использование: /setmixtapes bestof [...] | /setmixtapes teaser [...]")
+	}
+}
+
+// runBestOfPoster checks every hour whether a "Best of [Artist]" video is due and posts it.
+func (b *TelegramBot) runBestOfPoster(ctx context.Context) {
+	time.Sleep(10 * time.Second)
+
+	cfg := b.svc.GetConfig()
+	chatID := cfg.PostsChatID
+	if chatID == 0 {
+		if v := os.Getenv("POSTS_CHAT_ID"); v != "" {
+			fmt.Sscanf(v, "%d", &chatID)
+		}
+	}
+	if chatID == 0 {
+		b.log.Errorf("POSTS_CHAT_ID not set, best-of poster disabled")
+		return
+	}
+
+	ticker := time.NewTicker(1 * time.Hour)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ec := b.svc.GetEngagementConfig()
+			if !ec.BestOf.Enabled || len(ec.BestOf.Artists) == 0 {
+				continue
+			}
+			intervalDays := ec.BestOf.IntervalDays
+			if intervalDays <= 0 {
+				intervalDays = 3
+			}
+			if !ec.BestOf.LastPostedAt.IsZero() && time.Since(ec.BestOf.LastPostedAt) < time.Duration(intervalDays)*24*time.Hour {
+				continue
+			}
+			go b.sendBestOfMixtape(context.Background(), chatID)
+		}
+	}
+}
+
+// sendBestOfMixtape generates and posts a "Best of [Artist]" compilation.
+func (b *TelegramBot) sendBestOfMixtape(ctx context.Context, chatID int64) {
+	ec := b.svc.GetEngagementConfig()
+	if len(ec.BestOf.Artists) == 0 {
+		return
+	}
+
+	artist := ec.BestOf.Artists[ec.BestOf.NextArtistIdx%len(ec.BestOf.Artists)]
+	segCount := ec.BestOf.SegmentCount
+	if segCount <= 0 {
+		segCount = 5
+	}
+
+	b.log.Infof("sendBestOfMixtape: generating Best of %q (%d segments)", artist, segCount)
+	gen := b.svc.GetMixtapeGenerator()
+	m, err := gen.GenerateBestOf(ctx, artist, segCount)
+	if err != nil {
+		b.log.Errorf("sendBestOfMixtape: generate: %v", err)
+		return
+	}
+
+	videoPath, err := gen.DownloadVideoToTemp(ctx, m)
+	if err != nil {
+		b.log.Errorf("sendBestOfMixtape: download: %v", err)
+		_ = gen.Delete(ctx, m.ID)
+		return
+	}
+	defer os.Remove(videoPath)
+
+	tomsk := time.FixedZone("Asia/Tomsk", 7*3600)
+	silent := time.Now().In(tomsk).Hour() < 10
+
+	mgr := b.svc.GetUploadersManager()
+	if mgr != nil {
+		caption := m.Title + "\n\n"
+		for i, t := range m.Titles {
+			if i < len(m.Authors) {
+				caption += fmt.Sprintf("%d. %s — %s\n", i+1, m.Authors[i], t)
+			}
+		}
+		uploadReq := &uploaders_types.UploadRequest{
+			VideoPath:   videoPath,
+			Title:       m.Title,
+			Caption:     caption,
+			Description: caption,
+			Privacy:     "public",
+			Silent:      silent,
+		}
+		results := mgr.UploadToAll(ctx, uploadReq)
+		success := 0
+		var lines []string
+		for platform, r := range results {
+			if r.Success {
+				success++
+				if r.URL != "" {
+					lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", strings.ToUpper(platform), r.URL))
+				} else {
+					lines = append(lines, fmt.Sprintf("✅ %s: загружено", strings.ToUpper(platform)))
+				}
+			} else {
+				lines = append(lines, fmt.Sprintf("❌ %s: %s", strings.ToUpper(platform), r.Error))
+			}
+		}
+		if success > 0 {
+			b.replyHTMLSilent(chatID, fmt.Sprintf("🎤 Best Of опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
+		} else {
+			b.replyHTMLSilent(chatID, fmt.Sprintf("❌ Best Of не удалось опубликовать:\n%s", strings.Join(lines, "\n")), silent)
+		}
+	}
+
+	_ = gen.Delete(ctx, m.ID)
+
+	// Update engagement config: advance artist index and record post time
+	ec = b.svc.GetEngagementConfig()
+	ec.BestOf.LastPostedAt = time.Now()
+	ec.BestOf.NextArtistIdx = (ec.BestOf.NextArtistIdx + 1) % len(ec.BestOf.Artists)
+	cfg := b.svc.GetConfig()
+	_ = scheduler.SaveEngagementConfig(ctx, b.svc.GetS3Client(), &cfg, ec)
+	b.svc.SetEngagementConfig(ec)
+	b.log.Infof("sendBestOfMixtape: done, next artist idx=%d", ec.BestOf.NextArtistIdx)
+}
+
+// runTeaserPoster checks every 10 seconds whether the daily "Wanna know?" teaser is due.
+func (b *TelegramBot) runTeaserPoster(ctx context.Context) {
+	time.Sleep(15 * time.Second)
+
+	cfg := b.svc.GetConfig()
+	chatID := cfg.PostsChatID
+	if chatID == 0 {
+		if v := os.Getenv("POSTS_CHAT_ID"); v != "" {
+			fmt.Sscanf(v, "%d", &chatID)
+		}
+	}
+	if chatID == 0 {
+		b.log.Errorf("POSTS_CHAT_ID not set, teaser poster disabled")
+		return
+	}
+
+	ticker := time.NewTicker(10 * time.Second)
+	defer ticker.Stop()
+
+	tomsk := time.FixedZone("Asia/Tomsk", 7*3600)
+	sentDate := ""
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			ec := b.svc.GetEngagementConfig()
+			if !ec.Teaser.Enabled {
+				continue
+			}
+			now := time.Now().In(tomsk)
+			today := now.Format("2006-01-02")
+			if sentDate == today {
+				continue
+			}
+			if now.Hour() == ec.Teaser.Hour && now.Minute() == ec.Teaser.Minute {
+				sentDate = today
+				go b.sendWannaKnowTeaser(context.Background(), chatID)
+			}
+		}
+	}
+}
+
+// sendWannaKnowTeaser generates a single-segment teaser and posts it.
+func (b *TelegramBot) sendWannaKnowTeaser(ctx context.Context, chatID int64) {
+	b.log.Infof("sendWannaKnowTeaser: generating teaser")
+	gen := b.svc.GetMixtapeGenerator()
+	m, err := gen.GenerateTeaser(ctx)
+	if err != nil {
+		b.log.Errorf("sendWannaKnowTeaser: generate: %v", err)
+		return
+	}
+
+	videoPath, err := gen.DownloadVideoToTemp(ctx, m)
+	if err != nil {
+		b.log.Errorf("sendWannaKnowTeaser: download: %v", err)
+		_ = gen.Delete(ctx, m.ID)
+		return
+	}
+	defer os.Remove(videoPath)
+
+	tomsk := time.FixedZone("Asia/Tomsk", 7*3600)
+	silent := time.Now().In(tomsk).Hour() < 10
+
+	caption := ""
+	if len(m.Authors) > 0 && len(m.Titles) > 0 {
+		caption = fmt.Sprintf("%s — %s", m.Authors[0], m.Titles[0])
+	}
+	if len(m.SongIDs) > 0 {
+		if song, err := b.svc.GetSongByID(ctx, m.SongIDs[0]); err == nil && song.SourceURL != "" {
+			caption += "\n🔗 " + song.SourceURL
+		}
+	}
+
+	mgr := b.svc.GetUploadersManager()
+	if mgr != nil {
+		uploadReq := &uploaders_types.UploadRequest{
+			VideoPath:   videoPath,
+			Title:       m.Title,
+			Caption:     caption,
+			Description: caption,
+			Privacy:     "public",
+			Silent:      silent,
+		}
+		results := mgr.UploadToAll(ctx, uploadReq)
+		success := 0
+		var lines []string
+		for platform, r := range results {
+			if r.Success {
+				success++
+				if r.URL != "" {
+					lines = append(lines, fmt.Sprintf("✅ %s: <a href=\"%s\">смотреть</a>", strings.ToUpper(platform), r.URL))
+				} else {
+					lines = append(lines, fmt.Sprintf("✅ %s: загружено", strings.ToUpper(platform)))
+				}
+			} else {
+				lines = append(lines, fmt.Sprintf("❌ %s: %s", strings.ToUpper(platform), r.Error))
+			}
+		}
+		if success > 0 {
+			b.replyHTMLSilent(chatID, fmt.Sprintf("🎵 Teaser опубликован:\n\n%s", strings.Join(lines, "\n")), silent)
+		}
+	}
+
+	_ = gen.Delete(ctx, m.ID)
+	b.log.Infof("sendWannaKnowTeaser: done")
 }
 
 // getCachedOrDownloadMeme retrieves cached meme file or downloads from S3 with caching
@@ -1606,8 +2009,13 @@ func (b *TelegramBot) sendScheduledMemes(ctx context.Context, chatID int64) {
 		}
 		defer f.Close()
 
-		// Create caption with slider counter and title
+		// Create caption with slider counter, title, and link to full track
 		caption := fmt.Sprintf("%d/%d — %s", idx+1, len(videos), meme.Title)
+		if meme.SongID != "" {
+			if song, err := b.svc.GetSongByID(ctx, meme.SongID); err == nil && song.SourceURL != "" {
+				caption += "\n🔗 " + song.SourceURL
+			}
+		}
 
 		video := tgbotapi.NewInputMediaVideo(tgbotapi.FileReader{
 			Name:   fmt.Sprintf("meme_%d.mp4", idx+1),
@@ -1663,6 +2071,8 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /clearmixtape — удалить все микстейпы из S3
 /setmixtapes — расписание авто-отправки микстейпов (5 в день по всем 24 часам)
 /setmixtapes <index> <time> — изменить время отправки микстейпа по индексу
+/setmixtapes bestof — управление Best Of [Artist] (каждые 3 дня)
+/setmixtapes teaser — управление ежедневным тизером "Wanna know this song?"
 /status — статус генерации и использование памяти
 /errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID

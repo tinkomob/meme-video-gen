@@ -253,7 +253,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		startOffset := r.Float64() * maxStart
 
 		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg%d.mp4", i))
-		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title, palette[i%len(palette)], mixtapeTitle); err != nil {
+		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title, palette[i%len(palette)], mixtapeTitle, ""); err != nil {
 			return nil, fmt.Errorf("build segment %d: %w", i, err)
 		}
 		segmentPaths = append(segmentPaths, segPath)
@@ -452,12 +452,16 @@ func pickPanStyle(segIdx int, r *rand.Rand) panStyle {
 
 // buildSegment creates a video segment: thumbnail image + trimmed audio slice.
 // Each segment gets a distinct pan/zoom animation style.
-func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor, topLabel string) error {
+// bottomLabel overrides the default "#N Author - Song" label when non-empty.
+func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outPath string, startOffset float64, dur int, r *rand.Rand, segNum int, author, songTitle, bottomColor, topLabel, bottomLabel string) error {
 	pan := pickPanStyle(segNum-1, r)
 
-	labelText := fmt.Sprintf("#%d %s - %s", segNum, author, songTitle)
-	if len(labelText) > 34 {
-		labelText = wrapText(labelText, 34)
+	labelText := bottomLabel
+	if labelText == "" {
+		labelText = fmt.Sprintf("#%d %s - %s", segNum, author, songTitle)
+		if len(labelText) > 34 {
+			labelText = wrapText(labelText, 34)
+		}
 	}
 
 	// Write text content to temp files to avoid filter_complex quoting issues.
@@ -611,6 +615,210 @@ func (g *Generator) loadIndex(ctx context.Context) (MixtapeIndex, error) {
 
 func (g *Generator) saveIndex(ctx context.Context, idx MixtapeIndex) error {
 	return g.s3.WriteJSON(ctx, mixtapesJSONKey, &idx)
+}
+
+// pickSongsByAuthor returns up to n songs by the given author (case-insensitive contains match).
+func (g *Generator) pickSongsByAuthor(ctx context.Context, author string, n int) ([]*model.Song, error) {
+	var songsIdx model.SongsIndex
+	found, err := g.s3.ReadJSON(ctx, g.cfg.SongsJSONKey, &songsIdx)
+	if err != nil || !found {
+		return nil, fmt.Errorf("read songs.json: %w", err)
+	}
+
+	lowerAuthor := strings.ToLower(author)
+	var pool []*model.Song
+	for i := range songsIdx.Items {
+		s := &songsIdx.Items[i]
+		if strings.Contains(strings.ToLower(s.Author), lowerAuthor) {
+			pool = append(pool, s)
+		}
+	}
+	if len(pool) == 0 {
+		return nil, fmt.Errorf("no songs found for author %q", author)
+	}
+
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	r.Shuffle(len(pool), func(i, j int) { pool[i], pool[j] = pool[j], pool[i] })
+
+	result := make([]*model.Song, n)
+	for i := range result {
+		result[i] = pool[i%len(pool)]
+	}
+	return result, nil
+}
+
+// GenerateBestOf creates a "Best of [Author]" compilation video and uploads it to S3.
+// The video is not added to the regular mixtape index — it is a one-off post.
+func (g *Generator) GenerateBestOf(ctx context.Context, author string, segCount int) (*Mixtape, error) {
+	if segCount <= 0 {
+		segCount = 5
+	}
+	songs, err := g.pickSongsByAuthor(ctx, author, segCount)
+	if err != nil {
+		return nil, fmt.Errorf("pick songs for best-of: %w", err)
+	}
+
+	tmpDir, err := os.MkdirTemp(os.TempDir(), "bestof-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	palette := []string{"yellow", "0x00FFFF", "0xFF6600", "0xFF44FF", "0x00FF88", "0xFF2255", "0xAAFF00", "0xFF9900"}
+	rMain := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rMain.Shuffle(len(palette), func(i, j int) { palette[i], palette[j] = palette[j], palette[i] })
+
+	topLabel := "Best of " + author
+
+	var segmentPaths []string
+	var songIDs, titles, authors []string
+
+	for i, song := range songs {
+		g.log.Infof("bestof: building segment %d/%d — %s", i+1, segCount, song.Title)
+
+		thumbPath, err := g.downloadThumbnail(ctx, song.ID, tmpDir, i)
+		if err != nil {
+			return nil, fmt.Errorf("download thumbnail for %s: %w", song.ID, err)
+		}
+
+		audioPath, err := g.audio.DownloadSongToTemp(ctx, song)
+		if err != nil {
+			return nil, fmt.Errorf("download audio for %s: %w", song.ID, err)
+		}
+		defer os.Remove(audioPath)
+
+		duration := song.DurationS
+		if duration <= float64(segmentDuration)+1 {
+			duration = float64(segmentDuration) + 2
+		}
+		r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(i)))
+		safeEnd := duration * 0.75
+		maxStart := safeEnd - float64(segmentDuration)
+		if maxStart < 0 {
+			maxStart = 0
+		}
+		startOffset := r.Float64() * maxStart
+
+		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg%d.mp4", i))
+		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title, palette[i%len(palette)], topLabel, ""); err != nil {
+			return nil, fmt.Errorf("build segment %d: %w", i, err)
+		}
+		segmentPaths = append(segmentPaths, segPath)
+		songIDs = append(songIDs, song.ID)
+		titles = append(titles, song.Title)
+		authors = append(authors, song.Author)
+	}
+
+	outPath := filepath.Join(tmpDir, "bestof.mp4")
+	if err := g.concatenate(ctx, segmentPaths, outPath); err != nil {
+		return nil, fmt.Errorf("concatenate best-of: %w", err)
+	}
+
+	videoBytes, err := os.ReadFile(outPath)
+	if err != nil {
+		return nil, err
+	}
+	thumbBytes, err := os.ReadFile(filepath.Join(tmpDir, "thumb0.jpg"))
+	if err != nil {
+		return nil, err
+	}
+
+	id := fmt.Sprintf("bestof-%s-%d", strings.ToLower(strings.ReplaceAll(author, " ", "-")), time.Now().Unix())
+	videoKey := mixtapesPrefix + id + ".mp4"
+	thumbKey := mixtapesPrefix + id + "_thumb.jpg"
+
+	if err := g.s3.PutBytes(ctx, videoKey, videoBytes, "video/mp4"); err != nil {
+		return nil, fmt.Errorf("upload best-of video: %w", err)
+	}
+	if err := g.s3.PutBytes(ctx, thumbKey, thumbBytes, "image/jpeg"); err != nil {
+		return nil, fmt.Errorf("upload best-of thumb: %w", err)
+	}
+
+	return &Mixtape{
+		ID:        id,
+		Title:     topLabel,
+		VideoKey:  videoKey,
+		ThumbKey:  thumbKey,
+		SongIDs:   songIDs,
+		Titles:    titles,
+		Authors:   authors,
+		CreatedAt: time.Now(),
+	}, nil
+}
+
+// GenerateTeaser creates a single-segment "Wanna know this song?" teaser video.
+// The caller must delete the video from S3 after posting (VideoKey and ThumbKey).
+func (g *Generator) GenerateTeaser(ctx context.Context) (*Mixtape, error) {
+	songs, err := g.pickSongs(ctx, 1)
+	if err != nil {
+		return nil, fmt.Errorf("pick song for teaser: %w", err)
+	}
+	song := songs[0]
+
+	tmpDir, err := os.MkdirTemp(os.TempDir(), "teaser-")
+	if err != nil {
+		return nil, err
+	}
+	defer os.RemoveAll(tmpDir)
+
+	thumbPath, err := g.downloadThumbnail(ctx, song.ID, tmpDir, 0)
+	if err != nil {
+		return nil, fmt.Errorf("download thumbnail: %w", err)
+	}
+
+	audioPath, err := g.audio.DownloadSongToTemp(ctx, song)
+	if err != nil {
+		return nil, fmt.Errorf("download audio: %w", err)
+	}
+	defer os.Remove(audioPath)
+
+	duration := song.DurationS
+	if duration <= float64(segmentDuration)+1 {
+		duration = float64(segmentDuration) + 2
+	}
+	r := rand.New(rand.NewSource(time.Now().UnixNano()))
+	safeEnd := duration * 0.75
+	maxStart := safeEnd - float64(segmentDuration)
+	if maxStart < 0 {
+		maxStart = 0
+	}
+	startOffset := r.Float64() * maxStart
+
+	segPath := filepath.Join(tmpDir, "teaser.mp4")
+	if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, 1, song.Author, song.Title, "yellow", "Wanna know this song?", "Check description"); err != nil {
+		return nil, fmt.Errorf("build teaser segment: %w", err)
+	}
+
+	videoBytes, err := os.ReadFile(segPath)
+	if err != nil {
+		return nil, err
+	}
+	thumbBytes, err := os.ReadFile(filepath.Join(tmpDir, "thumb0.jpg"))
+	if err != nil {
+		return nil, err
+	}
+
+	id := fmt.Sprintf("teaser-%d", time.Now().Unix())
+	videoKey := mixtapesPrefix + id + ".mp4"
+	thumbKey := mixtapesPrefix + id + "_thumb.jpg"
+
+	if err := g.s3.PutBytes(ctx, videoKey, videoBytes, "video/mp4"); err != nil {
+		return nil, fmt.Errorf("upload teaser video: %w", err)
+	}
+	if err := g.s3.PutBytes(ctx, thumbKey, thumbBytes, "image/jpeg"); err != nil {
+		return nil, fmt.Errorf("upload teaser thumb: %w", err)
+	}
+
+	return &Mixtape{
+		ID:        id,
+		Title:     "Wanna know this song?",
+		VideoKey:  videoKey,
+		ThumbKey:  thumbKey,
+		SongIDs:   []string{song.ID},
+		Titles:    []string{song.Title},
+		Authors:   []string{song.Author},
+		CreatedAt: time.Now(),
+	}, nil
 }
 
 func (g *Generator) trimOldest(ctx context.Context, idx MixtapeIndex, limit int) (MixtapeIndex, error) {
