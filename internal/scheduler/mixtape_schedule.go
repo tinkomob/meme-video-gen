@@ -34,17 +34,17 @@ type MixtapeEngagementConfig struct {
 	Teaser TeaserEngagementConfig `json:"teaser"`
 }
 
-// DefaultEngagementConfig returns sensible defaults (both features disabled).
+// DefaultEngagementConfig returns sensible defaults (both features enabled).
 func DefaultEngagementConfig() *MixtapeEngagementConfig {
 	return &MixtapeEngagementConfig{
 		BestOf: BestOfEngagementConfig{
-			Enabled:      false,
+			Enabled:      true,
 			Artists:      []string{"dee bill", "eenfinit"},
 			SegmentCount: 5,
 			IntervalDays: 3,
 		},
 		Teaser: TeaserEngagementConfig{
-			Enabled: false,
+			Enabled: true,
 			Hour:    18,
 			Minute:  0,
 		},
@@ -57,6 +57,7 @@ func SaveEngagementConfig(ctx context.Context, client s3.Client, cfg *internal.C
 }
 
 // LoadEngagementConfig loads engagement config from S3; returns defaults if not found.
+// On first load (not found), defaults are saved to S3 so they persist.
 func LoadEngagementConfig(ctx context.Context, client s3.Client, cfg *internal.Config) (*MixtapeEngagementConfig, error) {
 	var config MixtapeEngagementConfig
 	found, err := client.ReadJSON(ctx, cfg.EngagementConfigJSONKey, &config)
@@ -64,7 +65,9 @@ func LoadEngagementConfig(ctx context.Context, client s3.Client, cfg *internal.C
 		return nil, err
 	}
 	if !found {
-		return DefaultEngagementConfig(), nil
+		defaults := DefaultEngagementConfig()
+		_ = client.WriteJSON(ctx, cfg.EngagementConfigJSONKey, defaults)
+		return defaults, nil
 	}
 	return &config, nil
 }

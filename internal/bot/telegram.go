@@ -1325,7 +1325,15 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 				bestofStatus += ", ещё не отправлялся"
 			} else {
 				nextBestOf := ec.BestOf.LastPostedAt.In(loc).Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour)
-				bestofStatus += fmt.Sprintf(", след. %s", nextBestOf.Format("02.01"))
+				nextBestOfDay := "сегодня"
+				if nextBestOf.After(nowTomsk.Add(24 * time.Hour)) {
+					nextBestOfDay = nextBestOf.Format("02.01")
+				} else if nextBestOf.After(nowTomsk) {
+					nextBestOfDay = "сегодня"
+				} else {
+					nextBestOfDay = "сейчас"
+				}
+				bestofStatus += fmt.Sprintf(", след. %s (%s)", nextBestOf.Format("15:04"), nextBestOfDay)
 			}
 		}
 
@@ -1492,7 +1500,11 @@ func (b *TelegramBot) cmdSetMixtapesEngagement(ctx context.Context, chatID int64
 			}
 			var nextPost string
 			if !ec.BestOf.LastPostedAt.IsZero() {
-				nextPost = ec.BestOf.LastPostedAt.Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour).Format("2006-01-02 15:04")
+				loc2, err2 := time.LoadLocation("Asia/Tomsk")
+				if err2 != nil {
+					loc2 = time.FixedZone("UTC+7", 7*3600)
+				}
+				nextPost = ec.BestOf.LastPostedAt.In(loc2).Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour).Format("02.01 15:04") + " (Tomsk)"
 			} else {
 				nextPost = "при первом запуске"
 			}
