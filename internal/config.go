@@ -25,7 +25,8 @@ type Config struct {
 	SourcesJSONKey         string
 	MemesJSONKey           string
 	ScheduleJSONKey        string
-	MixtapeScheduleJSONKey string
+	MixtapeScheduleJSONKey  string
+	EngagementConfigJSONKey string
 
 	ImageHashIndexKey      string // "image_hashes.json" - blacklist of image hashes
 	VideoHashIndexKey      string // "video_hashes.json" - blacklist of video hashes
@@ -70,7 +71,8 @@ func LoadConfig() (Config, error) {
 		SourcesJSONKey:         "sources.json",
 		MemesJSONKey:           "memes.json",
 		ScheduleJSONKey:        "schedule.json",
-		MixtapeScheduleJSONKey: "mixtape_schedule.json",
+		MixtapeScheduleJSONKey:  "mixtape_schedule.json",
+		EngagementConfigJSONKey: "engagement_config.json",
 
 		ImageHashIndexKey:      "image_hashes.json",
 		VideoHashIndexKey:      "video_hashes.json",

@@ -52,6 +52,9 @@ type Service struct {
 	mixtapeScheduleMux sync.Mutex
 	mixtapeSchedule    *DailyMixtapeSchedule
 
+	engagementMux    sync.Mutex
+	engagementConfig *MixtapeEngagementConfig
+
 	cfgMux           sync.Mutex
 	monitor          *ResourceMonitor
 	uploadersManager *uploaders.Manager
@@ -128,6 +131,39 @@ func (s *Service) SetMixtapeSchedule(sched *DailyMixtapeSchedule) {
 	s.mixtapeScheduleMux.Lock()
 	defer s.mixtapeScheduleMux.Unlock()
 	s.mixtapeSchedule = sched
+}
+
+func (s *Service) GetEngagementConfig() *MixtapeEngagementConfig {
+	s.engagementMux.Lock()
+	defer s.engagementMux.Unlock()
+
+	src := s.engagementConfig
+	if src == nil {
+		src = DefaultEngagementConfig()
+	}
+
+	cp := *src
+	cp.BestOf.Artists = append([]string(nil), src.BestOf.Artists...)
+	return &cp
+}
+
+func (s *Service) SetEngagementConfig(cfg *MixtapeEngagementConfig) {
+	s.engagementMux.Lock()
+	defer s.engagementMux.Unlock()
+
+	if cfg == nil {
+		s.engagementConfig = nil
+		return
+	}
+	cp := *cfg
+	cp.BestOf.Artists = append([]string(nil), cfg.BestOf.Artists...)
+	s.engagementConfig = &cp
+}
+
+func (s *Service) SetEngagementConfig(cfg *MixtapeEngagementConfig) {
+	s.engagementMux.Lock()
+	defer s.engagementMux.Unlock()
+	s.engagementConfig = cfg
 }
 
 func (s *Service) SavePostsChatID(ctx context.Context, chatID int64) error {
@@ -577,6 +613,22 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		log.Infof("startup: ensuring mixtapes")
 		if err := mixtapeGen.EnsureMixtapes(context.Background()); err != nil {
 			log.Errorf("startup ensure mixtapes: %v", err)
+		}
+	}()
+
+	// Load engagement config at startup
+	go func() {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(5 * time.Second):
+		}
+		ec, err := LoadEngagementConfig(ctx, s3c, &cfg)
+		if err != nil {
+			log.Errorf("failed to load engagement config: %v", err)
+		} else {
+			s.SetEngagementConfig(ec)
+			log.Infof("loaded engagement config: bestof_enabled=%v, teaser_enabled=%v", ec.BestOf.Enabled, ec.Teaser.Enabled)
 		}
 	}()
 
