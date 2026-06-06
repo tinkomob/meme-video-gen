@@ -1755,7 +1755,7 @@ func (b *TelegramBot) runTeaserPoster(ctx context.Context) {
 			}
 			if now.Hour() == ec.Teaser.Hour && now.Minute() == ec.Teaser.Minute {
 				sentDate = today
-				go b.sendWannaKnowTeaser(context.Background(), chatID)
+				go b.sendWannaKnowTeaser(ctx, chatID)
 			}
 		}
 	}
