@@ -1320,21 +1320,23 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 
 		bestofStatus := "выкл"
 		if ec.BestOf.Enabled {
-			bestofStatus = fmt.Sprintf("вкл, каждые %d дня", ec.BestOf.IntervalDays)
+			var nextBestOf time.Time
 			if ec.BestOf.LastPostedAt.IsZero() {
-				bestofStatus += ", ещё не отправлялся"
+				nextBestOf = nowTomsk // never posted → due now
 			} else {
-				nextBestOf := ec.BestOf.LastPostedAt.In(loc).Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour)
-				nextBestOfDay := "сегодня"
-				if nextBestOf.After(nowTomsk.Add(24 * time.Hour)) {
-					nextBestOfDay = nextBestOf.Format("02.01")
-				} else if nextBestOf.After(nowTomsk) {
-					nextBestOfDay = "сегодня"
-				} else {
-					nextBestOfDay = "сейчас"
-				}
-				bestofStatus += fmt.Sprintf(", след. %s (%s)", nextBestOf.Format("15:04"), nextBestOfDay)
+				nextBestOf = ec.BestOf.LastPostedAt.In(loc).Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour)
 			}
+			var nextBestOfLabel string
+			if !nextBestOf.After(nowTomsk) {
+				nextBestOfLabel = "сейчас"
+			} else if nextBestOf.Year() == nowTomsk.Year() && nextBestOf.YearDay() == nowTomsk.YearDay() {
+				nextBestOfLabel = fmt.Sprintf("%s (сегодня)", nextBestOf.Format("15:04"))
+			} else if nextBestOf.Before(nowTomsk.Add(48 * time.Hour)) {
+				nextBestOfLabel = fmt.Sprintf("%s (завтра)", nextBestOf.Format("15:04"))
+			} else {
+				nextBestOfLabel = nextBestOf.Format("15:04 02.01")
+			}
+			bestofStatus = fmt.Sprintf("вкл, каждые %d дня, след. %s", ec.BestOf.IntervalDays, nextBestOfLabel)
 		}
 
 		teaserStatus := "выкл"

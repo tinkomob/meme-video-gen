@@ -30,13 +30,17 @@ type TeaserEngagementConfig struct {
 
 // MixtapeEngagementConfig holds engagement settings for Best Of and Teaser features.
 type MixtapeEngagementConfig struct {
-	BestOf BestOfEngagementConfig `json:"best_of"`
-	Teaser TeaserEngagementConfig `json:"teaser"`
+	Version int                    `json:"version"` // bumped when defaults change; triggers migration
+	BestOf  BestOfEngagementConfig `json:"best_of"`
+	Teaser  TeaserEngagementConfig `json:"teaser"`
 }
+
+const currentEngagementConfigVersion = 1
 
 // DefaultEngagementConfig returns sensible defaults (both features enabled).
 func DefaultEngagementConfig() *MixtapeEngagementConfig {
 	return &MixtapeEngagementConfig{
+		Version: currentEngagementConfigVersion,
 		BestOf: BestOfEngagementConfig{
 			Enabled:      true,
 			Artists:      []string{"dee bill", "eenfinit"},
@@ -57,7 +61,7 @@ func SaveEngagementConfig(ctx context.Context, client s3.Client, cfg *internal.C
 }
 
 // LoadEngagementConfig loads engagement config from S3; returns defaults if not found.
-// On first load (not found), defaults are saved to S3 so they persist.
+// Migrates old configs (version 0) to current defaults by enabling both features.
 func LoadEngagementConfig(ctx context.Context, client s3.Client, cfg *internal.Config) (*MixtapeEngagementConfig, error) {
 	var config MixtapeEngagementConfig
 	found, err := client.ReadJSON(ctx, cfg.EngagementConfigJSONKey, &config)
@@ -68,6 +72,13 @@ func LoadEngagementConfig(ctx context.Context, client s3.Client, cfg *internal.C
 		defaults := DefaultEngagementConfig()
 		_ = client.WriteJSON(ctx, cfg.EngagementConfigJSONKey, defaults)
 		return defaults, nil
+	}
+	// Migrate: version 0 configs predate the "enabled by default" change — enable both features.
+	if config.Version < currentEngagementConfigVersion {
+		config.Version = currentEngagementConfigVersion
+		config.BestOf.Enabled = true
+		config.Teaser.Enabled = true
+		_ = client.WriteJSON(ctx, cfg.EngagementConfigJSONKey, &config)
 	}
 	return &config, nil
 }
