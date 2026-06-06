@@ -110,9 +110,9 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 	// Start memory leak watcher.
 	go b.runMemoryWatcher(ctx)
 
-	// Send startup notification to the configured posts chat.
-	if cfg := b.svc.GetConfig(); cfg.PostsChatID != 0 {
-		b.replyText(cfg.PostsChatID, "✅ Бот запущен и готов к работе.")
+	// Send startup notification to the bot owner's personal chat.
+	if cfg := b.svc.GetConfig(); cfg.OwnerChatID != 0 {
+		b.replyText(cfg.OwnerChatID, "✅ Бот запущен и готов к работе.")
 	}
 
 	for {

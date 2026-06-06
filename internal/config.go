@@ -49,6 +49,7 @@ type Config struct {
 
 	DailyGenerations  int   // количество отправок мемов в день
 	PostsChatID       int64 // chat ID для отправки мемов по расписанию
+	OwnerChatID       int64 // personal chat ID for bot owner notifications
 	Silent            bool  // если true, не выводить информационные логи о загрузке источников
 	DisableGeneration bool  // if true, skip source scraping and meme/mixtape generation cron tasks
 }
@@ -139,6 +140,13 @@ func LoadConfig() (Config, error) {
 	// Load DisableGeneration from env
 	if v := os.Getenv("DISABLE_GENERATION"); v == "true" || v == "1" {
 		cfg.DisableGeneration = true
+	}
+
+	// Load OwnerChatID from env
+	if v := os.Getenv("OWNER_CHAT_ID"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n != 0 {
+			cfg.OwnerChatID = n
+		}
 	}
 
 	// Load PostsChatID from env
