@@ -3358,20 +3358,8 @@ func mixtapeText(m *mixtape_pkg.Mixtape) string {
 
 func mixtapeCaption(m *mixtape_pkg.Mixtape) string { return mixtapeText(m) }
 
-// buildMixtapeDescription returns the track list plus an AI-generated story/joke/haiku.
-// Falls back to plain track list if AI is unavailable.
 func (b *TelegramBot) buildMixtapeDescription(ctx context.Context, m *mixtape_pkg.Mixtape) string {
-	base := mixtapeText(m)
-	gen := b.svc.GetTitleGenerator()
-	if gen == nil {
-		return base
-	}
-	blurb, err := gen.GenerateMixtapeBlurb(ctx, m.Titles, m.Authors)
-	if err != nil {
-		b.log.Warnf("buildMixtapeDescription: AI blurb failed: %v", err)
-		return base
-	}
-	return base + "\n\n" + blurb
+	return mixtapeText(m)
 }
 
 // cmdTestMixDesc picks a random mixtape and prints its full description (track list + AI blurb).
