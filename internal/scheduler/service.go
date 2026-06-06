@@ -160,12 +160,6 @@ func (s *Service) SetEngagementConfig(cfg *MixtapeEngagementConfig) {
 	s.engagementConfig = &cp
 }
 
-func (s *Service) SetEngagementConfig(cfg *MixtapeEngagementConfig) {
-	s.engagementMux.Lock()
-	defer s.engagementMux.Unlock()
-	s.engagementConfig = cfg
-}
-
 func (s *Service) SavePostsChatID(ctx context.Context, chatID int64) error {
 	s.cfgMux.Lock()
 	defer s.cfgMux.Unlock()

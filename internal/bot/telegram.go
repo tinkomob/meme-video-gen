@@ -1289,7 +1289,6 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 		b.cmdSetMixtapesEngagement(ctx, chatID, parts[0], parts[1:])
 		return
 	}
-	}
 
 	// No args → show schedule + engagement status
 	if args == "" {
@@ -1308,14 +1307,31 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 			lines = append(lines, fmt.Sprintf("#%d — %s %s", i+1, entry.Time.Format("15:04"), status))
 		}
 		ec := b.svc.GetEngagementConfig()
+		loc, _ := time.LoadLocation("Asia/Tomsk")
+		nowTomsk := time.Now().In(loc)
+
 		bestofStatus := "выкл"
 		if ec.BestOf.Enabled {
 			bestofStatus = fmt.Sprintf("вкл, каждые %d дня", ec.BestOf.IntervalDays)
+			if ec.BestOf.LastPostedAt.IsZero() {
+				bestofStatus += ", ещё не отправлялся"
+			} else {
+				nextBestOf := ec.BestOf.LastPostedAt.In(loc).Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour)
+				bestofStatus += fmt.Sprintf(", след. %s", nextBestOf.Format("02.01"))
+			}
 		}
+
 		teaserStatus := "выкл"
 		if ec.Teaser.Enabled {
-			teaserStatus = fmt.Sprintf("вкл, %02d:%02d", ec.Teaser.Hour, ec.Teaser.Minute)
+			teaserToday := time.Date(nowTomsk.Year(), nowTomsk.Month(), nowTomsk.Day(), ec.Teaser.Hour, ec.Teaser.Minute, 0, 0, loc)
+			teaserDay := "сегодня"
+			if !teaserToday.After(nowTomsk) {
+				teaserToday = teaserToday.Add(24 * time.Hour)
+				teaserDay = "завтра"
+			}
+			teaserStatus = fmt.Sprintf("вкл, след. %02d:%02d (%s)", teaserToday.Hour(), teaserToday.Minute(), teaserDay)
 		}
+
 		lines = append(lines, "",
 			fmt.Sprintf("🎤 Best Of: %s", bestofStatus),
 			fmt.Sprintf("🎵 Teaser: %s", teaserStatus),
@@ -1328,7 +1344,7 @@ func (b *TelegramBot) cmdSetMixtapes(ctx context.Context, chatID int64, args str
 	}
 
 	// With args → update entry
-	parts := strings.Fields(args)
+	parts = strings.Fields(args)
 	if len(parts) < 2 {
 		b.replyText(chatID, "Использование: /setmixtapes <index> <HH:MM | +30m | +2h | YYYY-MM-DD HH:MM>")
 		return
@@ -1624,6 +1640,7 @@ func (b *TelegramBot) runBestOfPoster(ctx context.Context) {
 				continue
 			}
 			go b.sendBestOfMixtape(ctx, chatID)
+		}
 	}
 }
 
@@ -2085,10 +2102,15 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /mixtape — получить случайный микстейп из треков eenfinit/dee bill (кнопка Send для публикации)
 /gmix — очистить все микстейпы и сгенерировать новые
 /clearmixtape — удалить все микстейпы из S3
-/setmixtapes — расписание авто-отправки микстейпов (5 в день по всем 24 часам)
+/setmixtapes — расписание авто-отправки микстейпов + статус Best Of и Teaser
 /setmixtapes <index> <time> — изменить время отправки микстейпа по индексу
-/setmixtapes bestof — управление Best Of [Artist] (каждые 3 дня)
+/setmixtapes bestof — управление Best Of [Artist] (каждые N дней)
+              /setmixtapes bestof on/off — включить/выключить
+              /setmixtapes bestof add <artist> — добавить артиста
+              /setmixtapes bestof remove <artist> — удалить артиста
 /setmixtapes teaser — управление ежедневным тизером "Wanna know this song?"
+              /setmixtapes teaser on/off — включить/выключить
+              /setmixtapes teaser time HH:MM — изменить время отправки
 /status — статус генерации и использование памяти
 /errors — скачать файл errors.log с последними ошибками
 /chatid — показать текущий chat ID
