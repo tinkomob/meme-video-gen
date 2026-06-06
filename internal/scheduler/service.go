@@ -613,21 +613,14 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		}
 	}()
 
-	// Load engagement config at startup
-	go func() {
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(5 * time.Second):
-		}
-		ec, err := LoadEngagementConfig(ctx, s3c, &cfg)
-		if err != nil {
-			log.Errorf("failed to load engagement config: %v", err)
-		} else {
-			s.SetEngagementConfig(ec)
-			log.Infof("loaded engagement config: bestof_enabled=%v, teaser_enabled=%v", ec.BestOf.Enabled, ec.Teaser.Enabled)
-		}
-	}()
+	// Load engagement config synchronously so poster goroutines always
+	// see the correct LastPostedAt / Enabled state from the first check.
+	if ec, err := LoadEngagementConfig(ctx, s3c, &cfg); err != nil {
+		log.Errorf("failed to load engagement config: %v", err)
+	} else {
+		s.SetEngagementConfig(ec)
+		log.Infof("loaded engagement config: bestof_enabled=%v, teaser_enabled=%v", ec.BestOf.Enabled, ec.Teaser.Enabled)
+	}
 
 	// Create and configure resource monitor
 	s.monitor = NewResourceMonitor(s, log)
