@@ -385,7 +385,7 @@ func wrapText(s string, maxChars int) string {
 	if current != "" {
 		lines = append(lines, current)
 	}
-	return strings.Join(lines, `\n`)
+	return strings.Join(lines, "\n")
 }
 
 // escapeFfmpegPath escapes a file path for use inside a single-quoted FFmpeg filter option
