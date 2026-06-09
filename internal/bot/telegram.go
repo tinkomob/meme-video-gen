@@ -735,7 +735,7 @@ func (b *TelegramBot) handleMultipleMemesWithMemes(ctx context.Context, chatID i
 	// Cache memes for this chat
 	b.sliderMux.Lock()
 	b.sliderMemes[chatID] = memes
-	b.sliderMemesTTL[chatID] = time.Now().Add(30 * time.Minute)
+	b.sliderMemesTTL[chatID] = time.Now().Add(3 * time.Hour)
 	b.sliderMux.Unlock()
 
 	b.log.Infof("handleMultipleMemesWithMemes: sending %d memes as media group to chat", len(memes))
@@ -885,7 +885,7 @@ func (b *TelegramBot) handleMultipleMemes(ctx context.Context, chatID int64, cou
 	// Cache memes for this chat
 	b.sliderMux.Lock()
 	b.sliderMemes[chatID] = memes
-	b.sliderMemesTTL[chatID] = time.Now().Add(30 * time.Minute)
+	b.sliderMemesTTL[chatID] = time.Now().Add(3 * time.Hour)
 	b.sliderMux.Unlock()
 
 	b.log.Infof("sending %d memes as media group to chat", len(memes))
