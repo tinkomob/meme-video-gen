@@ -59,9 +59,7 @@ type TelegramBot struct {
 	memeCacheMux         sync.RWMutex
 	memeCacheTTLDuration time.Duration // default 2 hours
 
-	// sliderMemes TTL: evict stale entries if user never publishes
-	sliderMemesTTL map[int64]time.Time
-	sliderMux      sync.Mutex // guards sliderMemes and sliderMemesTTL
+	sliderMux sync.Mutex // guards sliderMemes
 }
 
 func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath string, cancel context.CancelFunc) (*TelegramBot, error) {
@@ -82,7 +80,6 @@ func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath stri
 		errorsPath:           errorsPath,
 		schedulePosterDone:   make(chan struct{}),
 		sliderMemes:          make(map[int64][]*model.Meme),
-		sliderMemesTTL:       make(map[int64]time.Time),
 		s3BucketDir:          "bot-uploads",
 		trackSearchState:     make(map[int64]bool),
 		trackSearchTimestamp: make(map[int64]time.Time),
@@ -507,7 +504,6 @@ func (b *TelegramBot) deleteOtherBatchMemes(ctx context.Context, chatID int64, p
 
 	b.sliderMux.Lock()
 	delete(b.sliderMemes, chatID)
-	delete(b.sliderMemesTTL, chatID)
 	b.sliderMux.Unlock()
 
 	if len(otherIDs) == 0 {
@@ -735,7 +731,6 @@ func (b *TelegramBot) handleMultipleMemesWithMemes(ctx context.Context, chatID i
 	// Cache memes for this chat
 	b.sliderMux.Lock()
 	b.sliderMemes[chatID] = memes
-	b.sliderMemesTTL[chatID] = time.Now().Add(3 * time.Hour)
 	b.sliderMux.Unlock()
 
 	b.log.Infof("handleMultipleMemesWithMemes: sending %d memes as media group to chat", len(memes))
@@ -885,7 +880,6 @@ func (b *TelegramBot) handleMultipleMemes(ctx context.Context, chatID int64, cou
 	// Cache memes for this chat
 	b.sliderMux.Lock()
 	b.sliderMemes[chatID] = memes
-	b.sliderMemesTTL[chatID] = time.Now().Add(3 * time.Hour)
 	b.sliderMux.Unlock()
 
 	b.log.Infof("sending %d memes as media group to chat", len(memes))
@@ -2000,30 +1994,11 @@ func (b *TelegramBot) runMaintenanceTicker(ctx context.Context) {
 			return
 		case <-ticker.C:
 			b.clearExpiredMemeCache()
-			b.clearExpiredSliderMemes()
 			b.clearExpiredSearchState()
 		}
 	}
 }
 
-// clearExpiredSliderMemes evicts slider meme entries whose TTL has expired.
-// Prevents unbounded growth of sliderMemes map when users never publish.
-func (b *TelegramBot) clearExpiredSliderMemes() {
-	b.sliderMux.Lock()
-	defer b.sliderMux.Unlock()
-	now := time.Now()
-	evicted := 0
-	for chatID, exp := range b.sliderMemesTTL {
-		if now.After(exp) {
-			delete(b.sliderMemes, chatID)
-			delete(b.sliderMemesTTL, chatID)
-			evicted++
-		}
-	}
-	if evicted > 0 {
-		b.log.Infof("clearExpiredSliderMemes: evicted %d stale entries", evicted)
-	}
-}
 
 // clearExpiredSearchState removes trackSearchState/trackSearchMode entries that
 // were set more than 5 minutes ago (user never replied).
@@ -2142,7 +2117,6 @@ func (b *TelegramBot) sendScheduledMemes(ctx context.Context, chatID int64) {
 	b.log.Infof("sendScheduledMemes: caching %d memes for button callbacks...", len(memes))
 	b.sliderMux.Lock()
 	b.sliderMemes[chatID] = memes
-	b.sliderMemesTTL[chatID] = time.Now().Add(30 * time.Minute)
 	b.sliderMux.Unlock()
 
 	// Send selection buttons (same as /meme command)
