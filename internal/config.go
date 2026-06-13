@@ -15,9 +15,10 @@ type Config struct {
 	S3AccessKey   string
 	S3SecretKey   string
 
-	GeminiAPIKey  string
-	SerpAPIKey    string
-	BratuhaAPIKey string
+	GeminiAPIKey     string
+	OpenRouterAPIKey string
+	SerpAPIKey       string
+	BratuhaAPIKey    string
 	HumorAPIKey  string
 	APILeagueKey string
 
@@ -62,8 +63,9 @@ func LoadConfig() (Config, error) {
 		S3Bucket:      os.Getenv("S3_BUCKET"),
 		S3AccessKey:   firstNonEmpty(os.Getenv("S3_ACCESS_KEY"), os.Getenv("S3_ACCESS_KEY_ID")),
 		S3SecretKey:   firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("S3_SECRET_ACCESS_KEY_ID")),
-		GeminiAPIKey:  firstNonEmpty(os.Getenv("GOOGLE_API_KEY"), os.Getenv("GEMINI_API_KEY")),
-		SerpAPIKey:    os.Getenv("SERPAPI_KEY"),
+		GeminiAPIKey:     firstNonEmpty(os.Getenv("GOOGLE_API_KEY"), os.Getenv("GEMINI_API_KEY")),
+		OpenRouterAPIKey: os.Getenv("OPENROUTER_API_KEY"),
+		SerpAPIKey:       os.Getenv("SERPAPI_KEY"),
 		BratuhaAPIKey: os.Getenv("BRATUHA_API_KEY"),
 		HumorAPIKey:  os.Getenv("HUMOR_API_KEY"),
 		APILeagueKey: os.Getenv("APILEAGUE_API_KEY"),

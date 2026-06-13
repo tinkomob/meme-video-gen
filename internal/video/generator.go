@@ -18,6 +18,7 @@ import (
 	"github.com/samber/lo"
 
 	"meme-video-gen/internal"
+	"meme-video-gen/internal/ai"
 	"meme-video-gen/internal/audio"
 	"meme-video-gen/internal/logging"
 	"meme-video-gen/internal/model"
@@ -35,6 +36,7 @@ type Generator struct {
 	log          *logging.Logger
 	audioIdx     *audio.Indexer
 	sourcesScr   *sources.Scraper
+	aiGen        *ai.TitleGenerator
 	memesJSONMux sync.Mutex // Protects concurrent access to memes.json
 
 	// Video hash blacklist in-memory cache (5-minute TTL)
@@ -48,8 +50,8 @@ type Generator struct {
 	dislikedCacheExp time.Time
 }
 
-func NewGenerator(cfg internal.Config, s3c s3.Client, log *logging.Logger, audioIdx *audio.Indexer, sourcesScr *sources.Scraper) *Generator {
-	return &Generator{cfg: cfg, s3: s3c, log: log, audioIdx: audioIdx, sourcesScr: sourcesScr}
+func NewGenerator(cfg internal.Config, s3c s3.Client, log *logging.Logger, audioIdx *audio.Indexer, sourcesScr *sources.Scraper, aiGen *ai.TitleGenerator) *Generator {
+	return &Generator{cfg: cfg, s3: s3c, log: log, audioIdx: audioIdx, sourcesScr: sourcesScr, aiGen: aiGen}
 }
 
 func (g *Generator) EnsureMemes(ctx context.Context) error {
@@ -332,8 +334,11 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		videoPath = filepath.Join(os.TempDir(), fmt.Sprintf("meme-%d.mp4", time.Now().UnixNano()))
 		g.log.Infof("video: creating video at %s from image+audio...", videoPath)
 
+		// Watermark shows the cleaned artist name so viewers can find the music
+		watermark := strings.TrimSuffix(song.Author, " - Topic")
+
 		// Create video from image + audio using ffmpeg directly
-		if err := createVideoFromImageAndAudio(ctx, sourcePath, audioPath, videoPath, g.log); err != nil {
+		if err := createVideoFromImageAndAudio(ctx, sourcePath, audioPath, videoPath, watermark, g.log); err != nil {
 			g.log.Warnf("video: failed to create video from %s + audio: %v", sourcePath, err)
 
 			// If error contains "Invalid PNG" or similar, delete corrupted source
@@ -425,9 +430,14 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		g.log.Infof("video: ✓ source deleted from S3")
 	}
 
-	// Clean up author name by removing " - Topic" suffix that YouTube adds to official audio channels
-	author := strings.TrimSuffix(song.Author, " - Topic")
-	title := fmt.Sprintf("%s — %s", author, song.Title)
+	// Generate teaser caption for the meme; falls back to "Author — Title" if AI is unavailable.
+	var title string
+	if g.aiGen != nil {
+		title = g.aiGen.GenerateTeaserCaption(ctx, song)
+	} else {
+		author := strings.TrimSuffix(song.Author, " - Topic")
+		title = fmt.Sprintf("%s — %s", author, song.Title)
+	}
 
 	// Compute image hash for thumbnail (visual uniqueness of memes)
 	var imageHash uint64
@@ -684,8 +694,13 @@ func (g *Generator) ReplaceAudioInMeme(ctx context.Context, memeID string) (*mod
 	}
 
 	// Update the meme with new song information
-	author := strings.TrimSuffix(newSong.Author, " - Topic")
-	newTitle := fmt.Sprintf("%s — %s", author, newSong.Title)
+	var newTitle string
+	if g.aiGen != nil {
+		newTitle = g.aiGen.GenerateTeaserCaption(ctx, newSong)
+	} else {
+		author := strings.TrimSuffix(newSong.Author, " - Topic")
+		newTitle = fmt.Sprintf("%s — %s", author, newSong.Title)
+	}
 
 	idx.Items[memeIndex].SongID = newSong.ID
 	idx.Items[memeIndex].Title = newTitle
@@ -1045,8 +1060,9 @@ func safeLoadVideo(path string) (vid moviego.Video, err error) {
 	return
 }
 
-// createVideoFromImageAndAudio creates a video from a static image and audio file using ffmpeg
-func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, outputPath string, log *logging.Logger) error {
+// createVideoFromImageAndAudio creates a video from a static image and audio file using ffmpeg.
+// watermark is drawn on the video if non-empty (falls back silently if drawtext fails).
+func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, outputPath, watermark string, log *logging.Logger) error {
 	log.Infof("[FFMPEG] determining audio duration from %s...", audioPath)
 
 	ctxProbe, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
@@ -1057,13 +1073,13 @@ func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, out
 	durationBytes, err := probeCmd.Output()
 	if err != nil {
 		log.Infof("[FFMPEG] ffprobe failed (timeout?): %v", err)
-		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, log)
+		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, watermark, log)
 	}
 
 	var totalDuration float64
 	if _, err := fmt.Sscanf(string(durationBytes), "%f", &totalDuration); err != nil || totalDuration <= 0 {
 		log.Infof("[FFMPEG] failed to parse duration, using default")
-		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, log)
+		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, watermark, log)
 	}
 
 	// Clip duration: 10 seconds (capped to actual track length)
@@ -1076,11 +1092,12 @@ func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, out
 	startOffset := randomAudioOffset(totalDuration, clipDuration)
 
 	log.Infof("[FFMPEG] ✓ audio: total=%.2fs, clip=%.2fs, start=%.2fs", totalDuration, clipDuration, startOffset)
-	return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, clipDuration, startOffset, log)
+	return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, clipDuration, startOffset, watermark, log)
 }
 
 // createVideoWithDuration creates video with specific duration starting at startOffset within the audio.
-func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPath string, duration, startOffset float64, log *logging.Logger) error {
+// watermark is drawn at the bottom of the video; if drawtext fails, the video is retried without it.
+func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPath string, duration, startOffset float64, watermark string, log *logging.Logger) error {
 	log.Infof("[FFMPEG] starting ffmpeg with duration %.2f seconds (audio offset %.2fs)", duration, startOffset)
 	log.Infof("[FFMPEG] image: %s", imagePath)
 	log.Infof("[FFMPEG] audio: %s", audioPath)
@@ -1094,68 +1111,101 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		return fmt.Errorf("audio file not found: %s (%w)", audioPath, err)
 	}
 
-	filterComplex := "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]"
+	plainFilter := "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]"
+
+	// Build watermark filter: artist name centered at the bottom
+	watermarkFilter := plainFilter
+	var watermarkFile string
+	if watermark != "" {
+		watermarkFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-%d.txt", time.Now().UnixNano()))
+		if err := os.WriteFile(watermarkFile, []byte(watermark), 0o644); err == nil {
+			watermarkFilter = fmt.Sprintf(
+				"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,"+
+					"drawtext=textfile='%s':fontsize=42:fontcolor=white:borderw=3:bordercolor=black:box=1:boxcolor=black@0.5:boxborderw=10:x=(w-tw)/2:y=h-th-50[out]",
+				watermarkFile,
+			)
+		}
+	}
 
 	// Acquire semaphore – only one ffmpeg process at a time to avoid exhausting system threads.
 	ffmpegSem <- struct{}{}
-	defer func() { <-ffmpegSem }()
+	defer func() {
+		<-ffmpegSem
+		if watermarkFile != "" {
+			os.Remove(watermarkFile)
+		}
+	}()
 
-	// Build arg list; -ss before -i audioPath seeks within the audio stream.
-	args := []string{
-		"-hide_banner",
-		"-loglevel", "error",
-		"-threads", "1",
-		"-filter_threads", "1",
-		"-filter_complex_threads", "1",
-		"-i", imagePath,
-	}
-	if startOffset > 0 {
-		args = append(args, "-ss", fmt.Sprintf("%.3f", startOffset))
-	}
 	fadeOutStart := duration - 0.5
 	if fadeOutStart < 0 {
 		fadeOutStart = 0
 	}
 	audioFilter := fmt.Sprintf("afade=t=in:d=0.5,afade=t=out:st=%.3f:d=0.5", fadeOutStart)
 
-	args = append(args,
-		"-i", audioPath,
-		"-filter_complex", filterComplex,
-		"-map", "[out]",
-		"-map", "1:a",
-		"-c:v", "libx264",
-		"-preset", "ultrafast",
-		"-tune", "stillimage",
-		"-x264-params", "threads=1",
-		"-c:a", "aac",
-		"-b:a", "192k",
-		"-af", audioFilter,
-		"-pix_fmt", "yuv420p",
-		"-r", "30",
-		"-t", fmt.Sprintf("%.2f", duration),
-		"-y",
-		"-strict", "-2",
-		outputPath,
-	)
+	buildArgs := func(filterComplex string) []string {
+		// Build arg list; -ss before -i audioPath seeks within the audio stream.
+		args := []string{
+			"-hide_banner",
+			"-loglevel", "error",
+			"-threads", "1",
+			"-filter_threads", "1",
+			"-filter_complex_threads", "1",
+			"-i", imagePath,
+		}
+		if startOffset > 0 {
+			args = append(args, "-ss", fmt.Sprintf("%.3f", startOffset))
+		}
+		return append(args,
+			"-i", audioPath,
+			"-filter_complex", filterComplex,
+			"-map", "[out]",
+			"-map", "1:a",
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-tune", "stillimage",
+			"-x264-params", "threads=1",
+			"-c:a", "aac",
+			"-b:a", "192k",
+			"-af", audioFilter,
+			"-pix_fmt", "yuv420p",
+			"-r", "30",
+			"-t", fmt.Sprintf("%.2f", duration),
+			"-y",
+			"-strict", "-2",
+			outputPath,
+		)
+	}
 
-	var stderr bytes.Buffer
-	cmd := exec.Command("ffmpeg", args...)
-	cmd.Stderr = &stderr
+	runFFmpeg := func(filter string) error {
+		var stderr bytes.Buffer
+		cmd := exec.Command("ffmpeg", buildArgs(filter)...)
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			errMsg := stderr.String()
+			if errMsg == "" {
+				errMsg = err.Error()
+			}
+			log.Errorf("[FFMPEG] ✗ ffmpeg failed (exit code: %v): %s", err, errMsg)
+			return fmt.Errorf("ffmpeg error: %s", errMsg)
+		}
+		if _, err := os.Stat(outputPath); err != nil {
+			return fmt.Errorf("ffmpeg did not create output file: %s (%w)", outputPath, err)
+		}
+		return nil
+	}
 
 	log.Infof("[FFMPEG] executing ffmpeg with filter_complex (duration=%.2fs, offset=%.2fs)", duration, startOffset)
 
-	if err := cmd.Run(); err != nil {
-		errMsg := stderr.String()
-		if errMsg == "" {
-			errMsg = err.Error()
+	if err := runFFmpeg(watermarkFilter); err != nil {
+		if watermarkFilter == plainFilter {
+			return err
 		}
-		log.Errorf("[FFMPEG] ✗ ffmpeg failed (exit code: %v): %s", err, errMsg)
-		return fmt.Errorf("ffmpeg error: %s", errMsg)
-	}
-
-	// Verify output file was created
-	if _, err := os.Stat(outputPath); err != nil {
-		return fmt.Errorf("ffmpeg did not create output file: %s (%w)", outputPath, err)
+		// drawtext failed — retry without watermark
+		log.Warnf("[FFMPEG] watermark render failed (%v), retrying without watermark", err)
+		os.Remove(outputPath)
+		if err2 := runFFmpeg(plainFilter); err2 != nil {
+			return err2
+		}
 	}
 
 	log.Infof("[FFMPEG] ✓ ffmpeg completed successfully, output file: %s", outputPath)
