@@ -82,6 +82,76 @@ func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.
 	return "", fmt.Errorf("generate title failed: unknown error")
 }
 
+// GenerateTeaserCaption generates a short English teaser caption for a meme video.
+// Falls back to "Author — Title" if AI is unavailable or fails.
+func (tg *TitleGenerator) GenerateTeaserCaption(ctx context.Context, song *model.Song) string {
+	if tg.apiKey == "" {
+		return teaserCaptionFallback(song)
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
+	defer cancel()
+
+	const maxRetries = 3
+	const initialBackoff = 2 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		caption, err := tg.generateTeaserWithClient(ctx, song)
+		if err == nil && caption != "" {
+			return caption
+		}
+
+		if attempt < maxRetries && tg.isRetryableError(err) {
+			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
+			tg.log.Warnf("ai: teaser caption attempt %d/%d failed: %v. Retrying in %v",
+				attempt, maxRetries, err, backoff)
+			select {
+			case <-time.After(backoff):
+			case <-ctx.Done():
+				return teaserCaptionFallback(song)
+			}
+			continue
+		}
+		tg.log.Warnf("ai: teaser caption failed (non-retryable): %v, using fallback", err)
+		break
+	}
+
+	return teaserCaptionFallback(song)
+}
+
+func (tg *TitleGenerator) generateTeaserWithClient(ctx context.Context, song *model.Song) (string, error) {
+	prompt := fmt.Sprintf(
+		"You are a copywriter for short music videos on TikTok and Instagram Reels. "+
+			"Write ONE short English caption (max 60 characters) for a 10-second meme video "+
+			"featuring the track '%s' by '%s'. "+
+			"Rules: English only, plain text only (no hashtags, no emojis, no quotes), "+
+			"do NOT mention the artist name or song title, "+
+			"create curiosity or emotional resonance, make it feel relatable or cinematic.",
+		song.Title, song.Author,
+	)
+
+	resp, err := tg.client.Models.GenerateContent(ctx, "gemini-2.0-flash", []*genai.Content{
+		genai.NewContentFromText(prompt, genai.RoleUser),
+	}, nil)
+	if err != nil {
+		return "", fmt.Errorf("generate content: %w", err)
+	}
+
+	caption := strings.TrimSpace(resp.Text())
+	if caption == "" {
+		return "", fmt.Errorf("empty response from gemini api")
+	}
+	if runes := []rune(caption); len(runes) > 60 {
+		caption = string(runes[:60])
+	}
+	return caption, nil
+}
+
+func teaserCaptionFallback(song *model.Song) string {
+	author := strings.TrimSuffix(song.Author, " - Topic")
+	return fmt.Sprintf("%s — %s", author, song.Title)
+}
+
 // generateTitleWithClient makes the actual API call for title generation
 func (tg *TitleGenerator) generateTitleWithClient(ctx context.Context, song *model.Song) (string, error) {
 	client := tg.client

@@ -489,11 +489,11 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 
 	audioIdx := audio.NewIndexer(cfg, s3c, log)
 	srcScr := sources.NewScraper(cfg, s3c, log)
-	vidGen := video.NewGenerator(cfg, s3c, log, audioIdx, srcScr)
 	aiGen, err := ai.NewTitleGenerator(ctx, cfg.GeminiAPIKey, log)
 	if err != nil {
 		return nil, fmt.Errorf("ai title generator: %w", err)
 	}
+	vidGen := video.NewGenerator(cfg, s3c, log, audioIdx, srcScr, aiGen)
 
 	impl := &realImpl{cfg: cfg, s3: s3c, log: log, audio: audioIdx, src: srcScr, video: vidGen, ai: aiGen}
 	mixtapeGen := mixtape.NewGenerator(cfg, s3c, audioIdx, log)
