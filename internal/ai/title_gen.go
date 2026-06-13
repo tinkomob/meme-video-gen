@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -19,20 +20,21 @@ import (
 )
 
 type TitleGenerator struct {
-	apiKey string
-	log    *logging.Logger
-	client *genai.Client
+	apiKey          string
+	openRouterKey   string
+	log             *logging.Logger
+	client          *genai.Client
 }
 
-func NewTitleGenerator(ctx context.Context, apiKey string, log *logging.Logger) (*TitleGenerator, error) {
+func NewTitleGenerator(ctx context.Context, geminiKey, openRouterKey string, log *logging.Logger) (*TitleGenerator, error) {
 	client, err := genai.NewClient(ctx, &genai.ClientConfig{
-		APIKey:  apiKey,
+		APIKey:  geminiKey,
 		Backend: genai.BackendGeminiAPI,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("genai client: %w", err)
 	}
-	return &TitleGenerator{apiKey: apiKey, log: log, client: client}, nil
+	return &TitleGenerator{apiKey: geminiKey, openRouterKey: openRouterKey, log: log, client: client}, nil
 }
 
 func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.Song) (string, error) {
@@ -83,23 +85,48 @@ func (tg *TitleGenerator) GenerateTitleForMeme(ctx context.Context, song *model.
 }
 
 // GenerateTeaserCaption generates a short English teaser caption for a meme video.
-// Falls back to "Author — Title" if AI is unavailable or fails.
+// Tries Gemini first, then OpenRouter, then falls back to "Author — Title".
 func (tg *TitleGenerator) GenerateTeaserCaption(ctx context.Context, song *model.Song) string {
-	if tg.apiKey == "" {
-		return teaserCaptionFallback(song)
+	// 1. Try Gemini 2.5 Flash
+	if tg.apiKey != "" {
+		caption, err := tg.tryGeminiTeaser(ctx, song)
+		if err == nil && caption != "" {
+			return caption
+		}
+		tg.log.Warnf("ai: gemini teaser failed: %v, trying openrouter", err)
 	}
 
+	// 2. Try OpenRouter
+	if tg.openRouterKey != "" {
+		orCtx, cancel := context.WithTimeout(ctx, 12*time.Second)
+		defer cancel()
+		caption, err := tg.generateTeaserViaOpenRouter(orCtx, song)
+		if err == nil && caption != "" {
+			tg.log.Infof("ai: teaser caption via openrouter: %q", caption)
+			return caption
+		}
+		tg.log.Warnf("ai: openrouter teaser failed: %v, using fallback", err)
+	}
+
+	// 3. Hardcoded fallback
+	return teaserCaptionFallback(song)
+}
+
+// tryGeminiTeaser calls Gemini 2.5 Flash with retries; returns ("", err) if all attempts fail.
+func (tg *TitleGenerator) tryGeminiTeaser(ctx context.Context, song *model.Song) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 12*time.Second)
 	defer cancel()
 
 	const maxRetries = 3
 	const initialBackoff = 2 * time.Second
 
+	var lastErr error
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		caption, err := tg.generateTeaserWithClient(ctx, song)
 		if err == nil && caption != "" {
-			return caption
+			return caption, nil
 		}
+		lastErr = err
 
 		if attempt < maxRetries && tg.isRetryableError(err) {
 			backoff := initialBackoff * time.Duration(1<<uint(attempt-1))
@@ -108,15 +135,13 @@ func (tg *TitleGenerator) GenerateTeaserCaption(ctx context.Context, song *model
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
-				return teaserCaptionFallback(song)
+				return "", ctx.Err()
 			}
 			continue
 		}
-		tg.log.Warnf("ai: teaser caption failed (non-retryable): %v, using fallback", err)
 		break
 	}
-
-	return teaserCaptionFallback(song)
+	return "", lastErr
 }
 
 func (tg *TitleGenerator) generateTeaserWithClient(ctx context.Context, song *model.Song) (string, error) {
@@ -124,13 +149,14 @@ func (tg *TitleGenerator) generateTeaserWithClient(ctx context.Context, song *mo
 		"You are a copywriter for short music videos on TikTok and Instagram Reels. "+
 			"Write ONE short English caption (max 60 characters) for a 10-second meme video "+
 			"featuring the track '%s' by '%s'. "+
-			"Rules: English only, plain text only (no hashtags, no emojis, no quotes), "+
+			"Rules: English ONLY, plain text only (no hashtags, no emojis, no quotes), "+
 			"do NOT mention the artist name or song title, "+
-			"create curiosity or emotional resonance, make it feel relatable or cinematic.",
+			"create curiosity or emotional resonance, make it feel relatable or cinematic. "+
+			"Output ONLY the caption text, nothing else.",
 		song.Title, song.Author,
 	)
 
-	resp, err := tg.client.Models.GenerateContent(ctx, "gemini-2.0-flash", []*genai.Content{
+	resp, err := tg.client.Models.GenerateContent(ctx, "gemini-2.5-flash", []*genai.Content{
 		genai.NewContentFromText(prompt, genai.RoleUser),
 	}, nil)
 	if err != nil {
@@ -141,6 +167,90 @@ func (tg *TitleGenerator) generateTeaserWithClient(ctx context.Context, song *mo
 	if caption == "" {
 		return "", fmt.Errorf("empty response from gemini api")
 	}
+	if runes := []rune(caption); len(runes) > 60 {
+		caption = string(runes[:60])
+	}
+	return caption, nil
+}
+
+// generateTeaserViaOpenRouter calls OpenRouter as a fallback for teaser caption generation.
+func (tg *TitleGenerator) generateTeaserViaOpenRouter(ctx context.Context, song *model.Song) (string, error) {
+	if tg.openRouterKey == "" {
+		return "", fmt.Errorf("openrouter: no api key configured")
+	}
+
+	model := os.Getenv("OPENROUTER_MODEL")
+	if model == "" {
+		model = "mistralai/mistral-small-3.1-24b-instruct:free"
+	}
+
+	prompt := fmt.Sprintf(
+		"You are a copywriter for short music videos on TikTok and Instagram Reels. "+
+			"Write ONE short English caption (max 60 characters) for a 10-second meme video "+
+			"featuring the track '%s' by '%s'. "+
+			"Rules: English ONLY, plain text only (no hashtags, no emojis, no quotes), "+
+			"do NOT mention the artist name or song title, "+
+			"create curiosity or emotional resonance, make it feel relatable or cinematic. "+
+			"Output ONLY the caption text, nothing else.",
+		song.Title, song.Author,
+	)
+
+	type orMessage struct {
+		Role    string `json:"role"`
+		Content string `json:"content"`
+	}
+	type orRequest struct {
+		Model     string      `json:"model"`
+		Messages  []orMessage `json:"messages"`
+		MaxTokens int         `json:"max_tokens"`
+	}
+
+	body, err := json.Marshal(orRequest{
+		Model:     model,
+		Messages:  []orMessage{{Role: "user", Content: prompt}},
+		MaxTokens: 100,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		"https://openrouter.ai/api/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+tg.openRouterKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("openrouter request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read response: %w", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("openrouter status %d: %s", resp.StatusCode, truncateString(string(respBody), 200))
+	}
+
+	var result struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return "", fmt.Errorf("unmarshal response: %w", err)
+	}
+	if len(result.Choices) == 0 || result.Choices[0].Message.Content == "" {
+		return "", fmt.Errorf("openrouter: empty response")
+	}
+
+	caption := strings.TrimSpace(result.Choices[0].Message.Content)
 	if runes := []rune(caption); len(runes) > 60 {
 		caption = string(runes[:60])
 	}

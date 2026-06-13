@@ -75,7 +75,7 @@ func main() {
 		fmt.Println("=== Synchronizing memes.json with S3 memes/ folder ===")
 		audioIdx := audio.NewIndexer(cfg, s3Client, log)
 		scraper := sources.NewScraper(cfg, s3Client, log)
-		aiGen, _ := ai.NewTitleGenerator(ctx, cfg.GeminiAPIKey, log)
+		aiGen, _ := ai.NewTitleGenerator(ctx, cfg.GeminiAPIKey, cfg.OpenRouterAPIKey, log)
 		generator := video.NewGenerator(cfg, s3Client, log, audioIdx, scraper, aiGen)
 		if err := generator.SyncWithS3(ctx); err != nil {
 			log.Errorf("Error syncing memes: %v", err)

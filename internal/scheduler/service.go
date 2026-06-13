@@ -489,7 +489,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 
 	audioIdx := audio.NewIndexer(cfg, s3c, log)
 	srcScr := sources.NewScraper(cfg, s3c, log)
-	aiGen, err := ai.NewTitleGenerator(ctx, cfg.GeminiAPIKey, log)
+	aiGen, err := ai.NewTitleGenerator(ctx, cfg.GeminiAPIKey, cfg.OpenRouterAPIKey, log)
 	if err != nil {
 		return nil, fmt.Errorf("ai title generator: %w", err)
 	}
