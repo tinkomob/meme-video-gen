@@ -81,6 +81,26 @@ type postCreateResponse struct {
 	Errors []map[string]interface{} `json:"errors"`
 }
 
+// xAPIError is a structured X API error response (used for 4xx responses).
+type xAPIError struct {
+	Title  string `json:"title"`
+	Detail string `json:"detail"`
+	Type   string `json:"type"`
+}
+
+// parseXError tries to extract a human-readable message from an X API error body.
+// Returns empty string if the body isn't a recognised X error format.
+func parseXError(body []byte) string {
+	var e xAPIError
+	if err := json.Unmarshal(body, &e); err != nil || e.Title == "" {
+		return ""
+	}
+	if e.Detail != "" {
+		return fmt.Sprintf("%s: %s", e.Title, e.Detail)
+	}
+	return e.Title
+}
+
 // uploadMedia uploads a video using X API v2 chunked upload
 func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, error) {
 	file, err := os.Open(videoPath)
@@ -114,6 +134,9 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 
 	initBodyBytes, _ := io.ReadAll(initResp.Body)
 	if initResp.StatusCode != http.StatusOK && initResp.StatusCode != http.StatusAccepted {
+		if msg := parseXError(initBodyBytes); msg != "" {
+			return "", fmt.Errorf("INIT failed (%d): %s", initResp.StatusCode, msg)
+		}
 		return "", fmt.Errorf("INIT failed with status %d: %s", initResp.StatusCode, string(initBodyBytes))
 	}
 
@@ -152,6 +175,9 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 		if appendResp.StatusCode != http.StatusOK && appendResp.StatusCode != http.StatusNoContent {
 			bodyBytes, _ := io.ReadAll(appendResp.Body)
 			appendResp.Body.Close()
+			if msg := parseXError(bodyBytes); msg != "" {
+				return "", fmt.Errorf("APPEND failed (%d): %s", appendResp.StatusCode, msg)
+			}
 			return "", fmt.Errorf("APPEND failed with status %d: %s", appendResp.StatusCode, string(bodyBytes))
 		}
 		appendResp.Body.Close()
@@ -170,6 +196,9 @@ func (x *XUploader) uploadMedia(ctx context.Context, videoPath string) (string, 
 
 	finalizeBodyBytes, _ := io.ReadAll(finalizeResp.Body)
 	if finalizeResp.StatusCode != http.StatusOK && finalizeResp.StatusCode != http.StatusCreated {
+		if msg := parseXError(finalizeBodyBytes); msg != "" {
+			return "", fmt.Errorf("FINALIZE failed (%d): %s", finalizeResp.StatusCode, msg)
+		}
 		return "", fmt.Errorf("FINALIZE failed with status %d: %s", finalizeResp.StatusCode, string(finalizeBodyBytes))
 	}
 
