@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"math/rand"
+	"sort"
 	"time"
 
 	"meme-video-gen/internal"
@@ -96,11 +97,12 @@ type DailyMixtapeSchedule struct {
 	UpdatedAt time.Time              `json:"updated_at"`
 }
 
-// BuildDailyMixtapeSchedule creates count evenly distributed times across the full 24 h day
-// with random jitter (±30 min, capped to 1/3 of segment).
+// BuildDailyMixtapeSchedule picks count fully random times across the 24 h day
+// ensuring at least minGapSeconds between consecutive posts.
 func BuildDailyMixtapeSchedule(date time.Time, count int) []time.Time {
-	loc := time.FixedZone("Asia/Tomsk", 7*3600)
+	const minGapSeconds = 7200 // 2 h minimum between posts
 
+	loc := time.FixedZone("Asia/Tomsk", 7*3600)
 	start := time.Date(date.Year(), date.Month(), date.Day(), 0, 0, 0, 0, loc)
 	end := time.Date(date.Year(), date.Month(), date.Day(), 23, 59, 59, 0, loc)
 
@@ -109,35 +111,30 @@ func BuildDailyMixtapeSchedule(date time.Time, count int) []time.Time {
 		return nil
 	}
 	if count == 1 {
-		return []time.Time{start.Add(time.Duration(totalSeconds/2) * time.Second)}
+		return []time.Time{start.Add(time.Duration(rand.Intn(totalSeconds+1)) * time.Second)}
 	}
 
-	segmentSeconds := float64(totalSeconds) / float64(count)
-	jitterMax := int(segmentSeconds / 3)
-	if jitterMax > 1800 {
-		jitterMax = 1800
+	// Compress the [0, totalSeconds] range by (count-1)*minGap so that after
+	// spacing the sorted points apart by minGap every pair is at least minGap apart.
+	available := totalSeconds - (count-1)*minGapSeconds
+	if available < 0 {
+		available = 0
 	}
 
-	var times []time.Time
-	for i := 0; i < count; i++ {
-		segStart := float64(i) * segmentSeconds
-		segEnd := float64(i+1) * segmentSeconds
-		center := (segStart + segEnd) / 2
+	points := make([]int, count)
+	for i := range points {
+		points[i] = rand.Intn(available + 1)
+	}
+	sort.Ints(points)
 
-		jitter := 0
-		if jitterMax > 0 {
-			jitter = rand.Intn(2*jitterMax+1) - jitterMax
-		}
-
-		t := start.Add(time.Duration(int(center)+jitter) * time.Second)
-		if t.Before(start) {
-			t = start
-		}
+	times := make([]time.Time, count)
+	for i, p := range points {
+		seconds := p + i*minGapSeconds
+		t := start.Add(time.Duration(seconds) * time.Second)
 		if t.After(end) {
 			t = end
 		}
-
-		times = append(times, t)
+		times[i] = t
 	}
 
 	return times
