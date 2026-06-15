@@ -1097,12 +1097,23 @@ func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, out
 }
 
 // truncateText shortens s to maxChars runes, appending "…" if truncated.
-func truncateText(s string, maxChars int) string {
-	runes := []rune(s)
-	if len(runes) <= maxChars {
-		return s
+// fitFontSize returns a font size that keeps text within maxWidth pixels.
+// Shrinks below baseSize if needed, but never below minSize.
+func fitFontSize(text string, baseSize, maxWidth, minSize int) int {
+	n := len([]rune(text))
+	if n == 0 {
+		return baseSize
 	}
-	return string(runes[:maxChars-1]) + "…"
+	// Approximate average character width ≈ fontSize × 0.55
+	estimated := float64(n) * float64(baseSize) * 0.55
+	if estimated <= float64(maxWidth) {
+		return baseSize
+	}
+	scaled := int(float64(maxWidth) / (float64(n) * 0.55))
+	if scaled < minSize {
+		return minSize
+	}
+	return scaled
 }
 
 // createVideoWithDuration creates video with specific duration starting at startOffset within the audio.
@@ -1135,27 +1146,32 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 
 		both := artistName != "" && trackName != ""
 
+		const videoWidth = 1080
+		const badgePad = 40 // horizontal padding inside badge (20px each side)
+
 		if both {
 			// Two-line badge: 200px tall box
 			parts = append(parts, "drawbox=x=0:y=ih-200:w=iw:h=200:color=0x000000@0.65:t=fill")
 
+			artistFS := fitFontSize(artistName, 48, videoWidth-badgePad, 18)
 			artistFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-artist-%d.txt", stamp))
-			if err := os.WriteFile(artistFile, []byte(truncateText(artistName, 38)), 0o644); err != nil {
+			if err := os.WriteFile(artistFile, []byte(artistName), 0o644); err != nil {
 				artistFile = ""
 			} else {
 				parts = append(parts, fmt.Sprintf(
-					"drawtext=textfile='%s':fontsize=48:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-185",
-					artistFile,
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-185",
+					artistFile, artistFS,
 				))
 			}
 
+			trackFS := fitFontSize(trackName, 34, videoWidth-badgePad, 18)
 			trackFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-track-%d.txt", stamp))
-			if err := os.WriteFile(trackFile, []byte(truncateText(trackName, 52)), 0o644); err != nil {
+			if err := os.WriteFile(trackFile, []byte(trackName), 0o644); err != nil {
 				trackFile = ""
 			} else {
 				parts = append(parts, fmt.Sprintf(
-					"drawtext=textfile='%s':fontsize=34:fontcolor=0xe0e0e0:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-118",
-					trackFile,
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=0xe0e0e0:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-118",
+					trackFile, trackFS,
 				))
 			}
 		} else {
@@ -1165,13 +1181,14 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 				text = trackName
 			}
 			parts = append(parts, "drawbox=x=0:y=ih-120:w=iw:h=120:color=0x000000@0.65:t=fill")
+			singleFS := fitFontSize(text, 46, videoWidth-badgePad, 18)
 			artistFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-artist-%d.txt", stamp))
-			if err := os.WriteFile(artistFile, []byte(truncateText(text, 38)), 0o644); err != nil {
+			if err := os.WriteFile(artistFile, []byte(text), 0o644); err != nil {
 				artistFile = ""
 			} else {
 				parts = append(parts, fmt.Sprintf(
-					"drawtext=textfile='%s':fontsize=46:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-90",
-					artistFile,
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-90",
+					artistFile, singleFS,
 				))
 			}
 		}
