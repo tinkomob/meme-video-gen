@@ -334,11 +334,12 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 		videoPath = filepath.Join(os.TempDir(), fmt.Sprintf("meme-%d.mp4", time.Now().UnixNano()))
 		g.log.Infof("video: creating video at %s from image+audio...", videoPath)
 
-		// Watermark shows the cleaned artist name so viewers can find the music
-		watermark := strings.TrimSuffix(song.Author, " - Topic")
+		// Badge shows artist name and track title so viewers can find the music
+		artistName := strings.TrimSuffix(song.Author, " - Topic")
+		trackName := song.Title
 
 		// Create video from image + audio using ffmpeg directly
-		if err := createVideoFromImageAndAudio(ctx, sourcePath, audioPath, videoPath, watermark, g.log); err != nil {
+		if err := createVideoFromImageAndAudio(ctx, sourcePath, audioPath, videoPath, artistName, trackName, g.log); err != nil {
 			g.log.Warnf("video: failed to create video from %s + audio: %v", sourcePath, err)
 
 			// If error contains "Invalid PNG" or similar, delete corrupted source
@@ -1061,8 +1062,8 @@ func safeLoadVideo(path string) (vid moviego.Video, err error) {
 }
 
 // createVideoFromImageAndAudio creates a video from a static image and audio file using ffmpeg.
-// watermark is drawn on the video if non-empty (falls back silently if drawtext fails).
-func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, outputPath, watermark string, log *logging.Logger) error {
+// artistName and trackName are drawn as a badge on the video (falls back silently if drawtext fails).
+func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, outputPath, artistName, trackName string, log *logging.Logger) error {
 	log.Infof("[FFMPEG] determining audio duration from %s...", audioPath)
 
 	ctxProbe, cancelProbe := context.WithTimeout(ctx, 30*time.Second)
@@ -1073,13 +1074,13 @@ func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, out
 	durationBytes, err := probeCmd.Output()
 	if err != nil {
 		log.Infof("[FFMPEG] ffprobe failed (timeout?): %v", err)
-		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, watermark, log)
+		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, artistName, trackName, log)
 	}
 
 	var totalDuration float64
 	if _, err := fmt.Sscanf(string(durationBytes), "%f", &totalDuration); err != nil || totalDuration <= 0 {
 		log.Infof("[FFMPEG] failed to parse duration, using default")
-		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, watermark, log)
+		return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, 10, 0, artistName, trackName, log)
 	}
 
 	// Clip duration: 10 seconds (capped to actual track length)
@@ -1092,12 +1093,32 @@ func createVideoFromImageAndAudio(ctx context.Context, imagePath, audioPath, out
 	startOffset := randomAudioOffset(totalDuration, clipDuration)
 
 	log.Infof("[FFMPEG] ✓ audio: total=%.2fs, clip=%.2fs, start=%.2fs", totalDuration, clipDuration, startOffset)
-	return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, clipDuration, startOffset, watermark, log)
+	return createVideoWithDuration(ctx, imagePath, audioPath, outputPath, clipDuration, startOffset, artistName, trackName, log)
+}
+
+// truncateText shortens s to maxChars runes, appending "…" if truncated.
+// fitFontSize returns a font size that keeps text within maxWidth pixels.
+// Shrinks below baseSize if needed, but never below minSize.
+func fitFontSize(text string, baseSize, maxWidth, minSize int) int {
+	n := len([]rune(text))
+	if n == 0 {
+		return baseSize
+	}
+	// Approximate average character width ≈ fontSize × 0.55
+	estimated := float64(n) * float64(baseSize) * 0.55
+	if estimated <= float64(maxWidth) {
+		return baseSize
+	}
+	scaled := int(float64(maxWidth) / (float64(n) * 0.55))
+	if scaled < minSize {
+		return minSize
+	}
+	return scaled
 }
 
 // createVideoWithDuration creates video with specific duration starting at startOffset within the audio.
-// watermark is drawn at the bottom of the video; if drawtext fails, the video is retried without it.
-func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPath string, duration, startOffset float64, watermark string, log *logging.Logger) error {
+// artistName and trackName are rendered as a two-line badge at the bottom; retries without badge on failure.
+func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPath string, duration, startOffset float64, artistName, trackName string, log *logging.Logger) error {
 	log.Infof("[FFMPEG] starting ffmpeg with duration %.2f seconds (audio offset %.2fs)", duration, startOffset)
 	log.Infof("[FFMPEG] image: %s", imagePath)
 	log.Infof("[FFMPEG] audio: %s", audioPath)
@@ -1113,17 +1134,69 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 
 	plainFilter := "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black[v];[v]setsar=1[out]"
 
-	// Build watermark filter: artist name centered at the bottom
-	watermarkFilter := plainFilter
-	var watermarkFile string
-	if watermark != "" {
-		watermarkFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-%d.txt", time.Now().UnixNano()))
-		if err := os.WriteFile(watermarkFile, []byte(watermark), 0o644); err == nil {
-			watermarkFilter = fmt.Sprintf(
-				"[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1,"+
-					"drawtext=textfile='%s':fontsize=42:fontcolor=white:borderw=3:bordercolor=black:box=1:boxcolor=black@0.5:boxborderw=10:x=(w-tw)/2:y=h-th-50[out]",
-				watermarkFile,
-			)
+	// Build badge filter: semi-transparent full-width bar with artist + track name.
+	badgeFilter := plainFilter
+	var artistFile, trackFile string
+	stamp := time.Now().UnixNano()
+
+	hasBadge := artistName != "" || trackName != ""
+	if hasBadge {
+		base := "[0:v]scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
+		parts := []string{base}
+
+		both := artistName != "" && trackName != ""
+
+		const videoWidth = 1080
+		const badgePad = 40 // horizontal padding inside badge (20px each side)
+
+		if both {
+			// Two-line badge: 200px tall box
+			parts = append(parts, "drawbox=x=0:y=ih-200:w=iw:h=200:color=0x000000@0.65:t=fill")
+
+			artistFS := fitFontSize(artistName, 48, videoWidth-badgePad, 18)
+			artistFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-artist-%d.txt", stamp))
+			if err := os.WriteFile(artistFile, []byte(artistName), 0o644); err != nil {
+				artistFile = ""
+			} else {
+				parts = append(parts, fmt.Sprintf(
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-185",
+					artistFile, artistFS,
+				))
+			}
+
+			trackFS := fitFontSize(trackName, 34, videoWidth-badgePad, 18)
+			trackFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-track-%d.txt", stamp))
+			if err := os.WriteFile(trackFile, []byte(trackName), 0o644); err != nil {
+				trackFile = ""
+			} else {
+				parts = append(parts, fmt.Sprintf(
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=0xe0e0e0:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-118",
+					trackFile, trackFS,
+				))
+			}
+		} else {
+			// Single-line badge
+			text := artistName
+			if text == "" {
+				text = trackName
+			}
+			parts = append(parts, "drawbox=x=0:y=ih-120:w=iw:h=120:color=0x000000@0.65:t=fill")
+			singleFS := fitFontSize(text, 46, videoWidth-badgePad, 18)
+			artistFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-artist-%d.txt", stamp))
+			if err := os.WriteFile(artistFile, []byte(text), 0o644); err != nil {
+				artistFile = ""
+			} else {
+				parts = append(parts, fmt.Sprintf(
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-90",
+					artistFile, singleFS,
+				))
+			}
+		}
+
+		if len(parts) > 1 {
+			last := len(parts) - 1
+			parts[last] += "[out]"
+			badgeFilter = strings.Join(parts, ",")
 		}
 	}
 
@@ -1131,8 +1204,11 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 	ffmpegSem <- struct{}{}
 	defer func() {
 		<-ffmpegSem
-		if watermarkFile != "" {
-			os.Remove(watermarkFile)
+		if artistFile != "" {
+			os.Remove(artistFile)
+		}
+		if trackFile != "" {
+			os.Remove(trackFile)
 		}
 	}()
 
@@ -1196,12 +1272,12 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 
 	log.Infof("[FFMPEG] executing ffmpeg with filter_complex (duration=%.2fs, offset=%.2fs)", duration, startOffset)
 
-	if err := runFFmpeg(watermarkFilter); err != nil {
-		if watermarkFilter == plainFilter {
+	if err := runFFmpeg(badgeFilter); err != nil {
+		if badgeFilter == plainFilter {
 			return err
 		}
-		// drawtext failed — retry without watermark
-		log.Warnf("[FFMPEG] watermark render failed (%v), retrying without watermark", err)
+		// badge render failed — retry without badge
+		log.Warnf("[FFMPEG] badge render failed (%v), retrying without badge", err)
 		os.Remove(outputPath)
 		if err2 := runFFmpeg(plainFilter); err2 != nil {
 			return err2
