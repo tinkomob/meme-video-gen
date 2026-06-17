@@ -38,6 +38,10 @@ func looksLikeImage(data []byte) (kind string, ok bool) {
 		data[8] == 'W' && data[9] == 'E' && data[10] == 'B' && data[11] == 'P' {
 		return "webp", true
 	}
+	// GIF: GIF87a or GIF89a
+	if data[0] == 0x47 && data[1] == 0x49 && data[2] == 0x46 && data[3] == 0x38 {
+		return "gif", true
+	}
 	return "", false
 }
 

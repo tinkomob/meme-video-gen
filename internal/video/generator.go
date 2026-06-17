@@ -402,10 +402,17 @@ func (g *Generator) generateOne(ctx context.Context, memesIdx *model.MemesIndex)
 
 	g.log.Infof("video: [S3 UPLOAD SUCCESS] ✓ successfully uploaded video to S3: %s (%d bytes)", videoKey, len(videoData))
 
-	// Use source image as thumbnail (simpler and more reliable than extracting from video)
-	g.log.Infof("video: using source image as thumbnail...")
-	if thumbData, err := os.ReadFile(sourcePath); err != nil {
-		g.log.Warnf("video: failed to read source image as thumbnail: %v", err)
+	// Use source as thumbnail; GIFs need first-frame extraction to produce a valid JPEG.
+	g.log.Infof("video: using source as thumbnail...")
+	var thumbData []byte
+	var thumbErr error
+	if strings.HasSuffix(strings.ToLower(sourcePath), ".gif") {
+		thumbData, thumbErr = extractGIFFrame(ctx, sourcePath)
+	} else {
+		thumbData, thumbErr = os.ReadFile(sourcePath)
+	}
+	if thumbErr != nil {
+		g.log.Warnf("video: failed to get thumbnail: %v", thumbErr)
 		_ = g.s3.PutBytes(ctx, thumbKey, []byte{}, "image/jpeg")
 	} else {
 		if err := g.s3.PutBytes(ctx, thumbKey, thumbData, "image/jpeg"); err != nil {
@@ -1224,6 +1231,8 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 	}
 	audioFilter := fmt.Sprintf("afade=t=in:d=0.5,afade=t=out:st=%.3f:d=0.5", fadeOutStart)
 
+	isGIF := strings.HasSuffix(strings.ToLower(imagePath), ".gif")
+
 	buildArgs := func(filterComplex string) []string {
 		// Build arg list; -ss before -i audioPath seeks within the audio stream.
 		args := []string{
@@ -1232,19 +1241,28 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 			"-threads", "1",
 			"-filter_threads", "1",
 			"-filter_complex_threads", "1",
-			"-i", imagePath,
 		}
+		// Loop GIF input indefinitely so it fills the full clip duration.
+		if isGIF {
+			args = append(args, "-stream_loop", "-1")
+		}
+		args = append(args, "-i", imagePath)
 		if startOffset > 0 {
 			args = append(args, "-ss", fmt.Sprintf("%.3f", startOffset))
 		}
-		return append(args,
+		codecArgs := []string{
 			"-i", audioPath,
 			"-filter_complex", filterComplex,
 			"-map", "[out]",
 			"-map", "1:a",
 			"-c:v", "libx264",
 			"-preset", "ultrafast",
-			"-tune", "stillimage",
+		}
+		// -tune stillimage is only valid for static image inputs, not animated GIF.
+		if !isGIF {
+			codecArgs = append(codecArgs, "-tune", "stillimage")
+		}
+		return append(args, append(codecArgs,
 			"-x264-params", "threads=1",
 			"-c:a", "aac",
 			"-b:a", "192k",
@@ -1255,7 +1273,7 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 			"-y",
 			"-strict", "-2",
 			outputPath,
-		)
+		)...)
 	}
 
 	runFFmpeg := func(filter string) error {
@@ -1400,4 +1418,21 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 
 	log.Infof("[FFMPEG] ✓ audio replaced successfully (offset=%.2fs), output file: %s", startOffset, outputPath)
 	return nil
+}
+
+// extractGIFFrame extracts the first frame of a GIF as a JPEG-encoded byte slice.
+func extractGIFFrame(ctx context.Context, gifPath string) ([]byte, error) {
+	tmpJPG := gifPath + "_frame.jpg"
+	defer os.Remove(tmpJPG)
+
+	cmd := exec.CommandContext(ctx, "ffmpeg",
+		"-hide_banner", "-loglevel", "error",
+		"-i", gifPath,
+		"-vframes", "1",
+		"-y", tmpJPG,
+	)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return nil, fmt.Errorf("ffmpeg extract gif frame: %w: %s", err, out)
+	}
+	return os.ReadFile(tmpJPG)
 }
