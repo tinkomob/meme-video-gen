@@ -1150,44 +1150,47 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 		const badgePad = 40 // horizontal padding inside badge (20px each side)
 
 		if both {
-			// Two-line badge: 200px tall box
-			parts = append(parts, "drawbox=x=0:y=ih-200:w=iw:h=200:color=0x000000@0.65:t=fill")
+			// Two-line badge: 200px tall, positioned 100px above the bottom edge.
+			parts = append(parts, "drawbox=x=0:y=ih-300:w=iw:h=200:color=0x000000@0.78:t=fill")
+			// Thin white accent line at the top of the badge.
+			parts = append(parts, "drawbox=x=0:y=ih-300:w=iw:h=3:color=0xffffff@0.30:t=fill")
 
-			artistFS := fitFontSize(artistName, 48, videoWidth-badgePad, 18)
+			artistFS := fitFontSize(artistName, 52, videoWidth-badgePad, 18)
 			artistFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-artist-%d.txt", stamp))
 			if err := os.WriteFile(artistFile, []byte(artistName), 0o644); err != nil {
 				artistFile = ""
 			} else {
 				parts = append(parts, fmt.Sprintf(
-					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-185",
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.9:shadowx=1:shadowy=1:shadowcolor=black@0.6:x=(w-tw)/2:y=h-285",
 					artistFile, artistFS,
 				))
 			}
 
-			trackFS := fitFontSize(trackName, 34, videoWidth-badgePad, 18)
+			trackFS := fitFontSize(trackName, 36, videoWidth-badgePad, 18)
 			trackFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-track-%d.txt", stamp))
 			if err := os.WriteFile(trackFile, []byte(trackName), 0o644); err != nil {
 				trackFile = ""
 			} else {
 				parts = append(parts, fmt.Sprintf(
-					"drawtext=textfile='%s':fontsize=%d:fontcolor=0xe0e0e0:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-118",
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=0xd0d0d0:borderw=1:bordercolor=black@0.9:shadowx=1:shadowy=1:shadowcolor=black@0.6:x=(w-tw)/2:y=h-218",
 					trackFile, trackFS,
 				))
 			}
 		} else {
-			// Single-line badge
+			// Single-line badge: 120px tall, positioned 100px above the bottom edge.
 			text := artistName
 			if text == "" {
 				text = trackName
 			}
-			parts = append(parts, "drawbox=x=0:y=ih-120:w=iw:h=120:color=0x000000@0.65:t=fill")
-			singleFS := fitFontSize(text, 46, videoWidth-badgePad, 18)
+			parts = append(parts, "drawbox=x=0:y=ih-220:w=iw:h=120:color=0x000000@0.78:t=fill")
+			parts = append(parts, "drawbox=x=0:y=ih-220:w=iw:h=3:color=0xffffff@0.30:t=fill")
+			singleFS := fitFontSize(text, 50, videoWidth-badgePad, 18)
 			artistFile = filepath.Join(os.TempDir(), fmt.Sprintf("wm-artist-%d.txt", stamp))
 			if err := os.WriteFile(artistFile, []byte(text), 0o644); err != nil {
 				artistFile = ""
 			} else {
 				parts = append(parts, fmt.Sprintf(
-					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.8:x=(w-tw)/2:y=h-90",
+					"drawtext=textfile='%s':fontsize=%d:fontcolor=white:borderw=2:bordercolor=black@0.9:shadowx=1:shadowy=1:shadowcolor=black@0.6:x=(w-tw)/2:y=h-190",
 					artistFile, singleFS,
 				))
 			}
