@@ -259,7 +259,7 @@ func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
 		segmentPaths = append(segmentPaths, segPath)
 		songIDs = append(songIDs, song.ID)
 		titles = append(titles, song.Title)
-		authors = append(authors, song.Author)
+		authors = append(authors, strings.TrimSuffix(song.Author, " - Topic"))
 	}
 
 	// Concatenate segments
@@ -458,6 +458,7 @@ func (g *Generator) buildSegment(ctx context.Context, thumbPath, audioPath, outP
 
 	labelText := bottomLabel
 	if labelText == "" {
+		author = strings.TrimSuffix(author, " - Topic")
 		labelText = fmt.Sprintf("#%d %s - %s", segNum, author, songTitle)
 		if len(labelText) > 34 {
 			labelText = wrapText(labelText, 34)
@@ -716,7 +717,7 @@ func (g *Generator) GenerateBestOf(ctx context.Context, author string, segCount 
 		segmentPaths = append(segmentPaths, segPath)
 		songIDs = append(songIDs, song.ID)
 		titles = append(titles, song.Title)
-		authors = append(authors, song.Author)
+		authors = append(authors, strings.TrimSuffix(song.Author, " - Topic"))
 	}
 
 	outPath := filepath.Join(tmpDir, "bestof.mp4")
