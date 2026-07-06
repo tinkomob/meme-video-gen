@@ -67,7 +67,8 @@ func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath stri
 	if tok == "" {
 		return nil, errors.New("TELEGRAM_BOT_TOKEN is empty")
 	}
-	api, err := tgbotapi.NewBotAPI(tok)
+	httpClient := &http.Client{Timeout: 60 * time.Second}
+	api, err := tgbotapi.NewBotAPIWithClient(tok, tgbotapi.APIEndpoint, httpClient)
 	if err != nil {
 		return nil, err
 	}
@@ -1121,9 +1122,18 @@ func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
 				if timeDiff >= 0 && timeDiff < 1*time.Minute {
 					b.log.Infof("runSchedulePoster: sending 3 memes at scheduled time %s (now=%s, diff=%v)",
 						entry.Time.Format("15:04:05"), now.Format("15:04:05"), timeDiff)
-					// Use background context for scheduled sends to avoid cancellation
-					go b.sendScheduledMemes(context.Background(), chatID)
 					sentTimes[timeKey] = true
+					// Use background context for scheduled sends to avoid cancellation
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								b.log.Errorf("runSchedulePoster: sendScheduledMemes panicked: %v", r)
+							}
+						}()
+						sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+						defer cancel()
+						b.sendScheduledMemes(sendCtx, chatID)
+					}()
 				}
 			}
 
@@ -1193,8 +1203,17 @@ func (b *TelegramBot) runMixtapePoster(ctx context.Context) {
 				timeDiff := now.Sub(entry.Time)
 				if timeDiff >= 0 && timeDiff < 1*time.Minute {
 					b.log.Infof("runMixtapePoster: sending mixtape at scheduled time %s", entry.Time.Format("15:04:05"))
-					go b.sendScheduledMixtape(context.Background(), chatID)
 					sentTimes[timeKey] = true
+					go func() {
+						defer func() {
+							if r := recover(); r != nil {
+								b.log.Errorf("runMixtapePoster: sendScheduledMixtape panicked: %v", r)
+							}
+						}()
+						sendCtx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+						defer cancel()
+						b.sendScheduledMixtape(sendCtx, chatID)
+					}()
 				}
 			}
 		}
@@ -2495,7 +2514,7 @@ func (b *TelegramBot) cmdScheduleInfo(chatID int64) {
 	for i, entry := range sched.Entries {
 		status := "⏳ ожидает"
 		if entry.Time.Before(now) {
-			status = "✅ выполнена"
+			status = "🕓 время прошло (см. логи, не гарантирует отправку)"
 		}
 		lines = append(lines, fmt.Sprintf("%d. %s %s", i+1, entry.Time.Format("15:04:05"), status))
 	}
