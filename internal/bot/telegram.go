@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -144,8 +146,15 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 			} else if upd.Message != nil && upd.Message.Document != nil {
 				b.handleDocument(ctx, upd.Message)
 			} else if upd.Message != nil && upd.Message.Text != "" {
-				// Check if user is in track search mode
+				// After /musicvideo, accept a YouTube Shorts or Instagram Reels URL
+				// in addition to an uploaded Telegram video.
 				chatID := upd.Message.Chat.ID
+				if isMusicVideoURL(upd.Message.Text) && b.consumeMusicVideoState(chatID) {
+					go b.handleLinkedMusicVideo(ctx, chatID, upd.Message.Text)
+					continue
+				}
+
+				// Check if user is in track search mode
 				b.trackSearchMux.Lock()
 				isSearching := b.trackSearchState[chatID]
 				if isSearching {
@@ -1563,7 +1572,7 @@ func (b *TelegramBot) cmdSetMixtapesEngagement(ctx context.Context, chatID int64
 				if err2 != nil {
 					loc2 = time.FixedZone("UTC+7", 7*3600)
 				}
-				nextPost = ec.BestOf.LastPostedAt.In(loc2).Add(time.Duration(ec.BestOf.IntervalDays) * 24 * time.Hour).Format("02.01 15:04") + " (Tomsk)"
+				nextPost = ec.BestOf.LastPostedAt.In(loc2).Add(time.Duration(ec.BestOf.IntervalDays)*24*time.Hour).Format("02.01 15:04") + " (Tomsk)"
 			} else {
 				nextPost = "при первом запуске"
 			}
@@ -2992,7 +3001,11 @@ func (b *TelegramBot) handleUploadedMusicVideo(ctx context.Context, chatID int64
 		return
 	}
 	defer os.Remove(inputPath)
+	b.processMusicVideo(ctx, chatID, inputPath)
+}
 
+func (b *TelegramBot) processMusicVideo(ctx context.Context, chatID int64, inputPath string) {
+	var err error
 	var song *model.Song
 	selectedSongID := b.selectedMusicVideoSongID(chatID)
 	if selectedSongID != "" {
@@ -3040,6 +3053,67 @@ func (b *TelegramBot) handleUploadedMusicVideo(ctx context.Context, chatID int64
 	if !b.sendMemeVideo(ctx, chatID, meme) {
 		b.log.Errorf("musicvideo: failed to send registered meme %s", meme.ID)
 	}
+}
+
+func isMusicVideoURL(rawURL string) bool {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Scheme != "https" || u.Host == "" {
+		return false
+	}
+	host := strings.ToLower(strings.TrimPrefix(u.Host, "www."))
+	switch host {
+	case "youtube.com", "m.youtube.com", "youtu.be":
+		return strings.HasPrefix(u.Path, "/shorts/") || host == "youtu.be"
+	case "instagram.com":
+		return strings.HasPrefix(u.Path, "/reel/") || strings.HasPrefix(u.Path, "/reels/")
+	default:
+		return false
+	}
+}
+
+func (b *TelegramBot) handleLinkedMusicVideo(ctx context.Context, chatID int64, rawURL string) {
+	b.replyText(chatID, "⏳ Скачиваю видео по ссылке и подбираю трек...")
+
+	inputPath, err := b.downloadLinkedMusicVideo(ctx, rawURL)
+	if err != nil {
+		b.log.Errorf("musicvideo: link download failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось скачать видео по ссылке: %v", err))
+		return
+	}
+	defer os.Remove(inputPath)
+	b.processMusicVideo(ctx, chatID, inputPath)
+}
+
+func (b *TelegramBot) downloadLinkedMusicVideo(ctx context.Context, rawURL string) (string, error) {
+	tmpFile, err := os.CreateTemp(os.TempDir(), "musicvideo-link-*")
+	if err != nil {
+		return "", err
+	}
+	basePath := tmpFile.Name()
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(basePath)
+		return "", err
+	}
+	os.Remove(basePath)
+
+	outputTemplate := basePath + ".%(ext)s"
+	cmd := exec.CommandContext(ctx, "yt-dlp", "--no-playlist", "--format", "bestvideo*+bestaudio/best", "--merge-output-format", "mp4", "--output", outputTemplate, rawURL)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("yt-dlp: %w (%s)", err, strings.TrimSpace(stderr.String()))
+	}
+
+	matches, err := filepath.Glob(basePath + ".*")
+	if err != nil || len(matches) == 0 {
+		return "", fmt.Errorf("yt-dlp не создал видеофайл")
+	}
+	for _, match := range matches {
+		if strings.EqualFold(filepath.Ext(match), ".mp4") {
+			return match, nil
+		}
+	}
+	return matches[0], nil
 }
 
 func (b *TelegramBot) downloadTelegramFileToTemp(ctx context.Context, fileID string) (string, error) {
