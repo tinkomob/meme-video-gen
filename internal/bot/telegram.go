@@ -52,6 +52,10 @@ type TelegramBot struct {
 	trackSearchMode    map[int64]string
 	trackSearchModeMux sync.Mutex
 
+	// Chats that have requested processing of their next uploaded video.
+	musicVideoState map[int64]bool
+	musicVideoMux   sync.Mutex
+
 	// Meme file cache to avoid re-downloading (memeID -> file path)
 	// Optimization: avoid re-downloading same video multiple times within TTL
 	memeFileCache        map[string]string    // memeID -> file path
@@ -85,6 +89,7 @@ func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath stri
 		trackSearchState:     make(map[int64]bool),
 		trackSearchTimestamp: make(map[int64]time.Time),
 		trackSearchMode:      make(map[int64]string),
+		musicVideoState:      make(map[int64]bool),
 		memeFileCache:        make(map[string]string),
 		memeCacheTTL:         make(map[string]time.Time),
 		memeCacheTTLDuration: 2 * time.Hour,
@@ -128,6 +133,12 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 		case upd := <-updates:
 			if upd.Message != nil && upd.Message.IsCommand() {
 				b.handleCommand(ctx, upd.Message)
+			} else if upd.Message != nil && upd.Message.Video != nil {
+				if b.consumeMusicVideoState(upd.Message.Chat.ID) {
+					go b.handleUploadedMusicVideo(ctx, upd.Message.Chat.ID, upd.Message.Video.FileID)
+				} else {
+					b.replyText(upd.Message.Chat.ID, "Чтобы наложить музыку, сначала отправьте /musicvideo")
+				}
 			} else if upd.Message != nil && upd.Message.Document != nil {
 				b.handleDocument(ctx, upd.Message)
 			} else if upd.Message != nil && upd.Message.Text != "" {
@@ -182,6 +193,8 @@ func (b *TelegramBot) handleCommand(ctx context.Context, msg *tgbotapi.Message) 
 		b.cmdErrors(chatID)
 	case "meme":
 		b.handleMeme(ctx, chatID, msg.CommandArguments())
+	case "musicvideo":
+		b.cmdMusicVideo(chatID)
 	case "idea":
 		b.cmdIdea(ctx, chatID, msg.CommandArguments())
 	case "aidea":
@@ -2151,6 +2164,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
 /meme [count] — получить мем(ы) из пула (count: 1-10, по умолчанию 1)
              /meme — один мем с кнопками действий
              /meme 3 — 3 мема слайдером (медиагруппой)
+/musicvideo — принять ваше видео и наложить случайную музыку из доступных треков
 /idea [query] — получить идею для видео на основе песни и сгенерировать видео (только eenfinit)
               /idea — выбрать из списка, случайный или поиск
               /idea Dua Lipa — найти треки Dua Lipa и выбрать
@@ -2873,10 +2887,132 @@ func (b *TelegramBot) cmdUploadClient(chatID int64) {
 	b.replyText(chatID, "📎 Пришлите файл client_secrets.json как документ следующим сообщением")
 }
 
+func (b *TelegramBot) cmdMusicVideo(chatID int64) {
+	b.musicVideoMux.Lock()
+	b.musicVideoState[chatID] = true
+	b.musicVideoMux.Unlock()
+
+	b.replyText(chatID, "🎬 Пришлите видео следующим сообщением — я заменю его звук случайным треком из доступных.")
+}
+
+func (b *TelegramBot) consumeMusicVideoState(chatID int64) bool {
+	b.musicVideoMux.Lock()
+	defer b.musicVideoMux.Unlock()
+	if !b.musicVideoState[chatID] {
+		return false
+	}
+	delete(b.musicVideoState, chatID)
+	return true
+}
+
+func isVideoDocument(doc *tgbotapi.Document) bool {
+	if doc == nil {
+		return false
+	}
+	if strings.HasPrefix(strings.ToLower(doc.MimeType), "video/") {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(doc.FileName)) {
+	case ".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm":
+		return true
+	default:
+		return false
+	}
+}
+
+func (b *TelegramBot) handleUploadedMusicVideo(ctx context.Context, chatID int64, fileID string) {
+	b.replyText(chatID, "⏳ Загружаю видео и подбираю трек...")
+
+	inputPath, err := b.downloadTelegramFileToTemp(ctx, fileID)
+	if err != nil {
+		b.log.Errorf("musicvideo: download failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось скачать видео: %v", err))
+		return
+	}
+	defer os.Remove(inputPath)
+
+	song, err := b.svc.GetRandomSong(ctx)
+	if err != nil {
+		b.log.Errorf("musicvideo: get random song failed: %v", err)
+		b.replyText(chatID, "❌ В хранилище пока нет доступных треков.")
+		return
+	}
+
+	audioPath, err := b.svc.Impl().DownloadSongToTemp(ctx, song)
+	if err != nil {
+		b.log.Errorf("musicvideo: download song %s failed: %v", song.ID, err)
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось скачать трек: %v", err))
+		return
+	}
+	defer os.Remove(audioPath)
+
+	outputFile, err := os.CreateTemp(os.TempDir(), "musicvideo-output-*.mp4")
+	if err != nil {
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось подготовить результат: %v", err))
+		return
+	}
+	outputPath := outputFile.Name()
+	outputFile.Close()
+	defer os.Remove(outputPath)
+
+	if err := video.MuxVideoWithAudio(ctx, inputPath, audioPath, outputPath, b.log); err != nil {
+		b.log.Errorf("musicvideo: ffmpeg failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось обработать видео: %v", err))
+		return
+	}
+
+	resultFile, err := os.Open(outputPath)
+	if err != nil {
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось открыть результат: %v", err))
+		return
+	}
+	defer resultFile.Close()
+
+	msg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{Name: "music-video.mp4", Reader: resultFile})
+	msg.Caption = fmt.Sprintf("🎵 %s — %s", song.Author, song.Title)
+	if _, err := b.tg.Send(msg); err != nil {
+		b.log.Errorf("musicvideo: send result failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось отправить результат: %v", err))
+	}
+}
+
+func (b *TelegramBot) downloadTelegramFileToTemp(ctx context.Context, fileID string) (string, error) {
+	file, err := b.tg.GetFile(tgbotapi.FileConfig{FileID: fileID})
+	if err != nil {
+		return "", err
+	}
+
+	resp, err := b.downloadFile(ctx, file.Link(os.Getenv("TELEGRAM_BOT_TOKEN")))
+	if err != nil {
+		return "", err
+	}
+	defer resp.Close()
+
+	tmpFile, err := os.CreateTemp(os.TempDir(), "musicvideo-input-*.mp4")
+	if err != nil {
+		return "", err
+	}
+	tmpPath := tmpFile.Name()
+	if _, err := io.Copy(tmpFile, resp); err != nil {
+		tmpFile.Close()
+		os.Remove(tmpPath)
+		return "", err
+	}
+	if err := tmpFile.Close(); err != nil {
+		os.Remove(tmpPath)
+		return "", err
+	}
+	return tmpPath, nil
+}
+
 func (b *TelegramBot) handleDocument(ctx context.Context, msg *tgbotapi.Message) {
 	chatID := msg.Chat.ID
 	doc := msg.Document
 	if doc == nil {
+		return
+	}
+	if isVideoDocument(doc) && b.consumeMusicVideoState(chatID) {
+		go b.handleUploadedMusicVideo(ctx, chatID, doc.FileID)
 		return
 	}
 
