@@ -32,6 +32,7 @@ type MemeService interface {
 	GetRandomMeme(ctx context.Context) (*model.Meme, error)
 	GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error)
 	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
+	RegisterUploadedVideo(ctx context.Context, videoPath, title, songID string) (*model.Meme, error)
 	DownloadSongToTemp(ctx context.Context, song *model.Song) (string, error)
 	DeleteMeme(ctx context.Context, memeID string) error
 	DeleteMemes(ctx context.Context, memeIDs []string) error
@@ -444,6 +445,10 @@ func (r *realImpl) GetRandomMemes(ctx context.Context, count int) ([]*model.Meme
 }
 func (r *realImpl) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error) {
 	return r.video.DownloadMemeToTemp(ctx, meme)
+}
+
+func (r *realImpl) RegisterUploadedVideo(ctx context.Context, videoPath, title, songID string) (*model.Meme, error) {
+	return r.video.RegisterUploadedVideo(ctx, videoPath, title, songID)
 }
 
 func (r *realImpl) DownloadSongToTemp(ctx context.Context, song *model.Song) (string, error) {

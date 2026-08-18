@@ -2961,18 +2961,16 @@ func (b *TelegramBot) handleUploadedMusicVideo(ctx context.Context, chatID int64
 		return
 	}
 
-	resultFile, err := os.Open(outputPath)
+	title := fmt.Sprintf("🎵 %s — %s", song.Author, song.Title)
+	meme, err := b.svc.Impl().RegisterUploadedVideo(ctx, outputPath, title, song.ID)
 	if err != nil {
-		b.replyText(chatID, fmt.Sprintf("❌ Не удалось открыть результат: %v", err))
+		b.log.Errorf("musicvideo: register meme failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Не удалось сохранить результат как мем: %v", err))
 		return
 	}
-	defer resultFile.Close()
 
-	msg := tgbotapi.NewVideo(chatID, tgbotapi.FileReader{Name: "music-video.mp4", Reader: resultFile})
-	msg.Caption = fmt.Sprintf("🎵 %s — %s", song.Author, song.Title)
-	if _, err := b.tg.Send(msg); err != nil {
-		b.log.Errorf("musicvideo: send result failed: %v", err)
-		b.replyText(chatID, fmt.Sprintf("❌ Не удалось отправить результат: %v", err))
+	if !b.sendMemeVideo(ctx, chatID, meme) {
+		b.log.Errorf("musicvideo: failed to send registered meme %s", meme.ID)
 	}
 }
 
