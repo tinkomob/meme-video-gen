@@ -138,18 +138,20 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 			if upd.Message != nil && upd.Message.IsCommand() {
 				b.handleCommand(ctx, upd.Message)
 			} else if upd.Message != nil && upd.Message.Video != nil {
-				if b.consumeMusicVideoState(upd.Message.Chat.ID) {
-					go b.handleUploadedMusicVideo(ctx, upd.Message.Chat.ID, upd.Message.Video.FileID)
-				} else {
-					b.replyText(upd.Message.Chat.ID, "Чтобы наложить музыку, сначала отправьте /musicvideo")
-				}
+				// A video sent without /musicvideo is processed immediately with a random song.
+				// If /musicvideo was used, consume the pending state and preserve the selected song.
+				b.consumeMusicVideoState(upd.Message.Chat.ID)
+				go b.handleUploadedMusicVideo(ctx, upd.Message.Chat.ID, upd.Message.Video.FileID)
 			} else if upd.Message != nil && upd.Message.Document != nil {
 				b.handleDocument(ctx, upd.Message)
 			} else if upd.Message != nil && upd.Message.Text != "" {
 				// After /musicvideo, accept a YouTube Shorts or Instagram Reels URL
 				// in addition to an uploaded Telegram video.
 				chatID := upd.Message.Chat.ID
-				if isMusicVideoURL(upd.Message.Text) && b.consumeMusicVideoState(chatID) {
+				if isMusicVideoURL(upd.Message.Text) {
+					// Without a pending /musicvideo flow, selectedMusicVideoSongID is empty,
+					// so processing below automatically chooses a random song.
+					b.consumeMusicVideoState(chatID)
 					go b.handleLinkedMusicVideo(ctx, chatID, upd.Message.Text)
 					continue
 				}
@@ -2939,7 +2941,7 @@ func (b *TelegramBot) cmdMusicVideo(chatID int64) {
 			tgbotapi.NewInlineKeyboardButtonData("🔍 Найти и выбрать трек", "musicvideosearch"),
 		},
 	)
-	msg := tgbotapi.NewMessage(chatID, "🎬 Выберите трек для видео или оставьте случайный, затем пришлите видео:")
+	msg := tgbotapi.NewMessage(chatID, "🎬 Выберите трек для видео или оставьте случайный, затем пришлите видео или ссылку на Shorts/Reels:")
 	msg.ReplyMarkup = keyboard
 	b.tg.Send(msg)
 }
@@ -2947,11 +2949,14 @@ func (b *TelegramBot) cmdMusicVideo(chatID int64) {
 func (b *TelegramBot) consumeMusicVideoState(chatID int64) bool {
 	b.musicVideoMux.Lock()
 	defer b.musicVideoMux.Unlock()
-	if !b.musicVideoState[chatID] {
+	active := b.musicVideoState[chatID]
+	if !active {
+		// A media message outside the /musicvideo flow must always use a random song.
+		delete(b.musicVideoSongIDs, chatID)
 		return false
 	}
 	delete(b.musicVideoState, chatID)
-	return true
+	return active
 }
 
 func (b *TelegramBot) handleMusicVideoSongSelection(ctx context.Context, chatID int64, songID string) {
@@ -3151,7 +3156,8 @@ func (b *TelegramBot) handleDocument(ctx context.Context, msg *tgbotapi.Message)
 	if doc == nil {
 		return
 	}
-	if isVideoDocument(doc) && b.consumeMusicVideoState(chatID) {
+	if isVideoDocument(doc) {
+		b.consumeMusicVideoState(chatID)
 		go b.handleUploadedMusicVideo(ctx, chatID, doc.FileID)
 		return
 	}
