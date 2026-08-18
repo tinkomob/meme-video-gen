@@ -53,8 +53,9 @@ type TelegramBot struct {
 	trackSearchModeMux sync.Mutex
 
 	// Chats that have requested processing of their next uploaded video.
-	musicVideoState map[int64]bool
-	musicVideoMux   sync.Mutex
+	musicVideoState   map[int64]bool
+	musicVideoSongIDs map[int64]string
+	musicVideoMux     sync.Mutex
 
 	// Meme file cache to avoid re-downloading (memeID -> file path)
 	// Optimization: avoid re-downloading same video multiple times within TTL
@@ -90,6 +91,7 @@ func NewTelegramBot(svc *scheduler.Service, log *logging.Logger, errorsPath stri
 		trackSearchTimestamp: make(map[int64]time.Time),
 		trackSearchMode:      make(map[int64]string),
 		musicVideoState:      make(map[int64]bool),
+		musicVideoSongIDs:    make(map[int64]string),
 		memeFileCache:        make(map[string]string),
 		memeCacheTTL:         make(map[string]time.Time),
 		memeCacheTTLDuration: 2 * time.Hour,
@@ -166,6 +168,8 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 					// Handle search based on mode
 					if mode == "song" {
 						b.handleSongSearch(ctx, chatID, upd.Message.Text)
+					} else if mode == "musicvideo" {
+						b.handleMusicVideoSearch(ctx, chatID, upd.Message.Text)
 					} else {
 						b.handleIdeaSearch(ctx, chatID, upd.Message.Text)
 					}
@@ -292,6 +296,30 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 		return
 	}
 
+	if data == "musicvideosearch" {
+		b.trackSearchMux.Lock()
+		b.trackSearchState[chatID] = true
+		b.trackSearchTimestamp[chatID] = time.Now()
+		b.trackSearchMux.Unlock()
+		b.trackSearchModeMux.Lock()
+		b.trackSearchMode[chatID] = "musicvideo"
+		b.trackSearchModeMux.Unlock()
+		b.musicVideoMux.Lock()
+		b.musicVideoState[chatID] = false
+		b.musicVideoMux.Unlock()
+		b.replyText(chatID, "🔍 Введите название трека или артиста для поиска:")
+		return
+	}
+
+	if data == "musicvideorand" {
+		b.musicVideoMux.Lock()
+		delete(b.musicVideoSongIDs, chatID)
+		b.musicVideoState[chatID] = true
+		b.musicVideoMux.Unlock()
+		b.replyText(chatID, "🎲 Выбран случайный трек. Теперь пришлите видео.")
+		return
+	}
+
 	// Parse callback data
 	parts := splitCallback(data)
 	if len(parts) < 2 {
@@ -303,6 +331,8 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 	memeID := parts[1]
 
 	switch action {
+	case "musicvideosong":
+		b.handleMusicVideoSongSelection(ctx, chatID, memeID)
 	case "publish":
 		b.handlePublish(ctx, chatID, memeID, cb.Message.MessageID)
 	case "choose":
@@ -2031,7 +2061,6 @@ func (b *TelegramBot) runMaintenanceTicker(ctx context.Context) {
 	}
 }
 
-
 // clearExpiredSearchState removes trackSearchState/trackSearchMode entries that
 // were set more than 5 minutes ago (user never replied).
 func (b *TelegramBot) clearExpiredSearchState() {
@@ -2889,10 +2918,21 @@ func (b *TelegramBot) cmdUploadClient(chatID int64) {
 
 func (b *TelegramBot) cmdMusicVideo(chatID int64) {
 	b.musicVideoMux.Lock()
+	delete(b.musicVideoSongIDs, chatID)
 	b.musicVideoState[chatID] = true
 	b.musicVideoMux.Unlock()
 
-	b.replyText(chatID, "🎬 Пришлите видео следующим сообщением — я заменю его звук случайным треком из доступных.")
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		[]tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("🎲 Случайный трек", "musicvideorand"),
+		},
+		[]tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData("🔍 Найти и выбрать трек", "musicvideosearch"),
+		},
+	)
+	msg := tgbotapi.NewMessage(chatID, "🎬 Выберите трек для видео или оставьте случайный, затем пришлите видео:")
+	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
 }
 
 func (b *TelegramBot) consumeMusicVideoState(chatID int64) bool {
@@ -2903,6 +2943,28 @@ func (b *TelegramBot) consumeMusicVideoState(chatID int64) bool {
 	}
 	delete(b.musicVideoState, chatID)
 	return true
+}
+
+func (b *TelegramBot) handleMusicVideoSongSelection(ctx context.Context, chatID int64, songID string) {
+	song, err := b.svc.GetSongByID(ctx, songID)
+	if err != nil {
+		b.replyText(chatID, "❌ Этот трек больше недоступен. Попробуйте поискать снова.")
+		return
+	}
+
+	b.musicVideoMux.Lock()
+	b.musicVideoSongIDs[chatID] = song.ID
+	b.musicVideoState[chatID] = true
+	b.musicVideoMux.Unlock()
+	b.replyText(chatID, fmt.Sprintf("✅ Выбран трек: %s — %s\nТеперь пришлите видео.", song.Author, song.Title))
+}
+
+func (b *TelegramBot) selectedMusicVideoSongID(chatID int64) string {
+	b.musicVideoMux.Lock()
+	defer b.musicVideoMux.Unlock()
+	songID := b.musicVideoSongIDs[chatID]
+	delete(b.musicVideoSongIDs, chatID)
+	return songID
 }
 
 func isVideoDocument(doc *tgbotapi.Document) bool {
@@ -2931,10 +2993,16 @@ func (b *TelegramBot) handleUploadedMusicVideo(ctx context.Context, chatID int64
 	}
 	defer os.Remove(inputPath)
 
-	song, err := b.svc.GetRandomSong(ctx)
+	var song *model.Song
+	selectedSongID := b.selectedMusicVideoSongID(chatID)
+	if selectedSongID != "" {
+		song, err = b.svc.GetSongByID(ctx, selectedSongID)
+	} else {
+		song, err = b.svc.GetRandomSong(ctx)
+	}
 	if err != nil {
-		b.log.Errorf("musicvideo: get random song failed: %v", err)
-		b.replyText(chatID, "❌ В хранилище пока нет доступных треков.")
+		b.log.Errorf("musicvideo: get song failed: %v", err)
+		b.replyText(chatID, "❌ Выбранный трек недоступен или в хранилище пока нет доступных треков.")
 		return
 	}
 
@@ -3400,6 +3468,47 @@ func (b *TelegramBot) handleSongSearch(ctx context.Context, chatID int64, query 
 	}
 	msg := tgbotapi.NewMessage(chatID, resultText)
 	msg.ReplyMarkup = keyboard
+	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) handleMusicVideoSearch(ctx context.Context, chatID int64, query string) {
+	songs, err := b.svc.SearchSongs(ctx, query)
+	if err != nil {
+		b.log.Errorf("handleMusicVideoSearch: search failed: %v", err)
+		b.replyText(chatID, fmt.Sprintf("❌ Ошибка поиска: %v", err))
+		return
+	}
+	if len(songs) == 0 {
+		b.replyText(chatID, fmt.Sprintf("❌ Треков не найдено по запросу: \"%s\"", query))
+		return
+	}
+
+	const maxResults = 10
+	displayCount := len(songs)
+	if displayCount > maxResults {
+		displayCount = maxResults
+	}
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, displayCount)
+	for i := 0; i < displayCount; i++ {
+		song := songs[i]
+		title := song.Title
+		if len(title) > 30 {
+			title = title[:27] + "..."
+		}
+		rows = append(rows, []tgbotapi.InlineKeyboardButton{
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("%s - %s", song.Author, title),
+				fmt.Sprintf("musicvideosong:%s", song.ID),
+			),
+		})
+	}
+
+	resultText := fmt.Sprintf("🎵 Найдено треков: %d\nПоказано: %d", len(songs), displayCount)
+	if displayCount < len(songs) {
+		resultText += "\n\n❗Показаны первые 10 результатов"
+	}
+	msg := tgbotapi.NewMessage(chatID, resultText)
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
 	b.tg.Send(msg)
 }
 
