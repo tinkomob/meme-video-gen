@@ -3047,7 +3047,8 @@ func (b *TelegramBot) processMusicVideo(ctx context.Context, chatID int64, input
 		return
 	}
 
-	title := fmt.Sprintf("🎵 %s — %s", song.Author, song.Title)
+	author := strings.TrimSuffix(song.Author, " - Topic")
+	title := fmt.Sprintf("🎵 %s — %s", author, song.Title)
 	meme, err := b.svc.Impl().RegisterUploadedVideo(ctx, outputPath, title, song.ID)
 	if err != nil {
 		b.log.Errorf("musicvideo: register meme failed: %v", err)

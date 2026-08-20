@@ -1,0 +1,3 @@
+./doc.go
+./os_windows.go
+./provider.go
