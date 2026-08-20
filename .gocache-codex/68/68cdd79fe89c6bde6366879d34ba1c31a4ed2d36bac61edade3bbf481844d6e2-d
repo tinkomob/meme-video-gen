@@ -1,6 +1,0 @@
-./disliked_blacklist.go
-./ffmpeg.go
-./generator.go
-./uploaded.go
-./utils.go
-./video_hash.go
