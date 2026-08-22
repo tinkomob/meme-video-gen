@@ -10,7 +10,7 @@ import (
 	"meme-video-gen/internal/s3"
 )
 
-const defaultMixtapesPerDay = 5
+const defaultMixtapesPerDay = 2
 
 // BestOfEngagementConfig controls "Best of [Artist]" compilations.
 type BestOfEngagementConfig struct {
