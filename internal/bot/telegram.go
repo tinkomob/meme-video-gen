@@ -106,8 +106,10 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 	updates := b.tg.GetUpdatesChan(u)
 	b.log.Infof("telegram bot started as @%s", b.tg.Self.UserName)
 
-	// Start schedule poster goroutines
-	go b.runSchedulePoster(ctx)
+	// Scheduled meme posting is disabled together with meme generation.
+	if !b.svc.GetConfig().DisableGeneration {
+		go b.runSchedulePoster(ctx)
+	}
 	go b.runMixtapePoster(ctx)
 	go b.runBestOfPoster(ctx)
 	go b.runTeaserPoster(ctx)
@@ -892,6 +894,10 @@ func (b *TelegramBot) handleSingleMeme(ctx context.Context, chatID int64) {
 	meme, err := b.svc.Impl().GetRandomMeme(ctx)
 	if err != nil {
 		b.log.Errorf("GetRandomMeme failed: %v", err)
+		if b.svc.GetConfig().DisableGeneration {
+			b.replyText(chatID, "❌ Нет готовых мемов. Генерация мемов отключена.")
+			return
+		}
 		b.replyText(chatID, "🚀 Нет готовых мемов, запускаю генерацию...")
 
 		// Generate one meme
@@ -1105,6 +1111,11 @@ func tempFilePath(prefix, name string) string {
 
 // runSchedulePoster runs in background and sends memes at scheduled times
 func (b *TelegramBot) runSchedulePoster(ctx context.Context) {
+	if b.svc.GetConfig().DisableGeneration {
+		b.log.Infof("runSchedulePoster: scheduled meme posting is disabled")
+		return
+	}
+
 	// Wait for schedule to load
 	time.Sleep(3 * time.Second)
 
@@ -2740,6 +2751,11 @@ func (b *TelegramBot) cmdSetNext(ctx context.Context, chatID int64, args string)
 }
 
 func (b *TelegramBot) cmdRunScheduled(ctx context.Context, chatID int64) {
+	if b.svc.GetConfig().DisableGeneration {
+		b.replyText(chatID, "❌ Отправка мемов по расписанию отключена.")
+		return
+	}
+
 	b.replyText(chatID, "▶️ Генерирую 3 мема прямо сейчас...")
 
 	// Generate 3 memes (same logic as /meme 3 command)

@@ -52,7 +52,7 @@ type Config struct {
 	PostsChatID       int64 // chat ID для отправки мемов по расписанию
 	OwnerChatID       int64 // personal chat ID for bot owner notifications
 	Silent            bool  // если true, не выводить информационные логи о загрузке источников
-	DisableGeneration bool  // if true, skip source scraping and meme/mixtape generation cron tasks
+	DisableGeneration bool  // if true, disable meme generation and scheduled meme posting
 }
 
 func LoadConfig() (Config, error) {
@@ -95,6 +95,7 @@ func LoadConfig() (Config, error) {
 		DailyGenerations:          5,
 		PostsChatID:               0,
 		Silent:                    true,
+		DisableGeneration:         true,
 	}
 
 	// Load MaxSources from env
