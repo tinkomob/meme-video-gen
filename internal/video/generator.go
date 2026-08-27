@@ -1314,6 +1314,17 @@ func createVideoWithDuration(ctx context.Context, imagePath, audioPath, outputPa
 
 // replaceAudioInVideo replaces the audio track in an existing video with a new audio file
 func replaceAudioInVideo(ctx context.Context, videoPath, audioPath, outputPath string, log *logging.Logger) error {
+	return replaceAudioInVideoWithFilter(ctx, videoPath, audioPath, outputPath, "", log)
+}
+
+// replaceAudioInVerticalVideo makes a full-screen 9:16 video while replacing its audio.
+// Landscape inputs are centered and cropped; portrait inputs retain their full height.
+func replaceAudioInVerticalVideo(ctx context.Context, videoPath, audioPath, outputPath string, log *logging.Logger) error {
+	const verticalFilter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1"
+	return replaceAudioInVideoWithFilter(ctx, videoPath, audioPath, outputPath, verticalFilter, log)
+}
+
+func replaceAudioInVideoWithFilter(ctx context.Context, videoPath, audioPath, outputPath, videoFilter string, log *logging.Logger) error {
 	log.Infof("[FFMPEG] replacing audio in video")
 	log.Infof("[FFMPEG] video: %s", videoPath)
 	log.Infof("[FFMPEG] audio: %s", audioPath)
@@ -1346,11 +1357,15 @@ func replaceAudioInVideo(ctx context.Context, videoPath, audioPath, outputPath s
 		log.Infof("[FFMPEG] ✓ audio: total=%.2fs, clip=%.2fs, start=%.2fs", audioDuration, videoDuration, startOffset)
 	}
 
-	return replaceAudioWithDuration(ctx, videoPath, audioPath, outputPath, videoDuration, startOffset, log)
+	return replaceAudioWithDurationAndFilter(ctx, videoPath, audioPath, outputPath, videoDuration, startOffset, videoFilter, log)
 }
 
 // replaceAudioWithDuration replaces audio (starting at startOffset) and trims to match video duration.
 func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputPath string, duration, startOffset float64, log *logging.Logger) error {
+	return replaceAudioWithDurationAndFilter(ctx, videoPath, audioPath, outputPath, duration, startOffset, "", log)
+}
+
+func replaceAudioWithDurationAndFilter(ctx context.Context, videoPath, audioPath, outputPath string, duration, startOffset float64, videoFilter string, log *logging.Logger) error {
 	log.Infof("[FFMPEG] replacing audio (offset=%.2fs, clip=%.2fs)", startOffset, duration)
 
 	// Validate input files exist
@@ -1382,9 +1397,19 @@ func replaceAudioWithDuration(ctx context.Context, videoPath, audioPath, outputP
 		fadeOutStart = 0
 	}
 	audioFilter := fmt.Sprintf("afade=t=in:d=0.5,afade=t=out:st=%.3f:d=0.5", fadeOutStart)
+	args = append(args, "-i", audioPath)
+	if videoFilter == "" {
+		args = append(args, "-c:v", "copy")
+	} else {
+		args = append(args,
+			"-vf", videoFilter,
+			"-c:v", "libx264",
+			"-preset", "ultrafast",
+			"-x264-params", "threads=1",
+			"-pix_fmt", "yuv420p",
+		)
+	}
 	args = append(args,
-		"-i", audioPath,
-		"-c:v", "copy",
 		"-c:a", "aac",
 		"-b:a", "192k",
 		"-map", "0:v:0",

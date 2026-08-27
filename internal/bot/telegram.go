@@ -3057,7 +3057,7 @@ func (b *TelegramBot) processMusicVideo(ctx context.Context, chatID int64, input
 	outputFile.Close()
 	defer os.Remove(outputPath)
 
-	if err := video.MuxVideoWithAudio(ctx, inputPath, audioPath, outputPath, b.log); err != nil {
+	if err := video.MuxVerticalVideoWithAudio(ctx, inputPath, audioPath, outputPath, b.log); err != nil {
 		b.log.Errorf("musicvideo: ffmpeg failed: %v", err)
 		b.replyText(chatID, fmt.Sprintf("❌ Не удалось обработать видео: %v", err))
 		return
