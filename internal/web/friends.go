@@ -1,6 +1,7 @@
 package web
 
 import (
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,19 +19,34 @@ type FriendsHandler struct {
 	log     *logging.Logger
 }
 
+//go:embed friends_logo.png
+var friendsLogo []byte
+
 func NewFriendsHandler(service *friends.Service, log *logging.Logger) *FriendsHandler {
 	return &FriendsHandler{service: service, log: log}
 }
 
 func (h *FriendsHandler) Register(mux *http.ServeMux) {
 	mux.HandleFunc("GET /friends", h.page)
+	mux.HandleFunc("GET /friends/logo.png", h.logo)
 	mux.HandleFunc("POST /api/friends/random", h.random)
 	mux.HandleFunc("GET /api/friends/video/{id}", h.video)
 }
 
 func (h *FriendsHandler) page(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = io.WriteString(w, friendsPage)
+	page := strings.NewReplacer(
+		"</style>", ".brand{margin:0;width:min(100%,760px)}.brand img{display:block;width:100%;height:auto;mix-blend-mode:screen}</style>",
+		"<h1>Друзья</h1>", `<h1 class="brand"><img src="/friends/logo.png" alt="Друзья"></h1>`,
+		"status.textContent='';video.load()", "status.textContent='';video.load();await video.play()",
+	).Replace(friendsPage)
+	_, _ = io.WriteString(w, page)
+}
+
+func (h *FriendsHandler) logo(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "image/png")
+	w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	_, _ = w.Write(friendsLogo)
 }
 
 func (h *FriendsHandler) random(w http.ResponseWriter, r *http.Request) {

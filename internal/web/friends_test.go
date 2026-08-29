@@ -1,6 +1,22 @@
 package web
 
-import "testing"
+import (
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func TestFriendsPageIncludesLogoAndAutoplay(t *testing.T) {
+	handler := &FriendsHandler{}
+	recorder := httptest.NewRecorder()
+	handler.page(recorder, httptest.NewRequest("GET", "/friends", nil))
+	body := recorder.Body.String()
+	for _, expected := range []string{`src="/friends/logo.png"`, "await video.play()"} {
+		if !strings.Contains(body, expected) {
+			t.Errorf("page does not contain %q", expected)
+		}
+	}
+}
 
 func TestParseRange(t *testing.T) {
 	tests := []struct {
