@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"net/url"
+	"strconv"
 	"strings"
 
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -22,6 +23,7 @@ type Client interface {
 	PutBytes(ctx context.Context, key string, b []byte, contentType string) error
 	GetBytes(ctx context.Context, key string) ([]byte, string, error)
 	GetReader(ctx context.Context, key string) (*ObjectReader, error)
+	GetRangeReader(ctx context.Context, key string, start, end int64) (*ObjectReader, error)
 	Exists(ctx context.Context, key string) (bool, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, prefix string) ([]ObjectInfo, error)
@@ -127,6 +129,25 @@ func (c *s3Client) GetReader(ctx context.Context, key string) (*ObjectReader, er
 		Reader: out.Body,
 		Size:   size,
 	}, nil
+}
+
+// GetRangeReader streams an inclusive byte range without downloading an entire object.
+func (c *s3Client) GetRangeReader(ctx context.Context, key string, start, end int64) (*ObjectReader, error) {
+	rangeHeader := "bytes=" + strconv.FormatInt(start, 10) + "-" + strconv.FormatInt(end, 10)
+	out, err := c.api.GetObject(ctx, &awss3.GetObjectInput{Bucket: &c.bucket, Key: &key, Range: &rangeHeader})
+	if err != nil {
+		var noSuchKey *types.NoSuchKey
+		if errors.As(err, &noSuchKey) {
+			return nil, osErrNotExist(err)
+		}
+		return nil, err
+	}
+
+	size := int64(0)
+	if out.ContentLength != nil {
+		size = *out.ContentLength
+	}
+	return &ObjectReader{Reader: out.Body, Size: size}, nil
 }
 
 func (c *s3Client) Exists(ctx context.Context, key string) (bool, error) {

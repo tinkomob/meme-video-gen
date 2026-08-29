@@ -46,7 +46,7 @@ RUN chown -R memebot:memebot /app
 # Change to non-root user
 USER memebot
 
-EXPOSE 8000
+EXPOSE 8080
 
 # Use tini as init to reap zombie ffmpeg sub-processes
 ENTRYPOINT ["/sbin/tini", "--"]

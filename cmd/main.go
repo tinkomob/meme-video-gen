@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"meme-video-gen/internal/bot"
+	"meme-video-gen/internal/friends"
 	"meme-video-gen/internal/logging"
 	"meme-video-gen/internal/scheduler"
+	"meme-video-gen/internal/web"
 
 	"github.com/joho/godotenv"
 )
@@ -52,16 +56,35 @@ func main() {
 		}
 	}()
 
+	friendsHandler := web.NewFriendsHandler(friends.New(svc.GetS3Client(), []int{1}), log)
+	mux := http.NewServeMux()
+	friendsHandler.Register(mux)
+	server := &http.Server{Addr: ":8080", Handler: mux}
+	go func() {
+		log.Infof("Friends player is listening on http://localhost:8080/friends")
+		if serveErr := server.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+			log.Errorf("web server: %v", serveErr)
+			cancel()
+		}
+	}()
+
 	b, err := bot.NewTelegramBot(svc, log, "errors.log", cancel)
 	if err != nil {
 		log.Errorf("bot init: %v", err)
 		return
 	}
-	if err := b.Run(ctx); err != nil {
-		log.Errorf("bot run: %v", err)
-		return
-	}
+	go func() {
+		if runErr := b.Run(ctx); runErr != nil {
+			log.Errorf("bot run: %v", runErr)
+			cancel()
+		}
+	}()
 
 	<-ctx.Done()
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer shutdownCancel()
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Errorf("web server shutdown: %v", err)
+	}
 	time.Sleep(300 * time.Millisecond)
 }
