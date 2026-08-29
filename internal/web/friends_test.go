@@ -11,7 +11,7 @@ func TestFriendsPageIncludesLogoAndAutoplay(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	handler.page(recorder, httptest.NewRequest("GET", "/friends", nil))
 	body := recorder.Body.String()
-	for _, expected := range []string{`src="/friends/logo.png"`, "await video.play()"} {
+	for _, expected := range []string{`src="/friends/logo.png"`, "await video.play()", "friends-last-watch", "nearEndSeconds=60"} {
 		if !strings.Contains(body, expected) {
 			t.Errorf("page does not contain %q", expected)
 		}
