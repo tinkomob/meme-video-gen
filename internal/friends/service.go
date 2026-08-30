@@ -14,7 +14,9 @@ import (
 	"meme-video-gen/internal/s3"
 )
 
-var episodeFilenamePattern = regexp.MustCompile(`(?i)^friendss(\d{2})e(\d{2})(?:-(\d{2}))?(?:\.|\[|$)`)
+// S3 files can have a season label before the actual episode code, for example
+// "Season 2_FriendsS02E01...". The code itself remains the source of truth.
+var episodeFilenamePattern = regexp.MustCompile(`(?i)friendss(\d{2})e(\d{2})(?:-(\d{2}))?(?:\.|\[|$)`)
 
 const (
 	metadataKey = "friends/friends_series_list.json"

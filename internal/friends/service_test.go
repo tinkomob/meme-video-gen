@@ -11,6 +11,7 @@ func TestMatchesEpisodeFilename(t *testing.T) {
 		want     bool
 	}{
 		{name: "ordinary episode", filename: "FriendsS01E01.BDRip.mp4", season: 1, episode: 1, want: true},
+		{name: "season label before episode code", filename: "Season 2_FriendsS02E01.BDRip.mp4", season: 2, episode: 1, want: true},
 		{name: "combined first episode", filename: "FriendsS09E23-24.BDRip.RGzsRutracker.mp4", season: 9, episode: 23, want: true},
 		{name: "combined second episode", filename: "FriendsS09E23-24.BDRip.RGzsRutracker.mp4", season: 9, episode: 24, want: true},
 		{name: "outside combined range", filename: "FriendsS09E23-24.BDRip.RGzsRutracker.mp4", season: 9, episode: 22, want: false},
