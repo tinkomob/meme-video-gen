@@ -56,7 +56,7 @@ func main() {
 		}
 	}()
 
-	friendsHandler := web.NewFriendsHandler(friends.New(svc.GetS3Client(), []int{1}), log)
+	friendsHandler := web.NewFriendsHandler(friends.New(svc.GetS3Client(), nil), log)
 	mux := http.NewServeMux()
 	friendsHandler.Register(mux)
 	server := &http.Server{Addr: ":8080", Handler: mux}

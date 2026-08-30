@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"path"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 
 	"meme-video-gen/internal/s3"
 )
+
+var episodeFilenamePattern = regexp.MustCompile(`(?i)^friendss(\d{2})e(\d{2})(?:-(\d{2}))?(?:\.|\[|$)`)
 
 const (
 	metadataKey = "friends/friends_series_list.json"
@@ -38,8 +42,7 @@ type Service struct {
 	episodes       []Episode
 }
 
-// New accepts a season allow-list. A future all-seasons rollout only changes
-// this argument; history and HTTP contracts stay the same.
+// New accepts an optional season allow-list. An empty list enables every season.
 func New(client s3.Client, allowedSeasons []int) *Service {
 	seasons := make(map[int]struct{}, len(allowedSeasons))
 	for _, season := range allowedSeasons {
@@ -65,9 +68,8 @@ func (s *Service) Random(ctx context.Context, excludedIDs []string) (Episode, er
 			available = append(available, episode)
 		}
 	}
-	// Season 1 has fewer than 50 episodes. Once every eligible episode was
-	// shown, start a new round; when all seasons are enabled the same history
-	// naturally keeps the requested 50-episode no-repeat window.
+	// If the catalogue contains fewer episodes than the recent-history window,
+	// start a new round only after every eligible episode was shown.
 	if len(available) == 0 {
 		available = append(available, s.episodes...)
 	}
@@ -122,22 +124,23 @@ func (s *Service) load(ctx context.Context) error {
 		return fmt.Errorf("list Friends videos: %w", err)
 	}
 
-	files := make(map[string]s3.ObjectInfo, len(objects))
+	files := make([]s3.ObjectInfo, 0, len(objects))
 	for _, object := range objects {
 		base := path.Base(object.Key)
 		if !strings.EqualFold(path.Ext(base), ".mp4") {
 			continue
 		}
-		files[strings.ToLower(base)] = object
+		files = append(files, object)
 	}
 	available := make([]Episode, 0, len(episodes))
 	for _, episode := range episodes {
-		if _, enabled := s.allowedSeasons[episode.SeasonNumber]; !enabled {
-			continue
+		if len(s.allowedSeasons) > 0 {
+			if _, enabled := s.allowedSeasons[episode.SeasonNumber]; !enabled {
+				continue
+			}
 		}
-		prefix := strings.ToLower(fmt.Sprintf("FriendsS%02dE%02d.", episode.SeasonNumber, episode.EpisodeNumberInSeason))
-		for name, object := range files {
-			if strings.HasPrefix(name, prefix) {
+		for _, object := range files {
+			if matchesEpisodeFilename(path.Base(object.Key), episode.SeasonNumber, episode.EpisodeNumberInSeason) {
 				episode.VideoKey, episode.VideoSize = object.Key, object.Size
 				available = append(available, episode)
 				break
@@ -150,4 +153,20 @@ func (s *Service) load(ctx context.Context) error {
 	sort.Slice(available, func(i, j int) bool { return available[i].ID() < available[j].ID() })
 	s.episodes, s.loaded = available, true
 	return nil
+}
+
+// matchesEpisodeFilename recognizes ordinary files (S09E23) and combined
+// episodes (S09E23-24), where the latter is valid for both episode numbers.
+func matchesEpisodeFilename(filename string, season, episode int) bool {
+	parts := episodeFilenamePattern.FindStringSubmatch(filename)
+	if len(parts) == 0 {
+		return false
+	}
+	fileSeason, _ := strconv.Atoi(parts[1])
+	firstEpisode, _ := strconv.Atoi(parts[2])
+	lastEpisode := firstEpisode
+	if parts[3] != "" {
+		lastEpisode, _ = strconv.Atoi(parts[3])
+	}
+	return fileSeason == season && episode >= firstEpisode && episode <= lastEpisode
 }

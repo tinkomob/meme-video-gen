@@ -39,6 +39,7 @@ func (h *FriendsHandler) page(w http.ResponseWriter, _ *http.Request) {
 	page := strings.NewReplacer(
 		"</style>", ".brand{margin:0;width:min(100%,760px)}.brand img{display:block;width:100%;height:auto;mix-blend-mode:screen}</style>",
 		"<h1>Друзья</h1>", `<h1 class="brand"><img src="/friends/logo.png" alt="Друзья"></h1>`,
+		"случайная серия · сезон 1", "случайная серия · все сезоны",
 	).Replace(friendsPage)
 	if start, end := strings.Index(page, "<script>"), strings.LastIndex(page, "</script>"); start >= 0 && end > start {
 		page = page[:start] + friendsScript + page[end+len("</script>"):]
