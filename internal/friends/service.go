@@ -18,6 +18,10 @@ import (
 // "Season 2_FriendsS02E01...". The code itself remains the source of truth.
 var episodeFilenamePattern = regexp.MustCompile(`(?i)friendss(\d{2})e(\d{2})(?:-(\d{2}))?(?:\.|\[|$)`)
 
+// partMarkerPattern covers the title suffixes used for multi-part episodes in
+// both the Russian metadata and the original English titles.
+var partMarkerPattern = regexp.MustCompile(`(?i)(?:часть|part)\s*(?:№\s*)?([\p{L}\p{N}]+)`)
+
 const (
 	metadataKey = "friends/friends_series_list.json"
 	mediaPrefix = "friends/"
@@ -64,8 +68,9 @@ func (s *Service) Random(ctx context.Context, excludedIDs []string) (Episode, er
 
 	s.mux.RLock()
 	defer s.mux.RUnlock()
-	available := make([]Episode, 0, len(s.episodes))
-	for _, episode := range s.episodes {
+	eligible := randomEligibleEpisodes(s.episodes)
+	available := make([]Episode, 0, len(eligible))
+	for _, episode := range eligible {
 		if _, seen := excluded[episode.ID()]; !seen {
 			available = append(available, episode)
 		}
@@ -73,9 +78,54 @@ func (s *Service) Random(ctx context.Context, excludedIDs []string) (Episode, er
 	// If the catalogue contains fewer episodes than the recent-history window,
 	// start a new round only after every eligible episode was shown.
 	if len(available) == 0 {
-		available = append(available, s.episodes...)
+		available = append(available, eligible...)
 	}
 	return available[rand.IntN(len(available))], nil
+}
+
+func randomEligibleEpisodes(episodes []Episode) []Episode {
+	available := make([]Episode, 0, len(episodes))
+	for _, episode := range episodes {
+		// Later parts are never a random starting point. Their corresponding
+		// first part remains eligible, so a story always starts at the beginning.
+		if partNumber(episode) <= 1 {
+			available = append(available, episode)
+		}
+	}
+	return available
+}
+
+// IsFirstPart reports whether an episode begins a multi-part story.
+func (e Episode) IsFirstPart() bool { return partNumber(e) == 1 }
+
+func partNumber(episode Episode) int {
+	for _, title := range []string{episode.TitleRU, episode.TitleEng} {
+		match := partMarkerPattern.FindStringSubmatch(title)
+		if len(match) == 0 {
+			continue
+		}
+		if number := namedPartNumber(strings.ToLower(match[1])); number > 0 {
+			return number
+		}
+	}
+	return 0
+}
+
+func namedPartNumber(value string) int {
+	if number, err := strconv.Atoi(value); err == nil {
+		return number
+	}
+	switch value {
+	case "первый", "первая", "первое", "первые", "first", "one", "i":
+		return 1
+	case "второй", "вторая", "второе", "вторые", "second", "two", "ii":
+		return 2
+	case "третий", "третья", "третье", "третьи", "third", "three", "iii":
+		return 3
+	case "четвертый", "четвёртый", "четвертая", "четвёртая", "fourth", "four", "iv":
+		return 4
+	}
+	return 0
 }
 
 func (s *Service) EpisodeByID(ctx context.Context, id string) (Episode, bool, error) {

@@ -87,7 +87,7 @@ func (h *FriendsHandler) episode(w http.ResponseWriter, r *http.Request) {
 func episodeResponse(episode friends.Episode) map[string]any {
 	return map[string]any{
 		"id": episode.ID(), "season": episode.SeasonNumber, "episode": episode.EpisodeNumberInSeason,
-		"title_ru": episode.TitleRU, "video_url": "/api/friends/video/" + episode.ID(),
+		"title_ru": episode.TitleRU, "video_url": "/api/friends/video/" + episode.ID(), "is_first_part": episode.IsFirstPart(),
 	}
 }
 
@@ -194,11 +194,12 @@ const readLastWatch=()=>{try{const value=JSON.parse(localStorage.getItem(lastWat
 const savePosition=()=>{if(!currentEpisode)return;const position=Math.max(0,Math.floor(video.currentTime||0));localStorage.setItem(lastWatchKey,JSON.stringify({id:currentEpisode.id,position,updatedAt:Date.now()}));lastSavedPosition=position};
 const showEpisode=(episode,startAt=0,autoplay=false)=>{video.pause();currentEpisode=episode;pendingStart=Math.max(0,startAt);pendingAutoplay=autoplay;lastSavedPosition=Math.floor(pendingStart);localStorage.setItem(lastWatchKey,JSON.stringify({id:episode.id,position:lastSavedPosition,updatedAt:Date.now()}));loadVersion++;video.src=episode.video_url;document.querySelector('#number').textContent='Сезон '+episode.season+' · Серия '+episode.episode;document.querySelector('#title').textContent=episode.title_ru;player.hidden=false;video.load()};
 const chooseRandom=async(autoplay=true)=>{button.disabled=true;status.textContent='Выбираем серию…';try{const response=await fetch('/api/friends/random',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({excluded:readHistory()})});const episode=await response.json();if(!response.ok)throw Error(episode.error||'Не удалось выбрать серию');rememberEpisode(episode.id);showEpisode(episode,0,autoplay);status.textContent=''}catch(error){status.textContent=error.message}finally{button.disabled=false}};
+const continueAfterFirstPart=async()=>{if(!currentEpisode?.is_first_part)return false;const nextID='s'+String(currentEpisode.season).padStart(2,'0')+'e'+String(currentEpisode.episode+1).padStart(2,'0');status.textContent='Включаем следующую часть…';try{const response=await fetch('/api/friends/episode/'+encodeURIComponent(nextID));if(!response.ok)throw Error();const episode=await response.json();rememberEpisode(episode.id);showEpisode(episode,0,true);status.textContent='';return true}catch{return false}};
 button.addEventListener('click',()=>chooseRandom(true));
 video.addEventListener('loadedmetadata',async()=>{const version=loadVersion;const duration=video.duration;if(pendingStart>0&&Number.isFinite(duration)&&duration-pendingStart<=nearEndSeconds){localStorage.removeItem(lastWatchKey);await chooseRandom(true);return}if(pendingStart>0&&Number.isFinite(duration))video.currentTime=Math.min(pendingStart,Math.max(0,duration-1));if(pendingAutoplay){try{await video.play();if(version===loadVersion)status.textContent=''}catch{if(version===loadVersion)status.textContent='Нажмите воспроизведение, если браузер заблокировал автозапуск.'}}});
 video.addEventListener('timeupdate',()=>{if(Math.abs((video.currentTime||0)-lastSavedPosition)>=5)savePosition()});
 video.addEventListener('pause',savePosition);window.addEventListener('pagehide',savePosition);
-video.addEventListener('ended',async()=>{localStorage.removeItem(lastWatchKey);await chooseRandom(true)});
+video.addEventListener('ended',async()=>{localStorage.removeItem(lastWatchKey);if(await continueAfterFirstPart())return;await chooseRandom(true)});
 (async()=>{const last=readLastWatch();if(!last)return;try{const response=await fetch('/api/friends/episode/'+encodeURIComponent(last.id));if(!response.ok)throw Error();const episode=await response.json();showEpisode(episode,last.position,false);status.textContent='Продолжите просмотр с сохранённой позиции.'}catch{localStorage.removeItem(lastWatchKey)}})();
 </script>`
 

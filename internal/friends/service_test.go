@@ -1,6 +1,42 @@
 package friends
 
-import "testing"
+import (
+	"context"
+	"testing"
+)
+
+func TestPartNumber(t *testing.T) {
+	tests := []struct {
+		title string
+		want  int
+	}{
+		{title: "Эпизод. Часть 1", want: 1},
+		{title: "Эпизод, часть первая", want: 1},
+		{title: "The Episode — Part II", want: 2},
+		{title: "Эпизод. Часть третья", want: 3},
+		{title: "Обычный эпизод", want: 0},
+	}
+	for _, test := range tests {
+		t.Run(test.title, func(t *testing.T) {
+			if got := partNumber(Episode{TitleRU: test.title}); got != test.want {
+				t.Fatalf("partNumber() = %d, want %d", got, test.want)
+			}
+		})
+	}
+}
+
+func TestRandomStartsMultiPartStoryAtFirstPart(t *testing.T) {
+	episodes := []Episode{
+		{SeasonNumber: 1, EpisodeNumberInSeason: 10, TitleRU: "История. Часть 1"},
+		{SeasonNumber: 1, EpisodeNumberInSeason: 11, TitleRU: "История. Часть 2"},
+		{SeasonNumber: 1, EpisodeNumberInSeason: 12, TitleRU: "История. Часть 3"},
+	}
+	service := &Service{loaded: true, episodes: episodes}
+	got, err := service.Random(context.Background(), nil)
+	if err != nil || got.ID() != episodes[0].ID() {
+		t.Fatalf("Random() = (%#v, %v), want %s", got, err, episodes[0].ID())
+	}
+}
 
 func TestMatchesEpisodeFilename(t *testing.T) {
 	tests := []struct {
