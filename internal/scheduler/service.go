@@ -37,6 +37,7 @@ type MemeService interface {
 	DeleteMeme(ctx context.Context, memeID string) error
 	DeleteMemes(ctx context.Context, memeIDs []string) error
 	ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error)
+	ReplaceAudioInMemeWithSong(ctx context.Context, memeID string, song *model.Song) (*model.Meme, error)
 }
 
 type Service struct {
@@ -479,6 +480,10 @@ func (r *realImpl) ReplaceAudioInMeme(ctx context.Context, memeID string) (*mode
 	}
 	r.log.Infof("service.ReplaceAudioInMeme: SUCCESS - memeID=%s, new title=%s", memeID, meme.Title)
 	return meme, nil
+}
+
+func (r *realImpl) ReplaceAudioInMemeWithSong(ctx context.Context, memeID string, song *model.Song) (*model.Meme, error) {
+	return r.video.ReplaceAudioInMemeWithSong(ctx, memeID, song)
 }
 
 func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {

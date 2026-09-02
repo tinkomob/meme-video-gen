@@ -569,6 +569,23 @@ func (g *Generator) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (s
 // ReplaceAudioInMeme replaces the audio track in an existing meme with a new random audio
 func (g *Generator) ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error) {
 	g.log.Infof("ReplaceAudioInMeme: START - attempting to replace audio in memeID=%s", memeID)
+	newSong, err := g.audioIdx.GetRandomSong(ctx)
+	if err != nil {
+		g.log.Errorf("ReplaceAudioInMeme: failed to get random song: %v", err)
+		return nil, fmt.Errorf("get song: %w", err)
+	}
+	return g.replaceAudioInMemeWithSong(ctx, memeID, newSong)
+}
+
+// ReplaceAudioInMemeWithSong replaces a meme's audio with the explicitly selected song.
+func (g *Generator) ReplaceAudioInMemeWithSong(ctx context.Context, memeID string, song *model.Song) (*model.Meme, error) {
+	if song == nil {
+		return nil, fmt.Errorf("song is nil")
+	}
+	return g.replaceAudioInMemeWithSong(ctx, memeID, song)
+}
+
+func (g *Generator) replaceAudioInMemeWithSong(ctx context.Context, memeID string, newSong *model.Song) (*model.Meme, error) {
 
 	// Lock to prevent concurrent modifications
 	g.memesJSONMux.Lock()
@@ -611,13 +628,6 @@ func (g *Generator) ReplaceAudioInMeme(ctx context.Context, memeID string) (*mod
 	// Unlock before starting long-running operations
 	g.memesJSONMux.Unlock()
 
-	// Get a new random audio track
-	g.log.Infof("ReplaceAudioInMeme: selecting new random audio track...")
-	newSong, err := g.audioIdx.GetRandomSong(ctx)
-	if err != nil {
-		g.log.Errorf("ReplaceAudioInMeme: failed to get random song: %v", err)
-		return nil, fmt.Errorf("get song: %w", err)
-	}
 	g.log.Infof("ReplaceAudioInMeme: got new song %s (%s - %s)", newSong.ID, newSong.Author, newSong.Title)
 
 	// Download the existing video from S3
@@ -1317,10 +1327,10 @@ func replaceAudioInVideo(ctx context.Context, videoPath, audioPath, outputPath s
 	return replaceAudioInVideoWithFilter(ctx, videoPath, audioPath, outputPath, "", log)
 }
 
-// replaceAudioInVerticalVideo makes a full-screen 9:16 video while replacing its audio.
-// Landscape inputs are centered and cropped; portrait inputs retain their full height.
+// replaceAudioInVerticalVideo renders a 9:16 video while preserving the complete input frame.
+// Empty space is padded instead of zooming or cropping the submitted video.
 func replaceAudioInVerticalVideo(ctx context.Context, videoPath, audioPath, outputPath string, log *logging.Logger) error {
-	const verticalFilter = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1"
+	const verticalFilter = "scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2:black,setsar=1"
 	return replaceAudioInVideoWithFilter(ctx, videoPath, audioPath, outputPath, verticalFilter, log)
 }
 

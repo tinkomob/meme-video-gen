@@ -183,6 +183,8 @@ func (b *TelegramBot) Run(ctx context.Context) error {
 						b.handleSongSearch(ctx, chatID, upd.Message.Text)
 					} else if mode == "musicvideo" {
 						b.handleMusicVideoSearch(ctx, chatID, upd.Message.Text)
+					} else if strings.HasPrefix(mode, "replaceaudio:") {
+						b.handleAudioReplacementSearch(ctx, chatID, strings.TrimPrefix(mode, "replaceaudio:"), upd.Message.Text)
 					} else {
 						b.handleIdeaSearch(ctx, chatID, upd.Message.Text)
 					}
@@ -352,6 +354,12 @@ func (b *TelegramBot) handleCallback(ctx context.Context, cb *tgbotapi.CallbackQ
 		b.handleChoosePlatforms(ctx, chatID, memeID, cb.Message.MessageID)
 	case "changeaudio":
 		b.handleChangeAudio(ctx, chatID, memeID, cb.Message.MessageID)
+	case "chooseaudio":
+		b.startAudioReplacementSearch(chatID, memeID)
+	case "replaceaudiosong":
+		if len(parts) >= 3 {
+			b.handleReplaceAudioWithSong(ctx, chatID, memeID, parts[2], cb.Message.MessageID)
+		}
 	case "delete":
 		b.handleDeleteMeme(ctx, chatID, memeID, cb.Message.MessageID)
 	case "dislike":
@@ -660,6 +668,73 @@ func (b *TelegramBot) handleChangeAudio(ctx context.Context, chatID int64, memeI
 		time.Sleep(2 * time.Second)
 
 		// Send the updated meme video with buttons
+		b.sendMemeVideo(ctx, chatID, replacedMeme)
+	}()
+}
+
+func (b *TelegramBot) startAudioReplacementSearch(chatID int64, memeID string) {
+	b.trackSearchMux.Lock()
+	b.trackSearchState[chatID] = true
+	b.trackSearchTimestamp[chatID] = time.Now()
+	b.trackSearchMux.Unlock()
+
+	b.trackSearchModeMux.Lock()
+	b.trackSearchMode[chatID] = "replaceaudio:" + memeID
+	b.trackSearchModeMux.Unlock()
+	b.replyText(chatID, "🔍 Введите название трека или артиста для замены музыки:")
+}
+
+func (b *TelegramBot) handleAudioReplacementSearch(ctx context.Context, chatID int64, memeID, query string) {
+	songs, err := b.svc.SearchSongs(ctx, query)
+	if err != nil {
+		b.log.Errorf("audio replacement search: %v", err)
+		b.replyText(chatID, "❌ Не удалось найти треки.")
+		return
+	}
+	if len(songs) == 0 {
+		b.replyText(chatID, fmt.Sprintf("❌ Треков не найдено по запросу: %q", query))
+		return
+	}
+
+	const maxResults = 10
+	if len(songs) > maxResults {
+		songs = songs[:maxResults]
+	}
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(songs))
+	for _, song := range songs {
+		title := song.Title
+		if len([]rune(title)) > 30 {
+			title = string([]rune(title)[:27]) + "..."
+		}
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				fmt.Sprintf("%s — %s", song.Author, title),
+				fmt.Sprintf("replaceaudiosong:%s:%s", memeID, song.ID),
+			),
+		))
+	}
+	msg := tgbotapi.NewMessage(chatID, "🎵 Выберите трек:")
+	msg.ReplyMarkup = tgbotapi.NewInlineKeyboardMarkup(rows...)
+	b.tg.Send(msg)
+}
+
+func (b *TelegramBot) handleReplaceAudioWithSong(ctx context.Context, chatID int64, memeID, songID string, msgID int) {
+	song, err := b.svc.GetSongByID(ctx, songID)
+	if err != nil {
+		b.replyText(chatID, "❌ Этот трек больше недоступен. Выполните поиск ещё раз.")
+		return
+	}
+	if _, err := b.tg.Send(tgbotapi.NewDeleteMessage(chatID, msgID)); err != nil {
+		b.log.Warnf("selected audio: failed to delete message %d: %v", msgID, err)
+	}
+	b.replyText(chatID, "🎵 Меняю трек...")
+	go func() {
+		replacedMeme, err := b.svc.Impl().ReplaceAudioInMemeWithSong(ctx, memeID, song)
+		if err != nil {
+			b.log.Errorf("selected audio: replace failed: %v", err)
+			b.replyText(chatID, fmt.Sprintf("❌ Ошибка замены трека: %v", err))
+			return
+		}
 		b.sendMemeVideo(ctx, chatID, replacedMeme)
 	}()
 }
@@ -1036,6 +1111,9 @@ func (b *TelegramBot) sendMemeVideo(ctx context.Context, chatID int64, meme *mod
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🎵 Сменить трек", fmt.Sprintf("changeaudio:%s", meme.ID)),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("🔍 Выбрать конкретный трек", fmt.Sprintf("chooseaudio:%s", meme.ID)),
 		),
 		tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData("🗑️ Удалить", fmt.Sprintf("delete:%s", meme.ID)),
@@ -3057,6 +3135,7 @@ func (b *TelegramBot) processMusicVideo(ctx context.Context, chatID int64, input
 	outputFile.Close()
 	defer os.Remove(outputPath)
 
+	// Fit the complete submitted frame into a 9:16 canvas without zooming or cropping.
 	if err := video.MuxVerticalVideoWithAudio(ctx, inputPath, audioPath, outputPath, b.log); err != nil {
 		b.log.Errorf("musicvideo: ffmpeg failed: %v", err)
 		b.replyText(chatID, fmt.Sprintf("❌ Не удалось обработать видео: %v", err))
