@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 
@@ -23,38 +22,10 @@ import (
 )
 
 const (
-	mixtapesJSONKey = "mixtapes.json"
 	mixtapesPrefix  = "mixtapes/"
-	segmentCount    = 4  // segments per mixtape (3-4, we default to 4)
-	segmentDuration = 14 // seconds per segment
-	maxMixtapes     = 5
+	segmentDuration = 14
 )
 
-var topLabelVariants = []string{
-	"What's your favorite song?",
-	"Which song do you like best?",
-	"What's the song you enjoy most?",
-	"Do you have a favorite song?",
-	"What song resonates with you the most?",
-	"Which song speaks to you?",
-	"What song could you listen to on repeat?",
-	"Is there a song that stands out to you?",
-	"What song means the most to you?",
-	"Which song do you find yourself coming back to?",
-	"What's a song that's stuck with you?",
-	"What song captures something you care about?",
-	"What song are you vibing with these days?",
-	"What's on repeat for you?",
-	"What song do you like the most?",
-}
-
-// TopLabelText returns a random question label for mixtape overlays and descriptions.
-func TopLabelText() string {
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return topLabelVariants[r.Intn(len(topLabelVariants))]
-}
-
-// ffmpeg semaphore — one encoding process at a time
 var ffmpegSem = make(chan struct{}, 1)
 
 type Mixtape struct {
@@ -68,11 +39,6 @@ type Mixtape struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-type MixtapeIndex struct {
-	UpdatedAt time.Time `json:"updated_at"`
-	Items     []Mixtape `json:"items"`
-}
-
 type Generator struct {
 	cfg   internal.Config
 	s3    s3.Client
@@ -84,103 +50,13 @@ func NewGenerator(cfg internal.Config, s3c s3.Client, audioIdx *audio.Indexer, l
 	return &Generator{cfg: cfg, s3: s3c, audio: audioIdx, log: log}
 }
 
-// EnsureMixtapes generates mixtapes until the pool reaches maxMixtapes.
-func (g *Generator) EnsureMixtapes(ctx context.Context) error {
-	g.log.Infof("mixtape: EnsureMixtapes START")
-	idx, err := g.loadIndex(ctx)
-	if err != nil {
-		return err
-	}
-
-	// Trim if over limit
-	if len(idx.Items) > g.maxMixtapes() {
-		idx, err = g.trimOldest(ctx, idx, g.maxMixtapes())
-		if err != nil {
-			return err
-		}
-	}
-
-	for len(idx.Items) < g.maxMixtapes() {
-		g.log.Infof("mixtape: generating new mixtape (%d/%d)", len(idx.Items)+1, g.maxMixtapes())
-		m, err := g.generate(ctx)
-		if err != nil {
-			g.log.Errorf("mixtape: generate failed: %v", err)
-			return err
-		}
-		idx.Items = append(idx.Items, *m)
-		idx.UpdatedAt = time.Now()
-		if err := g.saveIndex(ctx, idx); err != nil {
-			return err
-		}
-	}
-	g.log.Infof("mixtape: EnsureMixtapes DONE — %d mixtapes", len(idx.Items))
-	return nil
-}
-
-// GetRandom returns a random mixtape from the index.
-func (g *Generator) GetRandom(ctx context.Context) (*Mixtape, error) {
-	idx, err := g.loadIndex(ctx)
-	if err != nil {
-		return nil, err
-	}
-	if len(idx.Items) == 0 {
-		return nil, fmt.Errorf("no mixtapes available")
-	}
-	r := rand.New(rand.NewSource(time.Now().UnixNano()))
-	return &idx.Items[r.Intn(len(idx.Items))], nil
-}
-
-// GetByID returns a mixtape by ID.
-func (g *Generator) GetByID(ctx context.Context, id string) (*Mixtape, error) {
-	idx, err := g.loadIndex(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, m := range idx.Items {
-		if m.ID == id {
-			cp := m
-			return &cp, nil
-		}
-	}
-	return nil, fmt.Errorf("mixtape not found: %s", id)
-}
-
-// Delete removes a mixtape from S3 and the index.
 func (g *Generator) Delete(ctx context.Context, id string) error {
-	idx, err := g.loadIndex(ctx)
-	if err != nil {
+	if err := g.s3.Delete(ctx, mixtapesPrefix+id+".mp4"); err != nil {
 		return err
 	}
-	var kept []Mixtape
-	for _, m := range idx.Items {
-		if m.ID == id {
-			_ = g.s3.Delete(ctx, m.VideoKey)
-			_ = g.s3.Delete(ctx, m.ThumbKey)
-		} else {
-			kept = append(kept, m)
-		}
-	}
-	idx.Items = kept
-	idx.UpdatedAt = time.Now()
-	return g.saveIndex(ctx, idx)
+	return g.s3.Delete(ctx, mixtapesPrefix+id+"_thumb.jpg")
 }
 
-// ClearAll deletes all mixtapes from S3 and resets the index.
-func (g *Generator) ClearAll(ctx context.Context) error {
-	idx, err := g.loadIndex(ctx)
-	if err != nil {
-		return err
-	}
-	for _, m := range idx.Items {
-		_ = g.s3.Delete(ctx, m.VideoKey)
-		_ = g.s3.Delete(ctx, m.ThumbKey)
-	}
-	idx.Items = []Mixtape{}
-	idx.UpdatedAt = time.Now()
-	return g.saveIndex(ctx, idx)
-}
-
-// DownloadVideoToTemp streams the mixtape video to a temp file.
 func (g *Generator) DownloadVideoToTemp(ctx context.Context, m *Mixtape) (string, error) {
 	reader, err := g.s3.GetReader(ctx, m.VideoKey)
 	if err != nil {
@@ -201,109 +77,6 @@ func (g *Generator) DownloadVideoToTemp(ctx context.Context, m *Mixtape) (string
 	return f.Name(), nil
 }
 
-// generate builds a single mixtape video.
-func (g *Generator) generate(ctx context.Context) (*Mixtape, error) {
-	songs, err := g.pickSongs(ctx, segmentCount)
-	if err != nil {
-		return nil, fmt.Errorf("pick songs: %w", err)
-	}
-
-	tmpDir, err := os.MkdirTemp(os.TempDir(), "mixtape-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(tmpDir)
-
-	// Shuffle color palette so each segment in this mixtape gets a unique color.
-	palette := []string{"yellow", "0x00FFFF", "0xFF6600", "0xFF44FF", "0x00FF88", "0xFF2255", "0xAAFF00", "0xFF9900"}
-	rMain := rand.New(rand.NewSource(time.Now().UnixNano()))
-	rMain.Shuffle(len(palette), func(i, j int) { palette[i], palette[j] = palette[j], palette[i] })
-
-	// Pick one title for the entire mixtape so it remains consistent across all segments.
-	mixtapeTitle := TopLabelText()
-
-	var segmentPaths []string
-	var songIDs, titles, authors []string
-
-	for i, song := range songs {
-		g.log.Infof("mixtape: building segment %d — %s", i+1, song.Title)
-
-		thumbPath, err := g.downloadThumbnail(ctx, song.ID, tmpDir, i)
-		if err != nil {
-			return nil, fmt.Errorf("download thumbnail for %s: %w", song.ID, err)
-		}
-
-		audioPath, err := g.audio.DownloadSongToTemp(ctx, song)
-		if err != nil {
-			return nil, fmt.Errorf("download audio for %s: %w", song.ID, err)
-		}
-		defer os.Remove(audioPath)
-
-		// Determine valid start offset, staying out of the final 25% to avoid fade-outs/silence.
-		duration := song.DurationS
-		if duration <= float64(segmentDuration)+1 {
-			duration = float64(segmentDuration) + 2
-		}
-		r := rand.New(rand.NewSource(time.Now().UnixNano() + int64(i)))
-		safeEnd := duration * 0.75
-		maxStart := safeEnd - float64(segmentDuration)
-		if maxStart < 0 {
-			maxStart = 0
-		}
-		startOffset := r.Float64() * maxStart
-
-		segPath := filepath.Join(tmpDir, fmt.Sprintf("seg%d.mp4", i))
-		if err := g.buildSegment(ctx, thumbPath, audioPath, segPath, startOffset, segmentDuration, r, i+1, song.Author, song.Title, palette[i%len(palette)], mixtapeTitle, ""); err != nil {
-			return nil, fmt.Errorf("build segment %d: %w", i, err)
-		}
-		segmentPaths = append(segmentPaths, segPath)
-		songIDs = append(songIDs, song.ID)
-		titles = append(titles, song.Title)
-		authors = append(authors, strings.TrimSuffix(song.Author, " - Topic"))
-	}
-
-	// Concatenate segments
-	outPath := filepath.Join(tmpDir, "mixtape.mp4")
-	if err := g.concatenate(ctx, segmentPaths, outPath); err != nil {
-		return nil, fmt.Errorf("concatenate: %w", err)
-	}
-
-	// Read output video
-	videoBytes, err := os.ReadFile(outPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Use first segment thumbnail as mixtape thumbnail
-	thumbBytes, err := os.ReadFile(filepath.Join(tmpDir, "thumb0.jpg"))
-	if err != nil {
-		return nil, err
-	}
-
-	id := fmt.Sprintf("mixtape-%d", time.Now().Unix())
-	videoKey := mixtapesPrefix + id + ".mp4"
-	thumbKey := mixtapesPrefix + id + "_thumb.jpg"
-
-	if err := g.s3.PutBytes(ctx, videoKey, videoBytes, "video/mp4"); err != nil {
-		return nil, fmt.Errorf("upload video: %w", err)
-	}
-	if err := g.s3.PutBytes(ctx, thumbKey, thumbBytes, "image/jpeg"); err != nil {
-		return nil, fmt.Errorf("upload thumb: %w", err)
-	}
-
-	return &Mixtape{
-		ID:        id,
-		Title:     mixtapeTitle,
-		VideoKey:  videoKey,
-		ThumbKey:  thumbKey,
-		SongIDs:   songIDs,
-		Titles:    titles,
-		Authors:   authors,
-		CreatedAt: time.Now(),
-	}, nil
-}
-
-// pickSongs returns n songs filtered to eenfinit / dee bill artists.
 func (g *Generator) pickSongs(ctx context.Context, n int) ([]*model.Song, error) {
 	var songsIdx model.SongsIndex
 	found, err := g.s3.ReadJSON(ctx, g.cfg.SongsJSONKey, &songsIdx)
@@ -597,35 +370,6 @@ func (g *Generator) concatenate(ctx context.Context, segments []string, outPath 
 	return nil
 }
 
-func (g *Generator) maxMixtapes() int {
-	if g.cfg.MaxMixtapes > 0 {
-		return g.cfg.MaxMixtapes
-	}
-	return maxMixtapes
-}
-
-// LoadIndex reads the current mixtape index from S3.
-func (g *Generator) LoadIndex(ctx context.Context) (MixtapeIndex, error) {
-	return g.loadIndex(ctx)
-}
-
-func (g *Generator) loadIndex(ctx context.Context) (MixtapeIndex, error) {
-	var idx MixtapeIndex
-	found, err := g.s3.ReadJSON(ctx, mixtapesJSONKey, &idx)
-	if err != nil {
-		return idx, fmt.Errorf("read mixtapes.json: %w", err)
-	}
-	if !found {
-		idx.Items = []Mixtape{}
-	}
-	return idx, nil
-}
-
-func (g *Generator) saveIndex(ctx context.Context, idx MixtapeIndex) error {
-	return g.s3.WriteJSON(ctx, mixtapesJSONKey, &idx)
-}
-
-// pickSongsByAuthor returns up to n songs by the given author (case-insensitive contains match).
 func (g *Generator) pickSongsByAuthor(ctx context.Context, author string, n int) ([]*model.Song, error) {
 	var songsIdx model.SongsIndex
 	found, err := g.s3.ReadJSON(ctx, g.cfg.SongsJSONKey, &songsIdx)
@@ -830,21 +574,4 @@ func (g *Generator) GenerateTeaser(ctx context.Context) (*Mixtape, error) {
 		Authors:   []string{song.Author},
 		CreatedAt: time.Now(),
 	}, nil
-}
-
-func (g *Generator) trimOldest(ctx context.Context, idx MixtapeIndex, limit int) (MixtapeIndex, error) {
-	sort.Slice(idx.Items, func(i, j int) bool {
-		return idx.Items[i].CreatedAt.Before(idx.Items[j].CreatedAt)
-	})
-	for len(idx.Items) > limit {
-		oldest := idx.Items[0]
-		_ = g.s3.Delete(ctx, oldest.VideoKey)
-		_ = g.s3.Delete(ctx, oldest.ThumbKey)
-		idx.Items = idx.Items[1:]
-	}
-	idx.UpdatedAt = time.Now()
-	if err := g.saveIndex(ctx, idx); err != nil {
-		return idx, err
-	}
-	return idx, nil
 }

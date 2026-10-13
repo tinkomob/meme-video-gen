@@ -76,7 +76,7 @@ func (y *YouTubeUploader) Upload(ctx context.Context, req *UploadRequest) (*Uplo
 	categoryId := "24" // Entertainment
 	tags := req.Tags
 	if len(tags) == 0 {
-		tags = []string{"shorts", "meme", "funny"}
+		tags = []string{"shorts", "music"}
 	}
 
 	// Create video resource

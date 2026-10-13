@@ -13,58 +13,36 @@ import (
 	"github.com/robfig/cron/v3"
 
 	"meme-video-gen/internal"
-	"meme-video-gen/internal/ai"
 	"meme-video-gen/internal/audio"
 	"meme-video-gen/internal/logging"
 	"meme-video-gen/internal/mixtape"
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/s3"
-	"meme-video-gen/internal/sources"
 	"meme-video-gen/internal/uploaders"
-	"meme-video-gen/internal/video"
 )
 
-type MemeService interface {
+type SongService interface {
 	EnsureSongs(ctx context.Context) error
-	EnsureSources(ctx context.Context) error
-	EnsureMemes(ctx context.Context) error
-	GenerateOneMeme(ctx context.Context) (*model.Meme, error)
-	GetRandomMeme(ctx context.Context) (*model.Meme, error)
-	GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error)
-	DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error)
-	RegisterUploadedVideo(ctx context.Context, videoPath, title, songID string) (*model.Meme, error)
 	DownloadSongToTemp(ctx context.Context, song *model.Song) (string, error)
-	DeleteMeme(ctx context.Context, memeID string) error
-	DeleteMemes(ctx context.Context, memeIDs []string) error
-	ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error)
-	ReplaceAudioInMemeWithSong(ctx context.Context, memeID string, song *model.Song) (*model.Meme, error)
 }
 
 type Service struct {
-	impl MemeService
+	impl SongService
 	log  *logging.Logger
 	cron *cron.Cron
 
 	cfg internal.Config
 	s3c s3.Client
 
-	scheduleMux sync.Mutex
-	schedule    *DailySchedule
-
-	mixtapeScheduleMux sync.Mutex
-	mixtapeSchedule    *DailyMixtapeSchedule
-
 	engagementMux    sync.Mutex
 	engagementConfig *MixtapeEngagementConfig
 
 	cfgMux           sync.Mutex
-	monitor          *ResourceMonitor
 	uploadersManager *uploaders.Manager
 	mixtapeGen       *mixtape.Generator
 
-	// In-memory cache with TTL to reduce S3 traffic
 	cacheMux     sync.RWMutex
-	cachedCounts map[string]cachedValue // key: "songs" | "sources" | "memes"
+	cachedCounts map[string]cachedValue
 	cacheTTL     time.Duration
 }
 
@@ -76,17 +54,7 @@ type cachedValue struct {
 func (s *Service) Run(ctx context.Context) error {
 	s.cron.Start()
 
-	// Start resource monitor
-	if s.monitor != nil {
-		s.monitor.Start(ctx)
-	}
-
 	<-ctx.Done()
-
-	// Stop resource monitor
-	if s.monitor != nil {
-		s.monitor.Stop()
-	}
 
 	ctxStop := s.cron.Stop()
 	select {
@@ -97,7 +65,7 @@ func (s *Service) Run(ctx context.Context) error {
 	}
 }
 
-func (s *Service) Impl() MemeService { return s.impl }
+func (s *Service) Impl() SongService { return s.impl }
 
 func (s *Service) GetConfig() internal.Config {
 	return s.cfg
@@ -105,34 +73,6 @@ func (s *Service) GetConfig() internal.Config {
 
 func (s *Service) GetS3Client() s3.Client {
 	return s.s3c
-}
-
-func (s *Service) GetSchedule() *DailySchedule {
-	s.scheduleMux.Lock()
-	defer s.scheduleMux.Unlock()
-	return s.schedule
-}
-
-func (s *Service) GetMonitor() *ResourceMonitor {
-	return s.monitor
-}
-
-func (s *Service) SetSchedule(sched *DailySchedule) {
-	s.scheduleMux.Lock()
-	defer s.scheduleMux.Unlock()
-	s.schedule = sched
-}
-
-func (s *Service) GetMixtapeSchedule() *DailyMixtapeSchedule {
-	s.mixtapeScheduleMux.Lock()
-	defer s.mixtapeScheduleMux.Unlock()
-	return s.mixtapeSchedule
-}
-
-func (s *Service) SetMixtapeSchedule(sched *DailyMixtapeSchedule) {
-	s.mixtapeScheduleMux.Lock()
-	defer s.mixtapeScheduleMux.Unlock()
-	s.mixtapeSchedule = sched
 }
 
 func (s *Service) GetEngagementConfig() *MixtapeEngagementConfig {
@@ -206,71 +146,6 @@ func (s *Service) InvalidateCacheAll() {
 	// s.log.Infof("cache invalidated: all entries cleared")
 }
 
-// GetSourcesCount returns the number of loaded sources (cached to reduce S3 traffic)
-func (s *Service) GetSourcesCount(ctx context.Context) (int, error) {
-	// Check cache first (60 second TTL)
-	s.cacheMux.RLock()
-	if cached, exists := s.cachedCounts["sources"]; exists && time.Since(cached.timestamp) < s.cacheTTL {
-		s.cacheMux.RUnlock()
-		// Cache hit - no S3 traffic
-		return cached.count, nil
-	}
-	s.cacheMux.RUnlock()
-
-	// Cache miss - read from S3
-	s.log.Infof("GetSourcesCount: cache miss, reading from S3")
-	var sourcesIdx model.SourcesIndex
-	found, err := s.s3c.ReadJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx)
-	if err != nil {
-		return 0, err
-	}
-
-	count := 0
-	if found {
-		count = len(sourcesIdx.Items)
-	}
-
-	// Update cache
-	s.cacheMux.Lock()
-	s.cachedCounts["sources"] = cachedValue{count: count, timestamp: time.Now()}
-	s.cacheMux.Unlock()
-
-	return count, nil
-}
-
-// GetMemesCount returns the number of generated meme videos (cached to reduce S3 traffic)
-func (s *Service) GetMemesCount(ctx context.Context) (int, error) {
-	// Check cache first (60 second TTL)
-	s.cacheMux.RLock()
-	if cached, exists := s.cachedCounts["memes"]; exists && time.Since(cached.timestamp) < s.cacheTTL {
-		s.cacheMux.RUnlock()
-		// Cache hit - no S3 traffic
-		return cached.count, nil
-	}
-	s.cacheMux.RUnlock()
-
-	// Cache miss - read from S3
-	s.log.Infof("GetMemesCount: cache miss, reading from S3")
-	var memesIdx model.MemesIndex
-	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
-	if err != nil {
-		return 0, err
-	}
-
-	count := 0
-	if found {
-		count = len(memesIdx.Items)
-	}
-
-	// Update cache
-	s.cacheMux.Lock()
-	s.cachedCounts["memes"] = cachedValue{count: count, timestamp: time.Now()}
-	s.cacheMux.Unlock()
-
-	return count, nil
-}
-
-// GetSongsCount returns the number of loaded audio songs (cached to reduce S3 traffic)
 func (s *Service) GetSongsCount(ctx context.Context) (int, error) {
 	// Check cache first (60 second TTL)
 	s.cacheMux.RLock()
@@ -302,188 +177,13 @@ func (s *Service) GetSongsCount(ctx context.Context) (int, error) {
 	return count, nil
 }
 
-// GetMixtapesCount returns the number of mixtapes in S3 (cached to reduce S3 traffic)
-func (s *Service) GetMixtapesCount(ctx context.Context) (int, error) {
-	s.cacheMux.RLock()
-	if cached, exists := s.cachedCounts["mixtapes"]; exists && time.Since(cached.timestamp) < s.cacheTTL {
-		s.cacheMux.RUnlock()
-		return cached.count, nil
-	}
-	s.cacheMux.RUnlock()
-
-	s.log.Infof("GetMixtapesCount: cache miss, reading from S3")
-	idx, err := s.mixtapeGen.LoadIndex(ctx)
-	if err != nil {
-		return 0, err
-	}
-
-	count := len(idx.Items)
-	s.cacheMux.Lock()
-	s.cachedCounts["mixtapes"] = cachedValue{count: count, timestamp: time.Now()}
-	s.cacheMux.Unlock()
-
-	return count, nil
-}
-
-// ClearSources removes all sources from the index and deletes source files from S3
-func (s *Service) ClearSources(ctx context.Context) error {
-	s.log.Infof("clearing all sources")
-
-	// Read current sources index
-	var sourcesIdx model.SourcesIndex
-	found, err := s.s3c.ReadJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx)
-	if err != nil {
-		return err
-	}
-
-	if !found || len(sourcesIdx.Items) == 0 {
-		s.log.Infof("no sources to clear")
-		return nil
-	}
-
-	// Delete all source files from S3
-	for _, source := range sourcesIdx.Items {
-		if err := s.s3c.Delete(ctx, source.MediaKey); err != nil {
-			s.log.Errorf("failed to delete source %s: %v", source.ID, err)
-		}
-	}
-
-	// Clear the sources index
-	sourcesIdx.Items = []model.SourceAsset{}
-	sourcesIdx.UpdatedAt = time.Now()
-
-	if err := s.s3c.WriteJSON(ctx, s.cfg.SourcesJSONKey, &sourcesIdx); err != nil {
-		return err
-	}
-
-	// Invalidate cache
-	s.InvalidateCache("sources")
-
-	s.log.Infof("sources cleared successfully")
-	return nil
-}
-
-// ClearMemes removes all memes from the index and deletes meme files from S3
-func (s *Service) ClearMemes(ctx context.Context) error {
-	s.log.Infof("clearing all memes")
-
-	// Read current memes index
-	var memesIdx model.MemesIndex
-	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
-	if err != nil {
-		return err
-	}
-
-	if !found || len(memesIdx.Items) == 0 {
-		s.log.Infof("no memes to clear")
-		return nil
-	}
-
-	// Delete all meme files from S3
-	for _, meme := range memesIdx.Items {
-		if err := s.s3c.Delete(ctx, meme.VideoKey); err != nil {
-			s.log.Errorf("failed to delete meme video %s: %v", meme.ID, err)
-		}
-		if err := s.s3c.Delete(ctx, meme.ThumbKey); err != nil {
-			s.log.Errorf("failed to delete meme thumbnail %s: %v", meme.ID, err)
-		}
-	}
-
-	// Clear the memes index
-	memesIdx.Items = []model.Meme{}
-	memesIdx.UpdatedAt = time.Now()
-
-	if err := s.s3c.WriteJSON(ctx, s.cfg.MemesJSONKey, &memesIdx); err != nil {
-		return err
-	}
-
-	// Invalidate cache
-	s.InvalidateCache("memes")
-
-	s.log.Infof("memes cleared successfully")
-	return nil
-}
-
-// SyncSources synchronizes sources.json with actual S3 sources/ folder
-func (s *Service) SyncSources(ctx context.Context) error {
-	s.log.Infof("syncing sources with S3")
-	if impl, ok := s.impl.(*realImpl); ok {
-		return impl.src.SyncWithS3(ctx)
-	}
-	return errors.New("sync not available for this implementation")
-}
-
-// SyncMemes synchronizes memes.json with actual S3 memes/ folder
-func (s *Service) SyncMemes(ctx context.Context) error {
-	s.log.Infof("syncing memes with S3")
-	if impl, ok := s.impl.(*realImpl); ok {
-		return impl.video.SyncWithS3(ctx)
-	}
-	return errors.New("sync not available for this implementation")
-}
-
 type realImpl struct {
-	cfg   internal.Config
-	s3    s3.Client
-	log   *logging.Logger
 	audio *audio.Indexer
-	src   *sources.Scraper
-	video *video.Generator
-	ai    *ai.TitleGenerator
 }
 
-func (r *realImpl) EnsureSongs(ctx context.Context) error   { return r.audio.EnsureSongs(ctx) }
-func (r *realImpl) EnsureSources(ctx context.Context) error { return r.src.EnsureSources(ctx) }
-func (r *realImpl) EnsureMemes(ctx context.Context) error   { return r.video.EnsureMemes(ctx) }
-func (r *realImpl) GenerateOneMeme(ctx context.Context) (*model.Meme, error) {
-	return r.video.GenerateOneMeme(ctx)
-}
-func (r *realImpl) GetRandomMeme(ctx context.Context) (*model.Meme, error) {
-	return r.video.GetRandomMeme(ctx)
-}
-func (r *realImpl) GetRandomMemes(ctx context.Context, count int) ([]*model.Meme, error) {
-	return r.video.GetRandomMemes(ctx, count)
-}
-func (r *realImpl) DownloadMemeToTemp(ctx context.Context, meme *model.Meme) (string, error) {
-	return r.video.DownloadMemeToTemp(ctx, meme)
-}
-
-func (r *realImpl) RegisterUploadedVideo(ctx context.Context, videoPath, title, songID string) (*model.Meme, error) {
-	return r.video.RegisterUploadedVideo(ctx, videoPath, title, songID)
-}
-
+func (r *realImpl) EnsureSongs(ctx context.Context) error { return r.audio.EnsureSongs(ctx) }
 func (r *realImpl) DownloadSongToTemp(ctx context.Context, song *model.Song) (string, error) {
 	return r.audio.DownloadSongToTemp(ctx, song)
-}
-
-func (r *realImpl) DeleteMeme(ctx context.Context, memeID string) error {
-	r.log.Infof("service.DeleteMeme: START - memeID=%s", memeID)
-	err := r.video.DeleteMeme(ctx, memeID)
-	if err != nil {
-		r.log.Errorf("service.DeleteMeme: FAILED - memeID=%s, err=%v", memeID, err)
-		return err
-	}
-	r.log.Infof("service.DeleteMeme: SUCCESS - memeID=%s", memeID)
-	return nil
-}
-
-func (r *realImpl) DeleteMemes(ctx context.Context, memeIDs []string) error {
-	return r.video.DeleteMemes(ctx, memeIDs)
-}
-
-func (r *realImpl) ReplaceAudioInMeme(ctx context.Context, memeID string) (*model.Meme, error) {
-	r.log.Infof("service.ReplaceAudioInMeme: START - memeID=%s", memeID)
-	meme, err := r.video.ReplaceAudioInMeme(ctx, memeID)
-	if err != nil {
-		r.log.Errorf("service.ReplaceAudioInMeme: FAILED - memeID=%s, err=%v", memeID, err)
-		return nil, err
-	}
-	r.log.Infof("service.ReplaceAudioInMeme: SUCCESS - memeID=%s, new title=%s", memeID, meme.Title)
-	return meme, nil
-}
-
-func (r *realImpl) ReplaceAudioInMemeWithSong(ctx context.Context, memeID string, song *model.Song) (*model.Meme, error) {
-	return r.video.ReplaceAudioInMemeWithSong(ctx, memeID, song)
 }
 
 func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
@@ -498,14 +198,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 	}
 
 	audioIdx := audio.NewIndexer(cfg, s3c, log)
-	srcScr := sources.NewScraper(cfg, s3c, log)
-	aiGen, err := ai.NewTitleGenerator(ctx, cfg.GeminiAPIKey, cfg.OpenRouterAPIKey, log)
-	if err != nil {
-		return nil, fmt.Errorf("ai title generator: %w", err)
-	}
-	vidGen := video.NewGenerator(cfg, s3c, log, audioIdx, srcScr, aiGen)
-
-	impl := &realImpl{cfg: cfg, s3: s3c, log: log, audio: audioIdx, src: srcScr, video: vidGen, ai: aiGen}
+	impl := &realImpl{audio: audioIdx}
 	mixtapeGen := mixtape.NewGenerator(cfg, s3c, audioIdx, log)
 
 	c := cron.New(cron.WithSeconds())
@@ -516,7 +209,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		cfg:          cfg,
 		s3c:          s3c,
 		cachedCounts: make(map[string]cachedValue),
-		cacheTTL:     90 * time.Second, // 90s TTL > aggressive-monitor interval (1min) to prevent cache miss on every check
+		cacheTTL:     90 * time.Second,
 		mixtapeGen:   mixtapeGen,
 	}
 
@@ -531,95 +224,11 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		return nil, err
 	}
 
-	if _, err := c.AddFunc("0 0 * * * *", func() {
-		if s.cfg.DisableGeneration {
-			return
-		}
-		log.Infof("cron: ensuring sources")
-		if err := impl.EnsureSources(context.Background()); err != nil {
-			log.Errorf("cron ensure sources: %v", err)
-		}
-		s.InvalidateCache("sources") // Invalidate cache after updating
-	}); err != nil {
-		return nil, err
-	}
-
-	if _, err := c.AddFunc("0 0 * * * *", func() {
-		if s.cfg.DisableGeneration {
-			return
-		}
-		log.Infof("cron: ensuring memes")
-		if err := impl.EnsureMemes(context.Background()); err != nil {
-			log.Errorf("cron ensure memes: %v", err)
-		}
-		s.InvalidateCache("memes") // Invalidate cache after updating
-	}); err != nil {
-		return nil, err
-	}
-
-	if _, err := c.AddFunc("0 0 * * * *", func() {
-		log.Infof("cron: ensuring mixtapes")
-		if err := mixtapeGen.EnsureMixtapes(context.Background()); err != nil {
-			log.Errorf("cron ensure mixtapes: %v", err)
-		}
-	}); err != nil {
-		return nil, err
-	}
-
-	// Cleanup disliked sources blacklist every hour (15 minutes past the hour)
-	if _, err := c.AddFunc("0 15 * * * *", func() {
-		log.Infof("cron: cleaning up expired disliked sources")
-		if err := vidGen.CleanupDislikedSources(context.Background()); err != nil {
-			log.Errorf("cron cleanup disliked sources: %v", err)
-		}
-	}); err != nil {
-		return nil, err
-	}
-
 	// Load POSTS_CHAT_ID from S3 at startup
 	go func() {
 		time.Sleep(1 * time.Second)
 		if err := s.LoadPostsChatID(context.Background()); err != nil {
 			log.Errorf("failed to load POSTS_CHAT_ID: %v", err)
-		}
-	}()
-
-	// Load or create today's schedule at startup
-	go func() {
-		time.Sleep(2 * time.Second)
-		now := time.Now().In(time.FixedZone("Asia/Tomsk", 7*3600))
-		sched, err := GetOrCreateSchedule(context.Background(), s3c, &cfg, now)
-		if err != nil {
-			log.Errorf("failed to load schedule: %v", err)
-		} else {
-			s.SetSchedule(sched)
-			if sched != nil && len(sched.Entries) > 0 {
-				log.Infof("loaded schedule for %s with %d entries", sched.Date, len(sched.Entries))
-			}
-		}
-	}()
-
-	// Load or create today's mixtape schedule at startup
-	go func() {
-		time.Sleep(3 * time.Second)
-		now := time.Now().In(time.FixedZone("Asia/Tomsk", 7*3600))
-		ms, err := GetOrCreateMixtapeSchedule(context.Background(), s3c, &cfg, now)
-		if err != nil {
-			log.Errorf("failed to load mixtape schedule: %v", err)
-		} else {
-			s.SetMixtapeSchedule(ms)
-			if ms != nil && len(ms.Entries) > 0 {
-				log.Infof("loaded mixtape schedule for %s with %d entries", ms.Date, len(ms.Entries))
-			}
-		}
-	}()
-
-	// Run mixtape generation at startup
-	go func() {
-		time.Sleep(4 * time.Second)
-		log.Infof("startup: ensuring mixtapes")
-		if err := mixtapeGen.EnsureMixtapes(context.Background()); err != nil {
-			log.Errorf("startup ensure mixtapes: %v", err)
 		}
 	}()
 
@@ -632,99 +241,12 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		log.Infof("loaded engagement config: bestof_enabled=%v, teaser_enabled=%v", ec.BestOf.Enabled, ec.Teaser.Enabled)
 	}
 
-	// Create and configure resource monitor
-	s.monitor = NewResourceMonitor(s, log)
-	log.Infof("resource monitor initialized")
-
 	// Initialize uploaders manager
 	s.InitializeUploadersManager()
 
 	return s, nil
 }
 
-// DeleteMemesOlderThan removes memes that were created more than duration ago
-func (s *Service) DeleteMemesOlderThan(ctx context.Context, duration time.Duration) error {
-	s.log.Infof("deleting memes older than %v", duration)
-
-	// Load memes index
-	var memesIdx model.MemesIndex
-	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
-	if err != nil {
-		return err
-	}
-	if !found || len(memesIdx.Items) == 0 {
-		s.log.Infof("no memes found to cleanup")
-		return nil
-	}
-
-	now := time.Now()
-	var itemsToKeep []model.Meme
-	var deletedCount int
-
-	for _, meme := range memesIdx.Items {
-		age := now.Sub(meme.CreatedAt)
-		if age > duration {
-			// Delete meme files from S3
-			s.log.Infof("deleting old meme: %s (age: %v)", meme.ID, age)
-
-			if err := s.s3c.Delete(ctx, meme.VideoKey); err != nil {
-				s.log.Errorf("failed to delete meme video %s: %v", meme.VideoKey, err)
-			}
-
-			if err := s.s3c.Delete(ctx, meme.ThumbKey); err != nil {
-				s.log.Errorf("failed to delete meme thumb %s: %v", meme.ThumbKey, err)
-			}
-
-			deletedCount++
-		} else {
-			itemsToKeep = append(itemsToKeep, meme)
-		}
-	}
-
-	if deletedCount == 0 {
-		s.log.Infof("no old memes to delete")
-		return nil
-	}
-
-	// Update memes index
-	memesIdx.Items = itemsToKeep
-	memesIdx.UpdatedAt = now
-
-	if err := s.s3c.WriteJSON(ctx, s.cfg.MemesJSONKey, memesIdx); err != nil {
-		s.log.Errorf("failed to update memes index: %v", err)
-		return err
-	}
-
-	s.log.Infof("deleted %d old memes", deletedCount)
-	return nil
-}
-
-// GetMemeByID retrieves a specific meme by ID
-func (s *Service) GetMemeByID(ctx context.Context, memeID string) (*model.Meme, error) {
-	s.log.Infof("GetMemeByID: searching for meme %s", memeID)
-
-	// Load memes index
-	var memesIdx model.MemesIndex
-	found, err := s.s3c.ReadJSON(ctx, s.cfg.MemesJSONKey, &memesIdx)
-	if err != nil {
-		return nil, err
-	}
-	if !found || len(memesIdx.Items) == 0 {
-		return nil, fmt.Errorf("no memes found in index")
-	}
-
-	// Find meme by ID
-	for _, meme := range memesIdx.Items {
-		if meme.ID == memeID {
-			s.log.Infof("GetMemeByID: found meme %s", memeID)
-			return &meme, nil
-		}
-	}
-
-	return nil, fmt.Errorf("meme not found: %s", memeID)
-}
-
-// DownloadFileToTemp downloads a file from S3 to a temporary location
 func (s *Service) DownloadFileToTemp(ctx context.Context, s3Key string, prefix string) (string, error) {
 	s.log.Infof("DownloadFileToTemp: downloading %s with prefix %s", s3Key, prefix)
 
@@ -769,14 +291,6 @@ func (s *Service) GetUploadersManager() *uploaders.Manager {
 }
 
 // GetTitleGenerator returns the AI title generator (used for idea generation)
-func (s *Service) GetTitleGenerator() *ai.TitleGenerator {
-	if impl, ok := s.impl.(*realImpl); ok {
-		return impl.ai
-	}
-	return nil
-}
-
-// GetAllSongs returns all songs from the index
 func (s *Service) GetAllSongs(ctx context.Context) ([]*model.Song, error) {
 	var songsIdx model.SongsIndex
 	found, err := s.s3c.ReadJSON(ctx, s.cfg.SongsJSONKey, &songsIdx)
@@ -855,72 +369,11 @@ func (s *Service) SearchSongs(ctx context.Context, query string) ([]*model.Song,
 }
 
 // filterSongsForIdea filters songs to only include eenfinit, excluding dee bill
-func (s *Service) filterSongsForIdea(songs []*model.Song) []*model.Song {
-	var filtered []*model.Song
-	for _, song := range songs {
-		// Only include eenfinit, exclude dee bill
-		author := strings.ToLower(song.Author)
-		if strings.Contains(author, "eenfinit") && !strings.Contains(author, "dee bill") {
-			filtered = append(filtered, song)
-		}
-	}
-	return filtered
-}
-
-// GetRandomSongForIdea returns a random song from eenfinit (excluding dee bill) for idea generation
-func (s *Service) GetRandomSongForIdea(ctx context.Context) (*model.Song, error) {
-	songs, err := s.GetAllSongs(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	filtered := s.filterSongsForIdea(songs)
-	if len(filtered) == 0 {
-		return nil, fmt.Errorf("no songs from eenfinit available (excluding dee bill)")
-	}
-
-	// Use the same randomization as video generator
-	idx := int(time.Now().UnixNano() % int64(len(filtered)))
-	return filtered[idx], nil
-}
-
-// GetSongByIDForIdea returns a song by ID if from eenfinit (excluding dee bill)
-func (s *Service) GetSongByIDForIdea(ctx context.Context, songID string) (*model.Song, error) {
-	song, err := s.GetSongByID(ctx, songID)
-	if err != nil {
-		return nil, err
-	}
-
-	// Check if song is from eenfinit and not dee bill
-	author := strings.ToLower(song.Author)
-	if !strings.Contains(author, "eenfinit") || strings.Contains(author, "dee bill") {
-		return nil, fmt.Errorf("song %s is not from eenfinit or is from dee bill", songID)
-	}
-
-	return song, nil
-}
-
-// GetMixtapeGenerator exposes the mixtape generator for the bot.
 func (s *Service) GetMixtapeGenerator() *mixtape.Generator {
 	return s.mixtapeGen
 }
 
 // SearchSongsForIdea searches for songs by title or author from eenfinit (excluding dee bill)
-func (s *Service) SearchSongsForIdea(ctx context.Context, query string) ([]*model.Song, error) {
-	results, err := s.SearchSongs(ctx, query)
-	if err != nil {
-		return nil, err
-	}
-
-	filtered := s.filterSongsForIdea(results)
-	if len(filtered) == 0 {
-		return nil, fmt.Errorf("no songs from eenfinit found matching query: %s (excluding dee bill)", query)
-	}
-
-	return filtered, nil
-}
-
-// InitializeUploadersManager initializes the uploaders manager
 func (s *Service) InitializeUploadersManager() {
 	s.uploadersManager = uploaders.NewManager()
 	s.log.Infof("uploaders manager initialized with %d platforms", len(s.uploadersManager.AvailablePlatforms()))
