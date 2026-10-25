@@ -61,10 +61,15 @@ func (b *TelegramBot) startSnippetGeneration(ctx context.Context, chatID, userID
 		path, song, err := b.svc.GenerateSongSnippet(ctx, style, variant, songID)
 		if err == nil {
 			defer os.RemoveAll(filepath.Dir(path))
+			b.log.Infof("manual song snippet: saving draft to S3")
 			var draft *model.SnippetDraft
 			draft, err = b.svc.StoreSnippetDraft(ctx, path, song, chatID, userID, style, variant)
 			if err == nil {
+				b.log.Infof("manual song snippet: sending Telegram preview")
 				err = b.sendSnippetPreview(draft, path)
+				if err == nil {
+					b.log.Infof("manual song snippet: preview sent")
+				}
 			}
 		}
 		if err != nil {

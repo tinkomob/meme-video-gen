@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"meme-video-gen/internal/audio"
 	"meme-video-gen/internal/model"
@@ -75,12 +76,14 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 		}
 	}
 	g.log.Infof("song snippet: %s — %s; offset=%.2fs duration=%.2fs style=%s variant=%d", song.Author, song.Title, start, duration, style, painter.variant)
+	g.log.Infof("song snippet: waiting for renderer")
 	select {
 	case ffmpegSem <- struct{}{}:
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	}
 	defer func() { <-ffmpegSem }()
+	g.log.Infof("song snippet: analyzing audio")
 	frames, err := snippetAudio(ctx, audioPath, start)
 	if err != nil {
 		return nil, err
@@ -94,14 +97,7 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 		}
 	}
 	videoPath := filepath.Join(dir, "snippet.mp4")
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
-		"-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "540x960", "-framerate", "30", "-i", "pipe:0",
-		"-ss", fmt.Sprintf("%.6f", start), "-t", strconv.Itoa(DurationSeconds), "-i", audioPath,
-		"-i", cover,
-		"-filter_complex_threads", "1", "-filter_complex", snippetFilter(painter.accent(), dir, start, duration, titleSize),
-		"-map", "[video]", "-map", "[audio]", "-t", strconv.Itoa(DurationSeconds), "-r", "30",
-		"-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
-		"-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", videoPath)
+	cmd := snippetRenderCommand(ctx, audioPath, cover, videoPath, snippetFilter(painter.accent(), dir, start, duration, titleSize), start)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	pipe, err := cmd.StdinPipe()
@@ -112,6 +108,8 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 		pipe.Close()
 		return nil, err
 	}
+	renderStarted := time.Now()
+	g.log.Infof("song snippet: rendering %d frames", len(frames))
 	var writeErr error
 	for f, audio := range frames {
 		if writeErr = ctx.Err(); writeErr != nil {
@@ -120,14 +118,19 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 		if _, writeErr = pipe.Write(painter.frame(f, audio)); writeErr != nil {
 			break
 		}
+		if (f+1)%visualFPS == 0 {
+			g.log.Infof("song snippet: rendered %d/%d frames (%s)", f+1, len(frames), time.Since(renderStarted).Round(time.Second))
+		}
 	}
 	pipe.Close()
+	g.log.Infof("song snippet: finishing encoder")
 	if err := cmd.Wait(); err != nil {
 		return nil, fmt.Errorf("render snippet: %w: %s", err, stderr.String())
 	}
 	if writeErr != nil {
 		return nil, fmt.Errorf("stream visualizer frames: %w", writeErr)
 	}
+	g.log.Infof("song snippet: encoded in %s", time.Since(renderStarted).Round(time.Second))
 	src, err := os.Open(videoPath)
 	if err != nil {
 		return nil, err
@@ -144,6 +147,19 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 		return nil, fmt.Errorf("save snippet: copy=%v close=%v", copyErr, closeErr)
 	}
 	return song, nil
+}
+
+func snippetRenderCommand(ctx context.Context, audioPath, cover, output, filter string, start float64) *exec.Cmd {
+	return exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
+		// Raw frames have no metadata to probe; do not wait for more pipe data during input discovery.
+		"-probesize", "32", "-analyzeduration", "0", "-thread_queue_size", "8",
+		"-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "540x960", "-framerate", "30", "-i", "pipe:0",
+		"-thread_queue_size", "8", "-ss", fmt.Sprintf("%.6f", start), "-t", strconv.Itoa(DurationSeconds), "-i", audioPath,
+		"-i", cover,
+		"-filter_complex_threads", "1", "-filter_complex", filter,
+		"-map", "[video]", "-map", "[audio]", "-t", strconv.Itoa(DurationSeconds), "-r", "30",
+		"-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
+		"-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", output)
 }
 
 func (g *Generator) snippetSong(ctx context.Context, id string) (*model.Song, error) {
