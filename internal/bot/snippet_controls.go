@@ -13,7 +13,11 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"meme-video-gen/internal/model"
+	"meme-video-gen/internal/snippet"
+	"meme-video-gen/internal/uploaders"
 )
+
+var snippetPlatformNames = map[string]string{"telegram": "Instagram", "youtube": "YouTube"}
 
 func snippetButton(text, action, id string) tgbotapi.InlineKeyboardButton {
 	return tgbotapi.NewInlineKeyboardButtonData(text, "snip:"+action+":"+id)
@@ -22,7 +26,7 @@ func snippetButton(text, action, id string) tgbotapi.InlineKeyboardButton {
 func snippetControls(d *model.SnippetDraft) tgbotapi.InlineKeyboardMarkup {
 	var targets []tgbotapi.InlineKeyboardButton
 	for _, platform := range []string{"telegram", "youtube"} {
-		label, icon, action := map[string]string{"telegram": "Instagram", "youtube": "YouTube"}[platform], "⬜", platform
+		label, icon, action := snippetPlatformNames[platform], "⬜", platform
 		if slices.Contains(d.Selected, platform) {
 			icon = "☑️"
 		}
@@ -160,26 +164,17 @@ func (b *TelegramBot) handleSnippetCallback(ctx context.Context, cb *tgbotapi.Ca
 				b.replyHTMLSilent(draft.ChatID, "Сначала выберите Instagram или YouTube.", true)
 				return
 			}
-			results, publishErr := b.svc.PublishSnippetDraft(actionCtx, draft, platforms)
-			var lines []string
-			for _, platform := range []string{"telegram", "youtube"} {
-				if result := results[platform]; result != nil {
-					if result.Success {
-						lines = append(lines, "✅ "+platform)
-					} else {
-						lines = append(lines, "❌ "+platform+": "+html.EscapeString(result.Error))
-					}
+			var controlsErr error
+			err = b.withSnippetPublicationStatus(draft.ChatID, func() string {
+				results, publishErr := b.svc.PublishSnippetDraft(actionCtx, draft, platforms)
+				controlsErr = b.updateSnippetControls(cb.Message, draft)
+				if publishErr != nil {
+					b.log.Errorf("snippet publication: %s", strings.ReplaceAll(publishErr.Error(), b.tg.Token, "[redacted]"))
 				}
-			}
-			if len(lines) > 0 {
-				b.replyHTMLSilent(draft.ChatID, strings.Join(lines, "\n"), true)
-			}
-			if len(results) == 0 && publishErr == nil {
-				b.replyHTMLSilent(draft.ChatID, "Выбранные площадки уже обработаны. Повторной отправки не будет.", true)
-			}
-			err = b.updateSnippetControls(cb.Message, draft)
-			if publishErr != nil {
-				err = publishErr
+				return snippetPublicationResult(results, publishErr)
+			})
+			if err == nil {
+				err = controlsErr
 			}
 		case "visual":
 			b.startSnippetGeneration(ctx, draft.ChatID, draft.UserID, "random", -1, draft.Song.ID)
@@ -223,10 +218,45 @@ func (b *TelegramBot) handleSnippetCallback(ctx context.Context, cb *tgbotapi.Ca
 	}()
 }
 
+func snippetPublicationResult(results map[string]*uploaders.UploadResult, publishErr error) string {
+	var lines []string
+	for _, platform := range []string{"telegram", "youtube"} {
+		if result := results[platform]; result != nil {
+			name := snippetPlatformNames[platform]
+			if result.Success {
+				lines = append(lines, "✅ "+name)
+			} else {
+				lines = append(lines, "❌ "+name+": "+html.EscapeString(result.Error))
+			}
+		}
+	}
+	if publishErr != nil {
+		lines = append(lines, "❌ "+html.EscapeString(publishErr.Error()))
+	}
+	if len(lines) == 0 {
+		return "Выбранные площадки уже обработаны. Повторной отправки не будет."
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (b *TelegramBot) withSnippetPublicationStatus(chatID int64, publish func() string) error {
+	message := tgbotapi.NewMessage(chatID, "Отправляю…")
+	message.DisableNotification = true
+	sent, err := b.tg.Send(message)
+	if err != nil {
+		return err
+	}
+	text := strings.ReplaceAll(publish(), b.tg.Token, "[redacted]")
+	edit := tgbotapi.NewEditMessageText(chatID, sent.MessageID, text)
+	edit.ParseMode = tgbotapi.ModeHTML
+	_, err = b.tg.Request(edit)
+	return err
+}
+
 func snippetSongChoices(songs []*model.Song, excludeID string) []*model.Song {
 	var choices []*model.Song
 	for _, song := range songs {
-		if song != nil && song.ID != excludeID && song.AudioKey != "" && (song.DurationS == 0 || song.DurationS >= 10) && len(song.ID) == 11 && strings.Trim(song.ID, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") == "" {
+		if song != nil && song.ID != excludeID && song.AudioKey != "" && (song.DurationS == 0 || song.DurationS >= snippet.DurationSeconds) && len(song.ID) == 11 && strings.Trim(song.ID, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") == "" {
 			choices = append(choices, song)
 		}
 	}

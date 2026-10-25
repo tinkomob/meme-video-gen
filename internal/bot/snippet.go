@@ -12,6 +12,7 @@ import (
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"meme-video-gen/internal/model"
+	"meme-video-gen/internal/snippet"
 )
 
 func snippetCommandArgs(args string) (string, int, error) {
@@ -52,7 +53,7 @@ func (b *TelegramBot) startSnippetGeneration(ctx context.Context, chatID, userID
 		b.replyHTMLSilent(chatID, "Сниппет уже генерируется. Дождитесь завершения.", true)
 		return
 	}
-	b.replyHTMLSilent(chatID, "Генерирую 10-секундный сниппет…", true)
+	b.replyHTMLSilent(chatID, fmt.Sprintf("Генерирую %d-секундный сниппет…", snippet.DurationSeconds), true)
 	go func() {
 		defer b.snippetRunning.Store(false)
 		ctx, cancel := context.WithTimeout(ctx, 15*time.Minute)
@@ -75,13 +76,10 @@ func (b *TelegramBot) startSnippetGeneration(ctx context.Context, chatID, userID
 
 func (b *TelegramBot) sendSnippetPreview(draft *model.SnippetDraft, path string) error {
 	caption := draft.Song.Author + " — " + draft.Song.Title
-	if draft.Song.SourceURL != "" {
-		caption += "\n" + draft.Song.SourceURL
-	}
 	video := tgbotapi.NewVideo(draft.ChatID, tgbotapi.FilePath(path))
 	video.Caption, video.ParseMode = html.EscapeString(caption), tgbotapi.ModeHTML
 	video.DisableNotification, video.SupportsStreaming = true, true
-	video.Duration = 10
+	video.Duration = snippet.DurationSeconds
 	video.ReplyMarkup = snippetControls(draft)
 	_, err := b.tg.Send(video)
 	return err

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -39,8 +40,8 @@ func TestSnippetFilters(t *testing.T) {
 		})
 	}
 	// A 50-second excerpt offset in a 200-second song starts at 25%,
-	// then advances by 9/200 of the track, rather than almost filling it.
-	for _, second := range []int{0, 9} {
+	// and advances relative to the full track through the final snippet second.
+	for _, second := range []int{0, DurationSeconds - 1} {
 		t.Run(fmt.Sprintf("progress-at-%d", second), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 			defer cancel()
@@ -48,10 +49,10 @@ func TestSnippetFilters(t *testing.T) {
 			graph += fmt.Sprintf(";[video]trim=start=%d,setpts=PTS-STARTPTS[frame]", second)
 			cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error",
 				"-f", "lavfi", "-i", "color=c=black:s=540x960:r=30",
-				"-f", "lavfi", "-i", "sine=frequency=440:duration=10",
+				"-f", "lavfi", "-i", "sine=frequency=440:duration="+strconv.Itoa(DurationSeconds),
 				"-f", "lavfi", "-i", "color=c=gray:s=240x240:r=30",
 				"-filter_complex_threads", "1", "-filter_complex", graph,
-				"-map", "[audio]", "-t", "10", "-f", "null", os.DevNull,
+				"-map", "[audio]", "-t", strconv.Itoa(DurationSeconds), "-f", "null", os.DevNull,
 				"-map", "[frame]", "-frames:v", "1", "-c:v", "png", "-f", "image2pipe", "pipe:1")
 			var stderr bytes.Buffer
 			cmd.Stderr = &stderr

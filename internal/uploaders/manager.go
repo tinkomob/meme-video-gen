@@ -20,9 +20,9 @@ func NewManager() *Manager {
 	}
 
 	botToken := os.Getenv("TELEGRAM_BOT_TOKEN")
-	chatIDStr := os.Getenv("POSTS_CHATID") // Load from env directly (not POSTS_CHAT_ID)
+	chatIDStr := os.Getenv("POSTS_CHAT_ID")
 	if chatIDStr == "" {
-		chatIDStr = os.Getenv("POSTS_CHAT_ID") // Fallback to POSTS_CHAT_ID
+		chatIDStr = os.Getenv("POSTS_CHATID")
 	}
 
 	// YouTube uploader will be initialized on-demand from S3 via InitializeYouTubeUploaderFromS3

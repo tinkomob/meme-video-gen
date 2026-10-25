@@ -88,6 +88,10 @@ func (s *Service) SavePostsChatID(ctx context.Context, chatID int64) error {
 func (s *Service) LoadPostsChatID(ctx context.Context) error {
 	s.cfgMux.Lock()
 	defer s.cfgMux.Unlock()
+	// An explicitly configured destination must not be replaced by stale S3 state.
+	if s.cfg.PostsChatID != 0 {
+		return nil
+	}
 	type ConfigStore struct {
 		PostsChatID int64 `json:"posts_chat_id"`
 	}

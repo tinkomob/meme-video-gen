@@ -134,9 +134,6 @@ func (s *Service) PublishSnippetDraft(ctx context.Context, draft *model.SnippetD
 	s.prepareSnippetUploaders(ctx, platforms)
 	title := draft.Song.Author + " — " + draft.Song.Title
 	description := title
-	if draft.Song.SourceURL != "" {
-		description += "\n" + draft.Song.SourceURL
-	}
 	request := &uploaders.UploadRequest{VideoPath: path, Title: title, Description: description, Caption: html.EscapeString(description), Privacy: "public", Silent: true}
 	results := map[string]*uploaders.UploadResult{}
 	for _, platform := range platforms {

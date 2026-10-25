@@ -1,7 +1,7 @@
 # Song video generator
 
-Telegram bot that generates 10-second music snippets with audio-reactive visuals
-and publishes them three times a day. Source audio and song covers are stored in S3.
+Telegram bot that generates 20-second music snippets with audio-reactive visuals
+and publishes them twice a day. Source audio and song covers are stored in S3.
 
 ## Build
 
@@ -15,7 +15,7 @@ go build -o meme-bot.exe ./cmd
 ## Bot commands
 
 - `/song [query]` — find and download a track.
-- `/snippet [style] [variant]` — generate a 10-second preview and send it silently to the requesting chat; e.g. `/snippet galaxy 2`. With no arguments both are random.
+- `/snippet [style] [variant]` — generate a 20-second preview and send it silently to the requesting chat; e.g. `/snippet galaxy 2`. With no arguments both are random.
 - `/songs` indexing runs hourly.
 
 Song audio and index are stored under `songs/` and `songs.json`.
@@ -23,7 +23,7 @@ The Telegram command menu is refreshed at startup with the supported commands.
 
 ## Song snippets
 
-Generate a local 10-second, 1080×1920, 30 fps MP4 from a random real song in S3:
+Generate a local 20-second, 1080×1920, 30 fps MP4 from a random real song in S3:
 
 ```powershell
 go run ./cmd/song-snippet -output song-snippet.mp4
@@ -86,14 +86,16 @@ Docker includes the `song-snippet` binary and DejaVu fonts.
 
 ### Automatic snippets
 
-The application generates **three random publication times each day in Asia/Tomsk
-(UTC+7)**. One falls in each eight-hour part of the day; adjacent planned times
-are **6–10 hours apart**, including the gap between yesterday's last and today's
+The application generates **two random publication times each day in Asia/Tomsk
+(UTC+7)**. One falls in each twelve-hour half of the day; adjacent planned times
+are **10–14 hours apart**, including the gap between yesterday's last and today's
 first publication. A fresh plan is generated after midnight.
 
 The daily plan and handled slots are saved in S3 as `snippet_schedule.json`.
 Restarting the bot preserves the chosen times and prevents replaying a claimed
 slot. Slots missed while offline are skipped; they are never published in a burst.
+Older three-slot daily plans are migrated to two slots, respecting the number
+already handled that day so no extra publication is introduced during the change.
 If the bot was offline for multiple days, it creates a plan for the current day.
 The scheduler checks once per minute. A slot is saved as handled before generation;
 failed or partially uploaded slots are not automatically retried.
@@ -107,8 +109,11 @@ videos always have `disable_notification=true`; scheduled jobs send no additiona
 status or error messages to Telegram. Errors and individual upload results are
 written to the application logs. The manual command and its replies are silent too.
 
-Telegram destination: `POSTS_CHAT_ID` (legacy `POSTS_CHATID` also works), with the
-saved `config.json` in S3 loaded at startup. Negative channel IDs are supported.
+The Instagram-labelled destination sends to `POSTS_CHAT_ID` (legacy `POSTS_CHATID`
+also works). An explicit environment value takes priority; `config.json` in S3
+is only a fallback when no destination is configured. Negative channel IDs are supported.
+Manual publication shows a silent “Отправляю…” message and edits that same message
+to display the Instagram/YouTube results when the upload finishes.
 Rebuild and restart the running application to activate the new command and job.
 
 ## Repository hygiene

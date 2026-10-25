@@ -17,7 +17,11 @@ import (
 	"meme-video-gen/internal/model"
 )
 
-const snippetDuration = 10
+const DurationSeconds = 20
+
+func snippetAudioFade() string {
+	return fmt.Sprintf("afade=t=in:d=0.15,afade=t=out:st=%.1f:d=0.5", float64(DurationSeconds)-0.5)
+}
 
 // GenerateSongSnippet writes a local preview; it does not publish or schedule it.
 func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, songID string, variant int) (*model.Song, error) {
@@ -51,15 +55,15 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 		return nil, fmt.Errorf("probe snippet audio: %w", err)
 	}
 	duration, err := strconv.ParseFloat(strings.TrimSpace(string(probe)), 64)
-	if err != nil || math.IsNaN(duration) || math.IsInf(duration, 0) || duration < snippetDuration {
-		return nil, fmt.Errorf("snippet requires at least %d seconds of audio, got %q", snippetDuration, strings.TrimSpace(string(probe)))
+	if err != nil || math.IsNaN(duration) || math.IsInf(duration, 0) || duration < DurationSeconds {
+		return nil, fmt.Errorf("snippet requires at least %d seconds of audio, got %q", DurationSeconds, strings.TrimSpace(string(probe)))
 	}
 	title := strings.Join(strings.Fields(song.Title), " ")
 	titleSize := 48
 	if n := len([]rune(title)); n > 30 {
 		titleSize = max(18, 1440/n)
 	}
-	start := rand.Float64() * math.Max(0, duration*.75-snippetDuration)
+	start := rand.Float64() * math.Max(0, duration*.75-DurationSeconds)
 	// Text files keep drawtext expressions separate from FFmpeg filter escaping.
 	elapsed := fmt.Sprintf("%%{eif:floor((t+%.6f)/60):d:2}:%%{eif:mod(t+%.6f,60):d:2}", start, start)
 	total := fmt.Sprintf("%02d:%02d", int(duration)/60, int(duration)%60)
@@ -90,10 +94,10 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 	videoPath := filepath.Join(dir, "snippet.mp4")
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-hide_banner", "-loglevel", "error", "-nostdin", "-y",
 		"-f", "rawvideo", "-pixel_format", "rgb24", "-video_size", "540x960", "-framerate", "30", "-i", "pipe:0",
-		"-ss", fmt.Sprintf("%.6f", start), "-t", "10", "-i", audioPath,
+		"-ss", fmt.Sprintf("%.6f", start), "-t", strconv.Itoa(DurationSeconds), "-i", audioPath,
 		"-i", cover,
 		"-filter_complex_threads", "1", "-filter_complex", snippetFilter(painter.accent(), dir, start, duration, titleSize),
-		"-map", "[video]", "-map", "[audio]", "-t", "10", "-r", "30",
+		"-map", "[video]", "-map", "[audio]", "-t", strconv.Itoa(DurationSeconds), "-r", "30",
 		"-c:v", "libx264", "-preset", "fast", "-crf", "20", "-pix_fmt", "yuv420p",
 		"-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-movflags", "+faststart", videoPath)
 	var stderr bytes.Buffer
@@ -141,13 +145,23 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 }
 
 func (g *Generator) snippetSong(ctx context.Context, id string) (*model.Song, error) {
-	if id == "" {
-		return g.audio.GetRandomSong(ctx)
-	}
 	var index model.SongsIndex
 	found, err := g.s3.ReadJSON(ctx, g.cfg.SongsJSONKey, &index)
 	if err != nil {
 		return nil, err
+	}
+	if id == "" {
+		var pool []*model.Song
+		for i := range index.Items {
+			song := &index.Items[i]
+			if song.AudioKey != "" && (song.DurationS == 0 || song.DurationS >= DurationSeconds) {
+				pool = append(pool, song)
+			}
+		}
+		if len(pool) == 0 {
+			return nil, fmt.Errorf("no songs long enough for a %d-second snippet", DurationSeconds)
+		}
+		return pool[rand.Intn(len(pool))], nil
 	}
 	if found {
 		for i := range index.Items {
@@ -181,7 +195,7 @@ func snippetFilter(accent, dir string, start, duration float64, titleSize int) s
 	sans, serif := snippetFont(false), snippetFont(true)
 	return fmt.Sprintf(
 		"[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg];"+
-			"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,afade=t=in:d=0.15,afade=t=out:st=9.5:d=0.5[audio];"+
+			"[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,%s[audio];"+
 			"[2:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=520:520:force_original_aspect_ratio=increase,crop=520:520,setsar=1,format=rgba,"+
 			"geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(max(abs(X-W/2)-(W/2-14),0),max(abs(Y-H/2)-(H/2-14),0)),14),255,0)'[cover];"+
 			"[bg][cover]overlay=x=280:y=560:eof_action=repeat,"+
@@ -189,12 +203,12 @@ func snippetFilter(accent, dir string, start, duration float64, titleSize int) s
 			"drawtext=%stextfile='%s':expansion=none:fontsize=28:fontcolor=0xb7b7c5:x=(w-tw)/2:y=1210,"+
 			"drawtext=%stextfile='%s':fontsize=22:fontcolor=0xd0d0d8:x=210:y=1320,"+
 			"drawtext=%stextfile='%s':expansion=none:fontsize=22:fontcolor=0xd0d0d8:x=870-tw:y=1320[metadata];"+
-			"color=c=0x454550:s=660x4:r=30:d=10[track];color=c=%s:s=660x4:r=30:d=10[fill];"+
+			"color=c=0x454550:s=660x4:r=30:d=%d[track];color=c=%s:s=660x4:r=30:d=%d[fill];"+
 			"[track][fill]overlay=x='-660+660*min((%.6f+t)/%.6f,1)':y=0:eval=frame[progress];"+
 			"[metadata][progress]overlay=x=210:y=1285:shortest=1,"+
 			"drawtext=%stext='●':fontsize=25:fontcolor=white:x='198+660*min((%.6f+t)/%.6f,1)':y=1279,format=yuv420p[video]",
-		serif, escapeFfmpegPath(filepath.Join(dir, "title.txt")), titleSize,
+		snippetAudioFade(), serif, escapeFfmpegPath(filepath.Join(dir, "title.txt")), titleSize,
 		sans, escapeFfmpegPath(filepath.Join(dir, "artist.txt")),
 		sans, escapeFfmpegPath(filepath.Join(dir, "elapsed.txt")),
-		sans, escapeFfmpegPath(filepath.Join(dir, "duration.txt")), accent, start, duration, sans, start, duration)
+		sans, escapeFfmpegPath(filepath.Join(dir, "duration.txt")), DurationSeconds, accent, DurationSeconds, start, duration, sans, start, duration)
 }

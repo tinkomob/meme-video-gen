@@ -9,7 +9,7 @@ import (
 )
 
 func TestAudioBands(t *testing.T) {
-	samples := make([]float64, 16000*snippetDuration)
+	samples := make([]float64, 16000*DurationSeconds)
 	for _, frame := range analyzeSnippet(samples) {
 		if frame.level != 0 {
 			t.Fatal("silence must have zero level")

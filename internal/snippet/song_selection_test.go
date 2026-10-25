@@ -29,7 +29,7 @@ func (s selectionS3) ReadJSON(_ context.Context, key string, out any) (bool, err
 }
 
 func TestSnippetDefaultChoosesRandomSong(t *testing.T) {
-	store := selectionS3{index: model.SongsIndex{Items: []model.Song{{ID: "AAAAAAAAAAA"}, {ID: "BBBBBBBBBBB"}, {ID: "CCCCCCCCCCC"}}}}
+	store := selectionS3{index: model.SongsIndex{Items: []model.Song{{ID: "AAAAAAAAAAA", AudioKey: "a", DurationS: 20}, {ID: "BBBBBBBBBBB", AudioKey: "b", DurationS: 40}, {ID: "CCCCCCCCCCC", AudioKey: "c", DurationS: 30}, {ID: "DDDDDDDDDDD", AudioKey: "d", DurationS: 15}}}}
 	cfg := internal.Config{SongsJSONKey: "songs.json"}
 	g := NewGenerator(cfg, store, audio.NewIndexer(cfg, store, nil), nil)
 	seen := map[string]bool{}

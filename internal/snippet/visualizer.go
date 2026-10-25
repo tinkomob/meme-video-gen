@@ -7,6 +7,7 @@ import (
 	"math"
 	"math/rand"
 	"os/exec"
+	"strconv"
 )
 
 const (
@@ -24,12 +25,12 @@ type audioFrame struct {
 // Analyze the same excerpt that is encoded, including its fades.
 func snippetAudio(ctx context.Context, path string, start float64) ([]audioFrame, error) {
 	cmd := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-ss", fmt.Sprintf("%.6f", start), "-i", path,
-		"-t", "10", "-af", "afade=t=in:d=0.15,afade=t=out:st=9.5:d=0.5", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1")
+		"-t", strconv.Itoa(DurationSeconds), "-af", snippetAudioFade(), "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1")
 	data, err := cmd.Output()
 	if err != nil {
 		return nil, fmt.Errorf("decode visualizer audio: %w", err)
 	}
-	if len(data) < 16000*2*snippetDuration-3200 {
+	if len(data) < 16000*2*DurationSeconds-3200 {
 		return nil, fmt.Errorf("decoded audio is shorter than the snippet")
 	}
 	samples := make([]float64, len(data)/2)
@@ -51,7 +52,7 @@ func analyzeSnippet(samples []float64) []audioFrame {
 	for i := range hann {
 		hann[i] = 0.5 - 0.5*math.Cos(2*math.Pi*float64(i)/(window-1))
 	}
-	frames := make([]audioFrame, snippetDuration*visualFPS)
+	frames := make([]audioFrame, DurationSeconds*visualFPS)
 	peak, peakLevel := 1e-9, 1e-9
 	for f := range frames {
 		var block [window]float64

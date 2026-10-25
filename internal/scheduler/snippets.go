@@ -52,9 +52,6 @@ func (s *Service) publishSongSnippet(ctx context.Context) error {
 func (s *Service) uploadSongSnippet(ctx context.Context, path string, song *model.Song) error {
 	title := song.Author + " — " + song.Title
 	description := title
-	if song.SourceURL != "" {
-		description += "\n" + song.SourceURL
-	}
 	results := s.GetUploadersManager().UploadToAll(ctx, &uploaders.UploadRequest{
 		VideoPath: path, Title: title, Description: description, Caption: html.EscapeString(description), Privacy: "public", Silent: true,
 	})

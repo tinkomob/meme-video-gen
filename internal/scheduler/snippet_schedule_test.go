@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"slices"
 	"testing"
 	"time"
 
@@ -60,8 +61,8 @@ func TestSnippetPlanGeneration(t *testing.T) {
 			t.Fatalf("day %d: %v", day, err)
 		}
 		if previous != nil {
-			gap := plan.Slots[0].Sub(previous.Slots[2])
-			if gap < 6*time.Hour || gap > 10*time.Hour {
+			gap := plan.Slots[0].Sub(previous.Slots[1])
+			if gap < 10*time.Hour || gap > 14*time.Hour {
 				t.Fatalf("cross-day gap: %s", gap)
 			}
 		}
@@ -70,12 +71,69 @@ func TestSnippetPlanGeneration(t *testing.T) {
 				t.Fatal("future slots marked handled")
 			}
 		}
-		patterns[plan.Slots[0].Format("15:04")+plan.Slots[1].Format("15:04")+plan.Slots[2].Format("15:04")] = true
+		if len(plan.Slots) != 2 {
+			t.Fatal("expected exactly two daily slots")
+		}
+		patterns[plan.Slots[0].Format("15:04")+plan.Slots[1].Format("15:04")] = true
 		previous = &plan
 		now = now.AddDate(0, 0, 1)
 	}
 	if len(patterns) < 3500 {
 		t.Fatalf("not enough daily variation: %d patterns", len(patterns))
+	}
+}
+
+func TestSnippetScheduleMigratesThreeSlots(t *testing.T) {
+	day := time.Date(2026, 10, 25, 0, 0, 0, 0, snippetLocation)
+	for processed := 0; processed <= 3; processed++ {
+		t.Run(fmt.Sprint(processed), func(t *testing.T) {
+			s := snippetTestService(t)
+			m := s.s3c.(*snippetMemoryS3)
+			old := snippetDayPlan{Date: "2026-10-25", Slots: []time.Time{day.Add(2 * time.Hour), day.Add(10 * time.Hour), day.Add(18 * time.Hour)}, Handled: make([]bool, 3)}
+			for i := 0; i < processed; i++ {
+				old.Handled[i] = true
+			}
+			if err := m.WriteJSON(context.Background(), snippetScheduleKey, old); err != nil {
+				t.Fatal(err)
+			}
+			now := day
+			if processed > 0 {
+				now = old.Slots[processed-1].Add(time.Hour)
+			}
+			if err := s.ensureSnippetPlan(context.Background(), now); err != nil {
+				t.Fatal(err)
+			}
+			plan := savedSnippetPlan(t, m)
+			if err := plan.validate(); err != nil || len(plan.Slots) != 2 {
+				t.Fatalf("invalid migrated plan: %v", err)
+			}
+			remaining := 0
+			for _, done := range plan.Handled {
+				if !done {
+					remaining++
+				}
+			}
+			if remaining != max(0, 2-processed) {
+				t.Fatalf("migration permits extra posts: %d already handled, %d remaining", processed, remaining)
+			}
+			if processed == 1 && !plan.Slots[0].Equal(old.Slots[0]) {
+				t.Fatal("lost the already processed slot")
+			}
+			restarted := snippetTestService(t)
+			restarted.s3c = m
+			if err := restarted.ensureSnippetPlan(context.Background(), now); err != nil || m.writes != 2 {
+				t.Fatal("migration repeated after restart")
+			}
+		})
+	}
+	previous := snippetDayPlan{Date: "2026-10-25", Slots: []time.Time{day.Add(2 * time.Hour), day.Add(10 * time.Hour), day.Add(18 * time.Hour)}, Handled: []bool{true, true, true}}
+	plan, err := newSnippetDay(day.AddDate(0, 0, 1), &previous, rand.New(rand.NewSource(1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gap := plan.Slots[0].Sub(previous.Slots[2])
+	if gap < 10*time.Hour || gap > 14*time.Hour {
+		t.Fatalf("bad legacy rollover gap: %s", gap)
 	}
 }
 
@@ -90,7 +148,7 @@ func savedSnippetPlan(t *testing.T, m *snippetMemoryS3) snippetDayPlan {
 
 func sampleSnippetPlan() snippetDayPlan {
 	day := time.Date(2026, 10, 25, 0, 0, 0, 0, snippetLocation)
-	return snippetDayPlan{Date: "2026-10-25", Slots: [3]time.Time{day.Add(130 * time.Minute), day.Add(630 * time.Minute), day.Add(1095 * time.Minute)}}
+	return snippetDayPlan{Date: "2026-10-25", Slots: []time.Time{day.Add(130 * time.Minute), day.Add(870 * time.Minute)}, Handled: make([]bool, 2)}
 }
 
 func TestSnippetPlanSurvivesRestart(t *testing.T) {
@@ -107,7 +165,7 @@ func TestSnippetPlanSurvivesRestart(t *testing.T) {
 	if err := restarted.ensureSnippetPlan(ctx, now.Add(15*time.Hour)); err != nil {
 		t.Fatal(err)
 	}
-	if original.Date != restarted.snippetPlan.Date || original.Handled != restarted.snippetPlan.Handled || m.writes != 1 {
+	if original.Date != restarted.snippetPlan.Date || !slices.Equal(original.Handled, restarted.snippetPlan.Handled) || m.writes != 1 {
 		t.Fatal("restart changed the saved daily plan")
 	}
 	for i, slot := range original.Slots {
@@ -121,8 +179,8 @@ func TestSnippetPlanSurvivesRestart(t *testing.T) {
 	if restarted.snippetPlan.Date != "2026-10-26" || m.writes != 2 {
 		t.Fatal("midnight did not create a new daily plan")
 	}
-	gap := restarted.snippetPlan.Slots[0].Sub(original.Slots[2])
-	if gap < 6*time.Hour || gap > 10*time.Hour {
+	gap := restarted.snippetPlan.Slots[0].Sub(original.Slots[1])
+	if gap < 10*time.Hour || gap > 14*time.Hour {
 		t.Fatalf("bad rollover gap: %s", gap)
 	}
 }
@@ -141,7 +199,7 @@ func TestSnippetSlotClaimAndRestart(t *testing.T) {
 		t.Fatalf("slot not claimed: due=%v err=%v", due, err)
 	}
 	stored := savedSnippetPlan(t, m)
-	if stored.Handled != [3]bool{true, true, false} {
+	if !slices.Equal(stored.Handled, []bool{true, true}) {
 		t.Fatalf("incorrect claims: %v", stored.Handled)
 	}
 	restarted := snippetTestService(t)
@@ -191,10 +249,10 @@ func TestSnippetScheduleSkipsMissedSlots(t *testing.T) {
 	if err := m.WriteJSON(context.Background(), snippetScheduleKey, p); err != nil {
 		t.Fatal(err)
 	}
-	if due, err := s.claimSnippetSlot(context.Background(), p.Slots[2].Add(2*time.Minute)); err != nil || due {
+	if due, err := s.claimSnippetSlot(context.Background(), p.Slots[1].Add(2*time.Minute)); err != nil || due {
 		t.Fatalf("missed slots replayed: %v", err)
 	}
-	if savedSnippetPlan(t, m).Handled != [3]bool{true, true, true} {
+	if !slices.Equal(savedSnippetPlan(t, m).Handled, []bool{true, true}) {
 		t.Fatal("missed slots not marked handled")
 	}
 }

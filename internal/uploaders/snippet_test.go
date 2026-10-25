@@ -69,6 +69,16 @@ func TestManagerPublicationTargets(t *testing.T) {
 	}
 }
 
+func TestManagerDestinationPriority(t *testing.T) {
+	t.Setenv("TELEGRAM_BOT_TOKEN", "test-token")
+	t.Setenv("POSTS_CHAT_ID", "-100123")
+	t.Setenv("POSTS_CHATID", "456")
+	uploader, err := NewManager().GetUploader("telegram")
+	if err != nil || uploader.(*TelegramUploader).chatID != "-100123" {
+		t.Fatal("legacy destination replaced canonical configuration")
+	}
+}
+
 func (snippetStubUploader) Platform() string { return "stub" }
 func (snippetStubUploader) Upload(context.Context, *UploadRequest) (*UploadResult, error) {
 	return &UploadResult{Success: true}, nil

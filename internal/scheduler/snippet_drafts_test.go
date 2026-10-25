@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,41 @@ type draftMemoryS3 struct {
 	s3.Client
 	objects           map[string][]byte
 	writes, failWrite int
+}
+
+type destinationTransport func(*http.Request) (*http.Response, error)
+
+func (f destinationTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+func TestSnippetDestinationEnvironmentWinsOverSavedPreviewChat(t *testing.T) {
+	s, m, draft, _, _ := draftFixture(t)
+	s.cfg.PostsChatID, s.cfg.TelegramToken = -1003668452980, "test-token"
+	draft.ChatID = 1084904013
+	m.objects["config.json"] = []byte(`{"posts_chat_id":1084904013}`)
+	if err := s.LoadPostsChatID(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if s.GetConfig().PostsChatID != -1003668452980 {
+		t.Fatal("saved preview chat replaced configured destination")
+	}
+	originalTransport := http.DefaultTransport
+	t.Cleanup(func() { http.DefaultTransport = originalTransport })
+	called := false
+	http.DefaultTransport = destinationTransport(func(r *http.Request) (*http.Response, error) {
+		called = true
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatal(err)
+		}
+		defer r.MultipartForm.RemoveAll()
+		if r.FormValue("chat_id") != "-1003668452980" || r.FormValue("disable_notification") != "true" {
+			t.Errorf("wrong publication destination/flags: %v", r.MultipartForm.Value)
+		}
+		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"ok":true,"result":{}}`))}, nil
+	})
+	results, err := s.PublishSnippetDraft(context.Background(), draft, []string{"telegram"})
+	if err != nil || !called || !results["telegram"].Success {
+		t.Fatalf("publication failed: %v", err)
+	}
 }
 
 func (m *draftMemoryS3) PutBytes(_ context.Context, key string, data []byte, _ string) error {
