@@ -386,6 +386,7 @@ async fn actual_ffmpeg_renders_twenty_second_video_with_audio() {
         .await
         .unwrap();
     assert_eq!(generated.song.author, "Артист");
+    assert!(std::fs::metadata(generated.path()).unwrap().len() <= 20_000_000);
     let probe = audio::command(
         "ffprobe",
         &[

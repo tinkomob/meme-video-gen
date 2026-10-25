@@ -322,6 +322,10 @@ fn render(
                 "fast",
                 "-crf",
                 "20",
+                "-maxrate",
+                "7M",
+                "-bufsize",
+                "2M",
                 "-pix_fmt",
                 "yuv420p",
                 "-c:a",
@@ -369,6 +373,10 @@ fn render(
     if let Some(e) = write_error {
         return Err(e);
     }
+    ensure!(
+        std::fs::metadata(output)?.len() <= 20_000_000,
+        "rendered snippet exceeds 20 MB"
+    );
     Ok(())
 }
 pub async fn save_new(source: &Path, dest: &Path) -> Result<()> {
