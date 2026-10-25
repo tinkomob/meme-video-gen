@@ -336,11 +336,11 @@ func (idx *Indexer) DownloadSongToTemp(ctx context.Context, song *model.Song) (s
 	}
 	defer reader.Reader.Close()
 
-	tmpFile := filepath.Join(os.TempDir(), fmt.Sprintf("song-%s.m4a", song.ID))
-	f, err := os.Create(tmpFile)
+	f, err := os.CreateTemp(os.TempDir(), "song-*.m4a")
 	if err != nil {
 		return "", fmt.Errorf("create temp file: %w", err)
 	}
+	tmpFile := f.Name()
 	defer f.Close()
 
 	written, err := io.Copy(f, reader.Reader)

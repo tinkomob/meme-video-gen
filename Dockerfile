@@ -17,6 +17,7 @@ COPY . .
 
 # Build the application
 RUN CGO_ENABLED=1 GOOS=linux go build -o meme-bot ./cmd
+RUN CGO_ENABLED=1 GOOS=linux go build -o song-snippet ./cmd/song-snippet
 
 # Runtime stage
 FROM alpine:latest
@@ -24,6 +25,7 @@ FROM alpine:latest
 # Install runtime dependencies (ffmpeg, ca-certificates, and other runtime libs)
 RUN apk add --no-cache \
     ffmpeg \
+    ttf-dejavu \
     ca-certificates \
     curl \
     libc6-compat \
@@ -39,6 +41,7 @@ WORKDIR /app
 
 # Copy binary from builder
 COPY --from=builder /build/meme-bot .
+COPY --from=builder /build/song-snippet .
 
 # Set correct permissions for the app directory
 RUN chown -R memebot:memebot /app

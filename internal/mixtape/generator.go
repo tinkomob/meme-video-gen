@@ -4,10 +4,13 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"image"
+	_ "image/jpeg"
 	"io"
 	"math"
 	"math/rand"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -106,38 +109,75 @@ func (g *Generator) pickSongs(ctx context.Context, n int) ([]*model.Song, error)
 	return result, nil
 }
 
-// downloadThumbnail fetches the YouTube maxresdefault thumbnail for a video ID.
+// downloadThumbnail shares validated YouTube covers between all video types.
 func (g *Generator) downloadThumbnail(ctx context.Context, videoID, dir string, idx int) (string, error) {
-	urls := []string{
-		fmt.Sprintf("https://img.youtube.com/vi/%s/maxresdefault.jpg", videoID),
-		fmt.Sprintf("https://img.youtube.com/vi/%s/hqdefault.jpg", videoID),
+	if len(videoID) != 11 || strings.Trim(videoID, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-") != "" {
+		return "", fmt.Errorf("invalid YouTube video ID %q", videoID)
 	}
-
 	destPath := filepath.Join(dir, fmt.Sprintf("thumb%d.jpg", idx))
-
-	for _, u := range urls {
-		req, err := http.NewRequestWithContext(ctx, "GET", u, nil)
-		if err != nil {
-			continue
-		}
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil || resp.StatusCode != http.StatusOK {
-			if resp != nil {
-				resp.Body.Close()
-			}
-			continue
-		}
-		data, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			continue
-		}
-		if err := os.WriteFile(destPath, data, 0644); err != nil {
-			return "", err
-		}
-		return destPath, nil
+	key := "covers/" + videoID + ".jpg"
+	if data, _, err := g.s3.GetBytes(ctx, key); err == nil && validSongCover(data) {
+		return destPath, os.WriteFile(destPath, data, 0600)
 	}
-	return "", fmt.Errorf("could not download thumbnail for video %s", videoID)
+	client := &http.Client{Timeout: 4 * time.Second}
+	var lastErr error
+	// HTTP is a fallback for public images when the local network blocks YouTube TLS.
+	for _, host := range []string{"https://i.ytimg.com", "https://img.youtube.com", "http://i.ytimg.com"} {
+		for _, size := range []string{"maxresdefault", "sddefault", "hqdefault"} {
+			if err := ctx.Err(); err != nil {
+				return "", err
+			}
+			u := fmt.Sprintf("%s/vi/%s/%s.jpg", host, videoID, size)
+			data, err := fetchSongCover(ctx, client, u)
+			if err != nil {
+				lastErr = err
+				if _, ok := err.(*url.Error); ok {
+					break
+				}
+				continue
+			}
+			if err := os.WriteFile(destPath, data, 0600); err != nil {
+				return "", err
+			}
+			if err := g.s3.PutBytes(ctx, key, data, "image/jpeg"); err != nil {
+				g.log.Warnf("could not cache song cover: %v", err)
+			}
+			g.log.Infof("song cover loaded: %s (%d bytes)", u, len(data))
+			return destPath, nil
+		}
+	}
+	return "", fmt.Errorf("could not download thumbnail for video %s: %w", videoID, lastErr)
+}
+
+func validSongCover(data []byte) bool {
+	if len(data) > 8<<20 {
+		return false
+	}
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(data))
+	return err == nil && format == "jpeg" && cfg.Width >= 300 && cfg.Height >= 170 && cfg.Width <= 8192 && cfg.Height <= 8192
+}
+
+func fetchSongCover(ctx context.Context, client *http.Client, u string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("thumbnail HTTP %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, (8<<20)+1))
+	if err != nil {
+		return nil, err
+	}
+	if !validSongCover(data) {
+		return nil, fmt.Errorf("thumbnail is invalid or a YouTube placeholder")
+	}
+	return data, nil
 }
 
 // wrapText wraps s to at most maxChars per line on word boundaries.
