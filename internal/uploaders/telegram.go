@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime/multipart"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"time"
 )
@@ -144,6 +146,11 @@ func (t *TelegramUploader) Upload(ctx context.Context, req *UploadRequest) (*Upl
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
+		// The request URL contains the bot token; only log the underlying error.
+		var requestErr *neturl.Error
+		if errors.As(err, &requestErr) {
+			err = requestErr.Err
+		}
 		return &UploadResult{
 			Success:  false,
 			Platform: "telegram",

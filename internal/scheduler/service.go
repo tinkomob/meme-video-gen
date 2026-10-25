@@ -15,9 +15,9 @@ import (
 	"meme-video-gen/internal"
 	"meme-video-gen/internal/audio"
 	"meme-video-gen/internal/logging"
-	"meme-video-gen/internal/mixtape"
 	"meme-video-gen/internal/model"
 	"meme-video-gen/internal/s3"
+	"meme-video-gen/internal/snippet"
 	"meme-video-gen/internal/uploaders"
 )
 
@@ -34,12 +34,10 @@ type Service struct {
 	cfg internal.Config
 	s3c s3.Client
 
-	engagementMux    sync.Mutex
-	engagementConfig *MixtapeEngagementConfig
-
 	cfgMux           sync.Mutex
 	uploadersManager *uploaders.Manager
-	mixtapeGen       *mixtape.Generator
+	snippetGen       *snippet.Generator
+	snippetPlan      *snippetDayPlan
 
 	cacheMux     sync.RWMutex
 	cachedCounts map[string]cachedValue
@@ -68,38 +66,13 @@ func (s *Service) Run(ctx context.Context) error {
 func (s *Service) Impl() SongService { return s.impl }
 
 func (s *Service) GetConfig() internal.Config {
+	s.cfgMux.Lock()
+	defer s.cfgMux.Unlock()
 	return s.cfg
 }
 
 func (s *Service) GetS3Client() s3.Client {
 	return s.s3c
-}
-
-func (s *Service) GetEngagementConfig() *MixtapeEngagementConfig {
-	s.engagementMux.Lock()
-	defer s.engagementMux.Unlock()
-
-	src := s.engagementConfig
-	if src == nil {
-		src = DefaultEngagementConfig()
-	}
-
-	cp := *src
-	cp.BestOf.Artists = append([]string(nil), src.BestOf.Artists...)
-	return &cp
-}
-
-func (s *Service) SetEngagementConfig(cfg *MixtapeEngagementConfig) {
-	s.engagementMux.Lock()
-	defer s.engagementMux.Unlock()
-
-	if cfg == nil {
-		s.engagementConfig = nil
-		return
-	}
-	cp := *cfg
-	cp.BestOf.Artists = append([]string(nil), cfg.BestOf.Artists...)
-	s.engagementConfig = &cp
 }
 
 func (s *Service) SavePostsChatID(ctx context.Context, chatID int64) error {
@@ -123,7 +96,7 @@ func (s *Service) LoadPostsChatID(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if found && cfg.PostsChatID > 0 {
+	if found && cfg.PostsChatID != 0 {
 		s.cfg.PostsChatID = cfg.PostsChatID
 		s.log.Infof("loaded POSTS_CHAT_ID=%d from S3", cfg.PostsChatID)
 	}
@@ -199,7 +172,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 
 	audioIdx := audio.NewIndexer(cfg, s3c, log)
 	impl := &realImpl{audio: audioIdx}
-	mixtapeGen := mixtape.NewGenerator(cfg, s3c, audioIdx, log)
+	snippetGen := snippet.NewGenerator(cfg, s3c, audioIdx, log)
 
 	c := cron.New(cron.WithSeconds())
 	s := &Service{
@@ -210,7 +183,7 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		s3c:          s3c,
 		cachedCounts: make(map[string]cachedValue),
 		cacheTTL:     90 * time.Second,
-		mixtapeGen:   mixtapeGen,
+		snippetGen:   snippetGen,
 	}
 
 	// Hourly maintenance tasks (0 seconds, every hour)
@@ -232,17 +205,11 @@ func BuildService(ctx context.Context, log *logging.Logger) (*Service, error) {
 		}
 	}()
 
-	// Load engagement config synchronously so poster goroutines always
-	// see the correct LastPostedAt / Enabled state from the first check.
-	if ec, err := LoadEngagementConfig(ctx, s3c, &cfg); err != nil {
-		log.Errorf("failed to load engagement config: %v", err)
-	} else {
-		s.SetEngagementConfig(ec)
-		log.Infof("loaded engagement config: bestof_enabled=%v, teaser_enabled=%v", ec.BestOf.Enabled, ec.Teaser.Enabled)
-	}
-
 	// Initialize uploaders manager
 	s.InitializeUploadersManager()
+	if err := s.registerSnippetSchedule(ctx); err != nil {
+		return nil, err
+	}
 
 	return s, nil
 }
@@ -368,11 +335,6 @@ func (s *Service) SearchSongs(ctx context.Context, query string) ([]*model.Song,
 	return results, nil
 }
 
-// filterSongsForIdea filters songs to only include eenfinit, excluding dee bill
-func (s *Service) GetMixtapeGenerator() *mixtape.Generator {
-	return s.mixtapeGen
-}
-
 // SearchSongsForIdea searches for songs by title or author from eenfinit (excluding dee bill)
 func (s *Service) InitializeUploadersManager() {
 	s.uploadersManager = uploaders.NewManager()
@@ -455,7 +417,6 @@ func (s *Service) InitializeYouTubeUploaderFromS3(ctx context.Context) error {
 		s.log.Errorf("InitializeYouTubeUploaderFromS3: token.json is not valid JSON: %v", err)
 		return err
 	}
-	s.log.Infof("InitializeYouTubeUploaderFromS3: token.json fields: %v", tokenObj)
 
 	// Add YouTube uploader to manager
 	ytUploader := uploaders.NewYouTubeUploader(clientSecretsPath, tokenPath)

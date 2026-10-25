@@ -14,8 +14,7 @@ type Config struct {
 	S3AccessKey   string
 	S3SecretKey   string
 
-	SongsJSONKey            string
-	EngagementConfigJSONKey string
+	SongsJSONKey string
 
 	SongsPrefix   string
 	TokensPrefix  string
@@ -28,14 +27,13 @@ type Config struct {
 
 func LoadConfig() (Config, error) {
 	cfg := Config{
-		TelegramToken:           os.Getenv("TELEGRAM_BOT_TOKEN"),
-		S3Endpoint:              os.Getenv("S3_ENDPOINT"),
-		S3Region:                os.Getenv("S3_REGION"),
-		S3Bucket:                os.Getenv("S3_BUCKET"),
-		S3AccessKey:             firstNonEmpty(os.Getenv("S3_ACCESS_KEY"), os.Getenv("S3_ACCESS_KEY_ID")),
-		S3SecretKey:             firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("S3_SECRET_ACCESS_KEY_ID")),
-		SongsJSONKey:            "songs.json",
-		EngagementConfigJSONKey: "engagement_config.json",
+		TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
+		S3Endpoint:    os.Getenv("S3_ENDPOINT"),
+		S3Region:      os.Getenv("S3_REGION"),
+		S3Bucket:      os.Getenv("S3_BUCKET"),
+		S3AccessKey:   firstNonEmpty(os.Getenv("S3_ACCESS_KEY"), os.Getenv("S3_ACCESS_KEY_ID")),
+		S3SecretKey:   firstNonEmpty(os.Getenv("S3_SECRET_ACCESS_KEY"), os.Getenv("S3_SECRET_ACCESS_KEY_ID")),
+		SongsJSONKey:  "songs.json",
 
 		SongsPrefix:   "songs/",
 		TokensPrefix:  "tokens/",
@@ -53,8 +51,8 @@ func LoadConfig() (Config, error) {
 	}
 
 	// Load PostsChatID from env
-	if v := os.Getenv("POSTS_CHATID"); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n > 0 {
+	if v := firstNonEmpty(os.Getenv("POSTS_CHAT_ID"), os.Getenv("POSTS_CHATID")); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n != 0 {
 			cfg.PostsChatID = n
 		}
 

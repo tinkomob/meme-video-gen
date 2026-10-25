@@ -7,15 +7,12 @@ require (
 	github.com/aws/aws-sdk-go-v2/credentials v1.18.0
 	github.com/aws/aws-sdk-go-v2/feature/s3/manager v1.17.0
 	github.com/aws/aws-sdk-go-v2/service/s3 v1.56.0
-	github.com/dghubble/oauth1 v0.7.3
 	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
 	github.com/joho/godotenv v1.5.1
 	github.com/kkdai/youtube/v2 v2.10.5
 	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.39.0
 	github.com/tidwall/gjson v1.17.1
-	github.com/vitali-fedulov/imagehash2 v1.0.3
-	github.com/vitali-fedulov/images4 v1.3.1
 	golang.org/x/oauth2 v0.24.0
 	google.golang.org/api v0.210.0
 )
@@ -54,7 +51,6 @@ require (
 	github.com/googleapis/gax-go/v2 v2.14.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.0 // indirect
-	github.com/vitali-fedulov/hyper v1.0.5 // indirect
 	go.opencensus.io v0.24.0 // indirect
 	go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp v0.54.0 // indirect
 	go.opentelemetry.io/otel v1.29.0 // indirect

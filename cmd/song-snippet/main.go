@@ -13,8 +13,8 @@ import (
 	"meme-video-gen/internal"
 	"meme-video-gen/internal/audio"
 	"meme-video-gen/internal/logging"
-	"meme-video-gen/internal/mixtape"
 	"meme-video-gen/internal/s3"
+	"meme-video-gen/internal/snippet"
 )
 
 func main() {
@@ -59,7 +59,7 @@ func run(output, style, songID string, variant int) error {
 	if err != nil {
 		return err
 	}
-	gen := mixtape.NewGenerator(cfg, client, audio.NewIndexer(cfg, client, log), log)
+	gen := snippet.NewGenerator(cfg, client, audio.NewIndexer(cfg, client, log), log)
 	song, err := gen.GenerateSongSnippet(ctx, output, style, songID, variant)
 	if err != nil {
 		return err

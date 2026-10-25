@@ -1,4 +1,4 @@
-package mixtape
+package snippet
 
 var snippetStyles = []string{"silver", "violet", "amber", "aurora", "prism", "galaxy"}
 

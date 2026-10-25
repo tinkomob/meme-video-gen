@@ -1,6 +1,7 @@
 # Song video generator
 
-Telegram bot that creates and publishes Best Of music collections and the daily “Wanna know this song?” teaser. Generated videos and source audio are stored in S3.
+Telegram bot that generates 10-second music snippets with audio-reactive visuals
+and publishes them three times a day. Source audio and song covers are stored in S3.
 
 ## Build
 
@@ -13,12 +14,12 @@ go build -o meme-bot.exe ./cmd
 
 ## Bot commands
 
-- `/setmixtapes bestof` — view/configure Best Of artists and cadence.
-- `/setmixtapes teaser` — view/configure the daily teaser time.
 - `/song [query]` — find and download a track.
+- `/snippet [style] [variant]` — generate a 10-second preview and send it silently to the requesting chat; e.g. `/snippet galaxy 2`. With no arguments both are random.
 - `/songs` indexing runs hourly.
 
-Best Of and teaser schedules are stored in `engagement_config.json` in S3. Song audio and index are stored under `songs/` and `songs.json`.
+Song audio and index are stored under `songs/` and `songs.json`.
+The Telegram command menu is refreshed at startup with the supported commands.
 
 ## Song snippets
 
@@ -64,5 +65,56 @@ and cached in S3 at `covers/<video-id>.jpg`. HTTPS is preferred; public-image HT
 is a fallback for networks blocking YouTube TLS. Each request has a four-second
 timeout. If all sources fail, a waveform cover is generated from the song.
 Audio must be at least 10 seconds long. Existing output files are never overwritten.
-This command generates a preview only; it does not publish or enable a schedule.
+The CLI generates a local preview only. The Telegram `/snippet` command picks a
+random library song and returns a silent video with inline controls to the author:
+
+- Toggle Telegram and YouTube, then send to the selected platforms, or send to both.
+- Generate a new visual for the same song, choose a different random song, or pick
+  a specific song from the paginated library.
+- Delete the draft and preview message.
+
+Publication always uploads the saved video, without regenerating it. Draft videos
+and metadata are stored in S3 under `snippet-drafts/`, so controls survive restarts.
+Only the author can operate them in the original chat. Successful and in-flight
+destinations are recorded to prevent repeated clicks from duplicating uploads.
+If a process stops during an upload, check the destination; an uncertain in-flight
+upload is not automatically repeated. Delete drafts with their inline button when
+they are no longer needed. Deleting a draft does not remove already published posts.
+Telegram publication targets the configured posts channel; YouTube uses the
+connected account. No external publication happens until a send button is pressed.
 Docker includes the `song-snippet` binary and DejaVu fonts.
+
+### Automatic snippets
+
+The application generates **three random publication times each day in Asia/Tomsk
+(UTC+7)**. One falls in each eight-hour part of the day; adjacent planned times
+are **6–10 hours apart**, including the gap between yesterday's last and today's
+first publication. A fresh plan is generated after midnight.
+
+The daily plan and handled slots are saved in S3 as `snippet_schedule.json`.
+Restarting the bot preserves the chosen times and prevents replaying a claimed
+slot. Slots missed while offline are skipped; they are never published in a burst.
+If the bot was offline for multiple days, it creates a plan for the current day.
+The scheduler checks once per minute. A slot is saved as handled before generation;
+failed or partially uploaded slots are not automatically retried.
+
+The job runs independently of Telegram polling and skips overlap if a previous
+scheduled publication is still running. Generation is limited to 10 minutes;
+generation plus publication is limited to 15 minutes.
+
+Publication destinations are Telegram and YouTube. Telegram
+videos always have `disable_notification=true`; scheduled jobs send no additional
+status or error messages to Telegram. Errors and individual upload results are
+written to the application logs. The manual command and its replies are silent too.
+
+Telegram destination: `POSTS_CHAT_ID` (legacy `POSTS_CHATID` also works), with the
+saved `config.json` in S3 loaded at startup. Negative channel IDs are supported.
+Rebuild and restart the running application to activate the new command and job.
+
+## Repository hygiene
+
+Keep generated previews in `output/`, compiled binaries in `bin/` or the documented
+root executable, and Go caches outside the project. These artifacts, logs,
+downloaded media and local credentials are excluded by `.gitignore` and
+`.dockerignore`. The three reference images in `design/song-snippet/` and embedded
+assets in `internal/web/` are source materials and remain versioned.

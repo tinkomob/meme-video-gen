@@ -1,4 +1,4 @@
-package mixtape
+package snippet
 
 import (
 	"bytes"
@@ -45,7 +45,7 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 		return nil, err
 	}
 	defer os.Remove(audioPath)
-	cover, coverErr := g.downloadThumbnail(ctx, song.ID, dir, 0)
+	cover, coverErr := g.downloadThumbnail(ctx, song.ID, dir)
 	probe, err := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", audioPath).Output()
 	if err != nil {
 		return nil, fmt.Errorf("probe snippet audio: %w", err)

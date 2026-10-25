@@ -4,10 +4,12 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 )
 
 // Manager manages all uploaders
 type Manager struct {
+	mu        sync.RWMutex
 	uploaders map[string]Uploader
 }
 
@@ -31,15 +33,6 @@ func NewManager() *Manager {
 		m.uploaders["telegram"] = NewTelegramUploader(botToken, chatIDStr)
 	}
 
-	// Initialize X uploader
-	consumerKey := os.Getenv("X_CONSUMER_KEY")
-	consumerSecret := os.Getenv("X_CONSUMER_SECRET")
-	accessToken := os.Getenv("X_ACCESS_TOKEN")
-	accessTokenSecret := os.Getenv("X_ACCESS_TOKEN_SECRET")
-	if consumerKey != "" && consumerSecret != "" && accessToken != "" && accessTokenSecret != "" {
-		m.uploaders["x"] = NewXUploader(consumerKey, consumerSecret, accessToken, accessTokenSecret)
-	}
-
 	// Note: Instagram is removed to avoid duplicate uploads (Telegram already handles it)
 	// If you want Instagram uploads separately, implement proper Instagram API integration
 
@@ -48,6 +41,8 @@ func NewManager() *Manager {
 
 // GetUploader returns an uploader for the specified platform
 func (m *Manager) GetUploader(platform string) (Uploader, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	uploader, ok := m.uploaders[platform]
 	if !ok {
 		return nil, fmt.Errorf("uploader not found for platform: %s", platform)
@@ -73,7 +68,7 @@ func (m *Manager) Upload(ctx context.Context, platform string, req *UploadReques
 func (m *Manager) UploadToAll(ctx context.Context, req *UploadRequest) map[string]*UploadResult {
 	results := make(map[string]*UploadResult)
 
-	for platform := range m.uploaders {
+	for _, platform := range m.AvailablePlatforms() {
 		result, _ := m.Upload(ctx, platform, req)
 		results[platform] = result
 	}
@@ -95,6 +90,8 @@ func (m *Manager) UploadToSelected(ctx context.Context, platforms []string, req 
 
 // AvailablePlatforms returns list of available platforms
 func (m *Manager) AvailablePlatforms() []string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
 	platforms := make([]string, 0, len(m.uploaders))
 	for platform := range m.uploaders {
 		platforms = append(platforms, platform)
@@ -104,14 +101,18 @@ func (m *Manager) AvailablePlatforms() []string {
 
 // UpdateTelegramChatID updates the chat ID for Telegram uploader
 func (m *Manager) UpdateTelegramChatID(chatID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	if uploader, ok := m.uploaders["telegram"]; ok {
 		if tgUploader, ok := uploader.(*TelegramUploader); ok {
-			tgUploader.SetChatID(chatID)
+			m.uploaders["telegram"] = NewTelegramUploader(tgUploader.botToken, chatID)
 		}
 	}
 }
 
 // AddUploader adds or replaces an uploader for a platform
 func (m *Manager) AddUploader(platform string, uploader Uploader) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	m.uploaders[platform] = uploader
 }

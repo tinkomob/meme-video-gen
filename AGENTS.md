@@ -11,11 +11,13 @@ Go 1.24+, FFmpeg, a `.env` file, Telegram credentials, S3 credentials, and a Gem
 
 ## Architecture
 
-This Go Telegram bot generates and publishes two song based videos:
+This Go Telegram bot generates and publishes 10-second song snippets:
 
-- `internal/mixtape/generator.go` builds Best Of collections and the “Wanna know this song?” teaser.
+- `internal/snippet/` renders song snippets with 18 audio-reactive visual designs and YouTube covers.
 - `internal/audio/indexer.go` maintains the song library in S3.
-- `internal/scheduler/service.go` configures S3, song indexing, engagement settings, and uploaders.
-- `internal/bot/telegram.go` runs the Best Of and teaser publishers and their settings commands.
+- `internal/scheduler/service.go` configures S3, song indexing, and uploaders.
+- `internal/scheduler/snippet_schedule.go` saves three random daily times in S3, 6–10 hours apart in Asia/Tomsk.
+- `internal/scheduler/snippets.go` publishes snippets silently in Telegram.
+- `internal/bot/snippet.go` handles `/snippet [style] [variant]`; `snippet_controls.go` handles author-only publication, song selection and draft controls.
 
-S3 stores songs, generated Best Of/teaser videos, and engagement settings. Do not add local Go build caches to this repository.
+S3 stores songs, covers, manual snippet drafts, schedules and uploader credentials. Do not add local Go build caches to this repository.

@@ -1,4 +1,4 @@
-package mixtape
+package snippet
 
 import (
 	"context"
