@@ -19,7 +19,7 @@ import (
 
 func main() {
 	output := flag.String("output", "song-snippet.mp4", "destination MP4 (must not exist)")
-	style := flag.String("style", "random", "visual style: random, silver, violet, amber, aurora, prism, galaxy")
+	style := flag.String("style", "random", "visual style: random, silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain")
 	variant := flag.Int("variant", -1, "geometry/palette variant: 0, 1, 2; -1 chooses randomly")
 	songID := flag.String("song", "", "YouTube song ID from the S3 index (random if empty)")
 	flag.Parse()

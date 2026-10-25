@@ -20,7 +20,7 @@ func TestSnippetCommandArgs(t *testing.T) {
 		bad         bool
 	}{
 		{"", "random", -1, false}, {"galaxy 2", "galaxy", 2, false}, {"VIOLET 0", "violet", 0, false},
-		{"aurora", "aurora", -1, false}, {"random 1", "random", 1, false},
+		{"aurora", "aurora", -1, false}, {"tunnel 0", "tunnel", 0, false}, {"orbit 1", "orbit", 1, false}, {"wave 2", "wave", 2, false}, {"rain", "rain", -1, false}, {"random 1", "random", 1, false},
 		{"bad", "", 0, true}, {"galaxy 3", "", 0, true}, {"prism -1", "", 0, true}, {"silver x", "", 0, true}, {"amber 1 extra", "", 0, true},
 	} {
 		style, variant, err := snippetCommandArgs(tc.args)

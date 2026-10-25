@@ -3,6 +3,7 @@ package snippet
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"math"
 	"os/exec"
@@ -44,12 +45,18 @@ func TestVisualizersReactToAudio(t *testing.T) {
 	for b := range loud.bands {
 		loud.bands[b] = .8
 	}
+	seen := map[[32]byte]string{}
 	for _, style := range snippetStyles {
 		for variant := 0; variant < 3; variant++ {
 			t.Run(fmt.Sprintf("%s-%d", style, variant), func(t *testing.T) {
 				p := newSnippetPainter(style, 1, variant)
 				silent := append([]byte(nil), p.frame(100, audioFrame{})...)
 				playing := append([]byte(nil), p.frame(100, loud)...)
+				hash := sha256.Sum256(playing)
+				if previous, ok := seen[hash]; ok {
+					t.Fatalf("visual duplicates %s", previous)
+				}
+				seen[hash] = t.Name()
 				if bytes.Equal(silent, playing) {
 					t.Fatal("background does not react to audio")
 				}
@@ -61,6 +68,14 @@ func TestVisualizersReactToAudio(t *testing.T) {
 				}
 				if bytes.Equal(playing, p.frame(120, loud)) {
 					t.Fatal("visualizer must move over time")
+				}
+				for i := 1; i < len(p.timeline); i++ {
+					at := p.timeline[i].at
+					p.timeline[i] = p.timeline[0]
+					p.timeline[i].at = at
+				}
+				if bytes.Equal(playing, p.frame(100, loud)) {
+					t.Fatal("visualizer ignores the evolving composition")
 				}
 				var bass, treble audioFrame
 				bass.level, treble.level = 1, 1
@@ -97,6 +112,46 @@ func TestSnippetStyleSelection(t *testing.T) {
 	}{{"unknown", -1}, {"silver", -2}, {"galaxy", 3}} {
 		if _, err := g.GenerateSongSnippet(context.Background(), "unused.mp4", tc.style, "", tc.variant); err == nil {
 			t.Fatalf("accepted invalid style/variant: %+v", tc)
+		}
+	}
+}
+
+func TestVisualEvolution(t *testing.T) {
+	p := newSnippetPainter("orbit", 42, 1)
+	if p.evolution(-1) != p.timeline[0] || p.evolution(2) != p.timeline[4] {
+		t.Fatal("evolution must clamp to the snippet endpoints")
+	}
+	for i, key := range p.timeline {
+		if got := p.evolution(key.at); got != key {
+			// Interpolation can differ by a floating-point rounding error at the boundary.
+			if math.Abs(got.zoom-key.zoom)+math.Abs(got.unfold-key.unfold) > 1e-12 {
+				t.Fatalf("keyframe %d was not reached: %+v", i, got)
+			}
+		}
+		if i == 0 {
+			continue
+		}
+		if key.at <= p.timeline[i-1].at || math.Abs(key.unfold-p.timeline[i-1].unfold) < 1e-4 {
+			t.Fatal("keyframes must advance through distinct compositions")
+		}
+		before, after := p.evolution(key.at-1e-6), p.evolution(key.at+1e-6)
+		if math.Abs(before.zoom-after.zoom)+math.Abs(before.turn-after.turn)+math.Abs(before.x-after.x)+math.Abs(before.y-after.y)+math.Abs(before.unfold-after.unfold)+math.Abs(before.density-after.density) > 1e-5 {
+			t.Fatalf("evolution jumps at keyframe %d", i)
+		}
+	}
+	palette, phase, spread := p.palette, p.phase, p.spread
+	var audio audioFrame
+	audio.level = .6
+	for i := range audio.bands {
+		audio.bands[i] = .5
+	}
+	for _, frame := range []int{0, 300, 599, 1, 300} {
+		actual := append([]byte(nil), p.frame(frame, audio)...)
+		if !bytes.Equal(actual, newSnippetPainter("orbit", 42, 1).frame(frame, audio)) {
+			t.Fatalf("frame %d depends on previously rendered frames", frame)
+		}
+		if p.palette != palette || p.phase != phase || p.spread != spread {
+			t.Fatal("layer rendering changed the base scene or player accent")
 		}
 	}
 }

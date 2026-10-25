@@ -15,7 +15,7 @@ func (p *snippetPainter) aurora(t float64, a audioFrame) {
 			if p.variant == 2 {
 				base += x*.22 - 70
 			}
-			height := (40 + 100*energy + 25*a.level) * p.spread
+			height := (40 + 100*energy + 25*a.level) * p.spread * (.7 + .6*p.morph)
 			color := mixLight(p.palette[0], p.palette[1], .5+.5*math.Sin(x*.007+phase))
 			lastX, lastY := x, base
 			for step := 1; step <= 16; step++ {
@@ -55,7 +55,7 @@ func (p *snippetPainter) aurora(t float64, a audioFrame) {
 func (p *snippetPainter) prism(t float64, a audioFrame) {
 	sides := []int{6, 3, 4}[p.variant]
 	for layer := 0; layer < 9; layer++ {
-		rotation := p.phase + t*.07 + float64(layer)*.045
+		rotation := p.phase + t*.07 + float64(layer)*(.025+.065*p.morph)
 		if p.variant == 1 {
 			rotation += float64(layer/3) * math.Pi / 3
 		}
@@ -108,7 +108,7 @@ func (p *snippetPainter) galaxy(t float64, a audioFrame) {
 				f := float64(step) / 420
 				energy := bandAt(a, f)
 				r := 75 + f*430 + energy*12
-				angle := p.phase + float64(arm)*2*math.Pi/float64(arms) + f*4.6 + t*.035 + float64(filament)*.025 + energy*.015
+				angle := p.phase + float64(arm)*2*math.Pi/float64(arms) + f*(3.5+2.2*p.morph) + t*.035 + float64(filament)*.025 + energy*.015
 				x, y := 270+r*math.Cos(angle)*p.spread, 470+r*1.25*math.Sin(angle)
 				color := mixLight(p.palette[0], p.palette[1], f)
 				if step > 0 {
@@ -126,7 +126,7 @@ func (p *snippetPainter) galaxy(t float64, a audioFrame) {
 		}
 		f := s.u
 		r := 75 + f*430 + (s.v-.5)*65 + energy*12
-		angle := p.phase + float64(i%arms)*2*math.Pi/float64(arms) + f*4.6 + t*(.025+s.depth*.02) + (s.v-.5)*.22 + energy*.015
+		angle := p.phase + float64(i%arms)*2*math.Pi/float64(arms) + f*(3.5+2.2*p.morph) + t*(.025+s.depth*.02) + (s.v-.5)*.22 + energy*.015
 		x, y := 270+r*math.Cos(angle)*p.spread, 470+r*1.25*math.Sin(angle)
 		color := mixLight(p.palette[0], p.palette[1], f)
 		brightness := (.15 + s.depth*1.5) * (.4 + .6*energy)

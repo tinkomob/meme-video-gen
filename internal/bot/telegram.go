@@ -234,7 +234,7 @@ func (b *TelegramBot) cmdHelp(chatID int64) {
               /snippet — случайный стиль и вариант
               /snippet galaxy 2 — выбрать оформление
               Под видео: площадки публикации, новый визуал, смена/выбор песни и удаление черновика.
-              Стили: silver, violet, amber, aurora, prism, galaxy
+              Стили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain
               Варианты: 0, 1, 2. Плановые публикации: 2 случайных времени в день (Томск), интервалы 10–14 часов, без уведомлений.
 /songs — загрузить новые треки в S3 (songs/)
 /song [query] — скачать трек в формате MP3 или MP4A

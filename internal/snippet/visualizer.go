@@ -105,6 +105,9 @@ type snippetPainter struct {
 	shade              []float32
 	rgb                []byte
 	particles          []visualParticle
+	timeline           [5]visualKeyframe
+	view               visualView
+	morph              float64
 }
 
 func newSnippetPainter(style string, seed int64, variant int) *snippetPainter {
@@ -121,6 +124,8 @@ func newSnippetPainter(style string, seed int64, variant int) *snippetPainter {
 	for i := range p.particles {
 		p.particles[i] = visualParticle{r.Float64(), r.Float64(), r.Float64(), r.Float64() * 2 * math.Pi}
 	}
+	p.initEvolution(r)
+	p.view = visualView{xx: 1, yy: 1, light: 1, focus: 1}
 	for y := 0; y < visualHeight; y++ {
 		for x := 0; x < visualWidth; x++ {
 			d := math.Hypot((float64(x)-270)/430, (float64(y)-480)/700)
@@ -143,6 +148,14 @@ func mixLight(a, b lightColor, t float64) lightColor {
 // Bilinear light points keep subpixel motion smooth; a separate small light
 // buffer gives particles and filaments a broad bloom without blurring their cores.
 func (p *snippetPainter) point(x, y float64, c lightColor, intensity float64) {
+	x, y = p.view.project(x, y)
+	p.lightPoint(x, y, c, intensity*p.view.light)
+}
+
+func (p *snippetPainter) lightPoint(x, y float64, c lightColor, intensity float64) {
+	if x < -16 || y < -16 || x >= visualWidth+16 || y >= visualHeight+16 {
+		return
+	}
 	ix, iy := int(math.Floor(x)), int(math.Floor(y))
 	fx, fy := float32(x-float64(ix)), float32(y-float64(iy))
 	for dy := 0; dy <= 1; dy++ {
@@ -158,7 +171,7 @@ func (p *snippetPainter) point(x, y float64, c lightColor, intensity float64) {
 			if dy == 1 {
 				wy = fy
 			}
-			a := wx * wy * float32(intensity)
+			a := wx * wy * float32(intensity*p.view.focus)
 			i := (yy*visualWidth + xx) * 3
 			p.pixels[i] += c.r * a
 			p.pixels[i+1] += c.g * a
@@ -182,10 +195,16 @@ func (p *snippetPainter) point(x, y float64, c lightColor, intensity float64) {
 }
 
 func (p *snippetPainter) line(x0, y0, x1, y1 float64, c lightColor, intensity float64) {
+	x0, y0 = p.view.project(x0, y0)
+	x1, y1 = p.view.project(x1, y1)
+	if math.Max(x0, x1) < -16 || math.Min(x0, x1) >= visualWidth+16 || math.Max(y0, y1) < -16 || math.Min(y0, y1) >= visualHeight+16 {
+		return
+	}
+	intensity *= p.view.light
 	steps := max(1, int(math.Ceil(math.Hypot(x1-x0, y1-y0))))
 	for i := 0; i <= steps; i++ {
 		t := float64(i) / float64(steps)
-		p.point(x0+(x1-x0)*t, y0+(y1-y0)*t, c, intensity)
+		p.lightPoint(x0+(x1-x0)*t, y0+(y1-y0)*t, c, intensity)
 	}
 }
 
@@ -200,7 +219,23 @@ func bandAt(a audioFrame, position float64) float64 {
 func (p *snippetPainter) frame(frame int, audio audioFrame) []byte {
 	copy(p.pixels, p.base)
 	clear(p.glow)
-	t := float64(frame) / visualFPS * p.speed
+	seconds := float64(frame) / visualFPS
+	pose := p.evolution(float64(frame) / (DurationSeconds*visualFPS - 1))
+	p.atmosphere(seconds, pose, audio)
+	p.depthLayers(seconds, pose, audio)
+	p.depthParticles(seconds, pose, audio)
+	for y := 0; y < visualHeight; y++ {
+		for x := 0; x < visualWidth; x++ {
+			i, gi := (y*visualWidth+x)*3, ((y/4)*(visualWidth/4)+x/4)*3
+			for c := 0; c < 3; c++ {
+				p.rgb[i+c] = byte(math.Min(255, float64((p.pixels[i+c]+p.glow[gi+c])*p.shade[i/3])))
+			}
+		}
+	}
+	return p.rgb
+}
+
+func (p *snippetPainter) scene(t float64, audio audioFrame) {
 	switch p.style {
 	case "silver":
 		p.silver(t, audio)
@@ -214,16 +249,15 @@ func (p *snippetPainter) frame(frame int, audio audioFrame) []byte {
 		p.prism(t, audio)
 	case "galaxy":
 		p.galaxy(t, audio)
+	case "tunnel":
+		p.tunnel(t, audio)
+	case "orbit":
+		p.orbit(t, audio)
+	case "wave":
+		p.wave(t, audio)
+	case "rain":
+		p.rain(t, audio)
 	}
-	for y := 0; y < visualHeight; y++ {
-		for x := 0; x < visualWidth; x++ {
-			i, gi := (y*visualWidth+x)*3, ((y/4)*(visualWidth/4)+x/4)*3
-			for c := 0; c < 3; c++ {
-				p.rgb[i+c] = byte(math.Min(255, float64((p.pixels[i+c]+p.glow[gi+c])*p.shade[i/3])))
-			}
-		}
-	}
-	return p.rgb
 }
 
 func (p *snippetPainter) silver(t float64, a audioFrame) {
@@ -232,6 +266,7 @@ func (p *snippetPainter) silver(t float64, a audioFrame) {
 		x := float64(i)*5 - 4
 		wave := 660 + 55*math.Sin(x*.012+t*.35+p.phase)
 		height := 35 + 210*bandAt(a, float64(i)/110) + 60*a.level + 140*math.Pow(math.Abs(x-270)/270, 1.4)
+		height *= .75 + .45*p.morph
 		if p.variant == 1 {
 			wave = 720 + 35*math.Cos(x*.018-t*.3+p.phase)
 			height *= p.spread * (1 + .22*math.Sin(x*.023+t*.4))
@@ -286,6 +321,7 @@ func (p *snippetPainter) violet(t float64, a audioFrame) {
 			angle := float64(i) / 720 * 2 * math.Pi
 			energy := bandAt(a, float64(i)/720)
 			r := 1 + .035*math.Sin(angle*7+t*.8+p.phase+float64(layer)*.4) + .02*math.Sin(angle*17-t) + .012*math.Sin(angle*37+t*1.1+float64(layer)*.85) + .006*math.Cos(angle*61-t*.9+float64(layer)) + energy*.09
+			r += .055 * p.morph * math.Sin(angle*4+p.phase+float64(layer)*.15)
 			if p.variant == 1 {
 				r += .09 * math.Sin(angle*3+t*.3+p.phase+float64(layer/6)*math.Pi)
 			}
@@ -330,7 +366,7 @@ func (p *snippetPainter) amber(t float64, a audioFrame) {
 			for i := 0; i <= 450; i++ {
 				x := -40 + float64(i)*620/450
 				energy := bandAt(a, float64(i)/450)
-				spread := float64(strand-7) * (2 + 3*math.Sin(x*.008+t*.3+phase))
+				spread := float64(strand-7) * (2 + 3*math.Sin(x*.008+t*.3+phase)) * (.65 + .7*p.morph)
 				y := 100 + float64(stream)*600 + x*.38 + 45*math.Sin(x*.011+t*.4+phase) + spread + (14+energy*18)*math.Sin(x*.018-t*.5+float64(strand)*.27) + 8*math.Sin(x*.033+t*.3+float64(strand)*.45)
 				if p.variant == 1 {
 					y = 190 + float64(stream)*560 + 95*math.Sin(x*.01+t*.4+phase) + spread*1.7 + (10+25*energy)*math.Sin(x*.018-t*.4+float64(strand)*.32)

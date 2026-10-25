@@ -30,8 +30,8 @@ go run ./cmd/song-snippet -output song-snippet.mp4
 ```
 
 Run from the project root with `.env` configured and FFmpeg/FFprobe on PATH.
-Each render randomly chooses an audio excerpt, one of six families, and one of
-three geometry/palette variants: **18 designs** in total. The first three families
+Each render randomly chooses an audio excerpt, one of ten families, and one of
+three geometry/palette variants: **30 designs** in total. The first three families
 extend the references in `design/song-snippet/`; the others add new scenes.
 
 | Family | Variant 0 | Variant 1 | Variant 2 |
@@ -42,6 +42,10 @@ extend the references in `design/song-snippet/`; the others add new scenes.
 | `aurora` | Borealis: green/cyan curtains | Magenta Curtain | Glacial Lights: icy diagonal curtains |
 | `prism` | Neon Crystal: hexagonal facets | Rose Triangle: rotating triangular frames | Ice Diamond: diamond facets |
 | `galaxy` | Spiral Nebula: two violet arms | Golden Dust: three warm arms | Comet Field: four icy arms and trails |
+| `tunnel` | Neon Dive: circular light tunnel | Sunset Portal: rounded square tunnel | Emerald Vortex: five-lobed tunnel |
+| `orbit` | Celestial Globe: intersecting elliptical rings | Solar Weave: wavy gold orbits | Jade Shell: rippling green sphere |
+| `wave` | Ocean Grid: perspective wave field | Rose Terrain: crossed wave crests | Mint Tide: standing waves |
+| `rain` | Meteor Shower: blue falling trails | Golden Drizzle: diagonal sparks | Emerald Rise: rising curved trails |
 
 ```powershell
 go run ./cmd/song-snippet -style silver -variant 2 -output champagne-rain.mp4
@@ -49,11 +53,16 @@ go run ./cmd/song-snippet -style aurora -song 5XwnM_G3XQ0 -output aurora.mp4
 go run ./cmd/song-snippet -style galaxy -variant 2 -output comet-field.mp4
 ```
 
-The default `-style random` selects from all six families; `-variant -1` (the
+The default `-style random` selects from all ten families; `-variant -1` (the
 default) randomly chooses a variant. Use `-variant 0`, `1`, or `2` to select its
 geometry and coordinated palette. `-song` optionally selects a YouTube ID already
 present in the S3 song index. Every render also varies speed, phase, proportions
 and particles using a new seed. The player accent follows the chosen palette.
+All families render three geometry planes with separate scale, parallax, motion
+and focus, plus atmospheric light and foreground particles. Five seeded keyframes
+smoothly evolve camera position, geometry, density and palette across the full
+20-second snippet. The evolution is reproducible for a seed and stays synchronized
+to snippet progress independently of the randomized animation speed.
 Backgrounds are generated procedurally from 64 logarithmic
 frequency bands and the level of the actual excerpt, not from static mockups.
 Rendering uses Go's standard library and FFmpeg; no extra application dependencies.

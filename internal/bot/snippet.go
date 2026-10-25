@@ -25,9 +25,9 @@ func snippetCommandArgs(args string) (string, int, error) {
 		style = strings.ToLower(parts[0])
 	}
 	switch style {
-	case "random", "silver", "violet", "amber", "aurora", "prism", "galaxy":
+	case "random", "silver", "violet", "amber", "aurora", "prism", "galaxy", "tunnel", "orbit", "wave", "rain":
 	default:
-		return "", 0, fmt.Errorf("стили: random, silver, violet, amber, aurora, prism, galaxy")
+		return "", 0, fmt.Errorf("стили: random, silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain")
 	}
 	if len(parts) == 2 {
 		var err error
