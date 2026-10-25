@@ -4,19 +4,26 @@ pub const WIDTH: usize = 540;
 pub const HEIGHT: usize = 960;
 pub const FPS: usize = 30;
 pub const BANDS: usize = 64;
-pub const STYLES: [&str; 10] = [
+pub const STYLES: [&str; 15] = [
     "silver", "violet", "amber", "aurora", "prism", "galaxy", "tunnel", "orbit", "wave", "rain",
+    "chrome", "collage", "silk", "analog", "cover",
 ];
 #[derive(Clone, Copy, Debug)]
 pub struct AudioFrame {
     pub bands: [f64; BANDS],
     pub level: f64,
+    pub bass: f64,
+    pub treble: f64,
+    pub beat: f64,
 }
 impl Default for AudioFrame {
     fn default() -> Self {
         Self {
             bands: [0.0; BANDS],
             level: 0.0,
+            bass: 0.0,
+            treble: 0.0,
+            beat: 0.0,
         }
     }
 }
@@ -59,6 +66,12 @@ pub fn analyze(samples: &[f64]) -> Vec<AudioFrame> {
             let weight = if v < previous.bands[b] { 0.2 } else { 0.65 };
             *value = previous.bands[b] + weight * (v - previous.bands[b]);
         }
+        frame.bass = frame.bands[..16].iter().sum::<f64>() / 16.0;
+        frame.treble = frame.bands[40..].iter().sum::<f64>() / 24.0;
+        let onset = ((frame.bass - previous.bass) * 5.0
+            + (frame.level - previous.level).max(0.0) * 1.5)
+            .clamp(0.0, 1.0);
+        frame.beat = onset.max(previous.beat * 0.78);
         previous = *frame;
     }
     frames
@@ -130,7 +143,10 @@ pub struct Painter {
     shade: Vec<f32>,
     rgb: Vec<u8>,
     particles: Vec<Particle>,
-    timeline: [Pose; 5],
+    timeline: Vec<Pose>,
+    layout: usize,
+    cover: Option<image::RgbImage>,
+    cover_soft: Option<image::RgbImage>,
     view: View,
     morph: f64,
 }
@@ -169,6 +185,8 @@ fn r#mod(v: f64, d: f64) -> f64 {
 #[path = "visualizer_palettes.rs"]
 mod palettes;
 use palettes::palette;
+#[path = "visualizer_art.rs"]
+mod art;
 #[path = "visualizer_scenes.rs"]
 mod scenes;
 impl Painter {
@@ -199,25 +217,31 @@ impl Painter {
                     phase: r.random::<f64>() * 2.0 * PI,
                 })
                 .collect(),
-            timeline: [Pose::default(); 5],
+            timeline: Vec::new(),
+            layout: r.random_range(0..4),
+            cover: None,
+            cover_soft: None,
             view: View::default(),
             morph: 0.0,
         };
-        for (i, opening) in [0.2, 0.65, 0.9, 0.4, 0.75].into_iter().enumerate() {
-            let mut at = i as f64 / 4.0;
-            if i > 0 && i < 4 {
-                at += (r.random::<f64>() - 0.5) * 0.1;
-            }
-            p.timeline[i] = Pose {
+        let count = r.random_range(4..9);
+        let mut times = vec![0.0, 1.0];
+        // Stratified times keep transitions smooth without fixing their number or rhythm.
+        for i in 1..count - 1 {
+            times.push((i as f64 + r.random_range(-0.4..0.4)) / (count - 1) as f64);
+        }
+        times.sort_by(f64::total_cmp);
+        for at in times {
+            p.timeline.push(Pose {
                 at,
-                zoom: 0.86 + r.random::<f64>() * 0.28,
-                turn: (r.random::<f64>() - 0.5) * 0.28,
-                x: (r.random::<f64>() - 0.5) * 65.0,
-                y: (r.random::<f64>() - 0.5) * 80.0,
-                unfold: opening + (r.random::<f64>() - 0.5) * 0.18,
-                color: r.random::<f64>() * 0.6,
-                density: 0.3 + opening * 0.55 + r.random::<f64>() * 0.15,
-            };
+                zoom: r.random_range(0.78..1.22),
+                turn: r.random_range(-0.22..0.22),
+                x: r.random_range(-45.0..45.0),
+                y: r.random_range(-65.0..65.0),
+                unfold: r.random_range(0.05..1.0),
+                color: r.random_range(0.0..0.8),
+                density: r.random_range(0.2..1.0),
+            });
         }
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
@@ -225,8 +249,9 @@ impl Painter {
                 let v = (1.0 - d).max(0.0);
                 let c = mix_light(Color(2.0, 3.0, 5.0), p.palette[0], 0.012 + 0.025 * v);
                 let i = (y * WIDTH + x) * 3;
-                let (dx, dy) = ((x as f64 - 270.0) / 205.0, (y as f64 - 620.0) / 95.0);
-                p.shade[i / 3] = (1.0 - 0.87 * (-dx.powi(4) - dy.powi(4)).exp()) as f32;
+                let text_y = [620.0, 665.0, 715.0, 210.0][p.layout];
+                let (dx, dy) = ((x as f64 - 270.0) / 240.0, (y as f64 - text_y) / 85.0);
+                p.shade[i / 3] = (1.0 - 0.55 * (-dx.powi(4) - dy.powi(4)).exp()) as f32;
                 p.base[i] = c.0 as f32;
                 p.base[i + 1] = c.1 as f32;
                 p.base[i + 2] = c.2 as f32;
@@ -304,7 +329,7 @@ impl Painter {
     }
     fn evolution(&self, progress: f64) -> Pose {
         let progress = progress.clamp(0.0, 1.0);
-        for i in 1..5 {
+        for i in 1..self.timeline.len() {
             let b = self.timeline[i];
             if progress > b.at {
                 continue;
@@ -324,7 +349,7 @@ impl Painter {
                 density: lerp(a.density, b.density),
             };
         }
-        self.timeline[4]
+        *self.timeline.last().unwrap()
     }
     fn scene(&mut self, t: f64, a: AudioFrame) {
         match self.style.as_str() {
@@ -338,6 +363,9 @@ impl Painter {
             "orbit" => self.orbit(t, a),
             "wave" => self.wave(t, a),
             "rain" => self.rain(t, a),
+            "chrome" => self.chrome(t, a),
+            "silk" => self.silk(t, a),
+            "analog" => self.analog(t, a),
             _ => unreachable!(),
         }
     }
@@ -346,7 +374,9 @@ impl Painter {
         for layer in 0..3 {
             let depth = 0.35 + layer as f64 * 0.325;
             let angle = pose.turn * depth + (1.0 - depth) * 0.2 * (phase + seconds * 0.12).sin();
-            let scale = (0.68 + layer as f64 * 0.2) * pose.zoom * (1.0 + a.level * 0.015 * depth);
+            let scale = (0.68 + layer as f64 * 0.2)
+                * pose.zoom
+                * (1.0 + a.bass * 0.045 * depth + a.beat * 0.035);
             let (sin, cos) = angle.sin_cos();
             self.view = View {
                 xx: scale * cos,
@@ -461,16 +491,32 @@ impl Painter {
         self.glow.fill(0.0);
         let seconds = f as f64 / FPS as f64;
         let pose = self.evolution(f as f64 / 599.0);
-        self.atmosphere(seconds, pose, a);
-        self.depth_layers(seconds, pose, a);
-        self.depth_particles(seconds, pose, a);
+        if matches!(self.style.as_str(), "collage" | "cover") {
+            self.cover_scene(seconds, pose, a);
+        } else {
+            self.atmosphere(seconds, pose, a);
+            if self.style == "chrome" {
+                self.morph = pose.unfold;
+                self.chrome(seconds * self.speed, a);
+            } else {
+                self.depth_layers(seconds, pose, a);
+            }
+            if self.style != "analog" {
+                self.depth_particles(seconds, pose, a);
+                self.accents(seconds, a);
+            }
+        }
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let i = (y * WIDTH + x) * 3;
                 let gi = ((y / 4) * (WIDTH / 4) + x / 4) * 3;
                 for c in 0..3 {
-                    self.rgb[i + c] = ((self.pixels[i + c] + self.glow[gi + c]) * self.shade[i / 3])
-                        .clamp(0.0, 255.0) as u8;
+                    let mut value = (self.pixels[i + c] + self.glow[gi + c]) * self.shade[i / 3];
+                    if self.style == "analog" {
+                        let noise = ((x * 17 + y * 31 + f * 13) % 11) as f32 * 0.22;
+                        value = value * (if y % 3 == 0 { 0.72 } else { 1.0 }) + noise;
+                    }
+                    self.rgb[i + c] = value.clamp(0.0, 255.0) as u8;
                 }
             }
         }
@@ -504,15 +550,112 @@ mod tests {
         for style in STYLES {
             for v in 0..3 {
                 let mut p = Painter::new(style, 42, v);
+                let cover = image::RgbImage::from_fn(256, 256, |x, y| {
+                    image::Rgb([x as u8, y as u8, (x / 2 + y / 2) as u8])
+                });
+                p.set_cover(&image::DynamicImage::ImageRgb8(cover));
                 let a = AudioFrame {
                     level: 0.5,
                     bands: [0.3; 64],
+                    ..AudioFrame::default()
                 };
                 let first = p.frame(0, a).to_vec();
                 assert_eq!(first.len(), WIDTH * HEIGHT * 3);
-                assert_ne!(first, p.frame(300, a));
-                assert_eq!(first, p.frame(0, a));
+                assert!(first != p.frame(300, a), "static scene: {style}/{v}");
+                assert!(
+                    first == p.frame(0, a),
+                    "non-deterministic scene: {style}/{v}"
+                );
             }
+        }
+    }
+
+    #[test]
+    fn cover_background_has_no_card_edges_and_collage_leaves_metadata_clear() {
+        let cover = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(256, 256, |x, y| {
+            image::Rgb([x as u8, y as u8, 180])
+        }));
+        for style in ["cover", "collage"] {
+            let mut previous = Vec::new();
+            for variant in 0..3 {
+                let mut p = Painter::new(style, 42, variant);
+                p.set_cover(&cover);
+                let frame = p.frame(200, AudioFrame::default());
+                assert!(frame != previous, "identical variants: {style}/{variant}");
+                previous = frame.to_vec();
+                let rows = if style == "cover" {
+                    0..HEIGHT
+                } else {
+                    160..780
+                };
+                for y in rows {
+                    for x in 1..WIDTH {
+                        let i = (y * WIDTH + x) * 3;
+                        assert!(
+                            (0..3).all(|c| frame[i + c].abs_diff(frame[i - 3 + c]) <= 4),
+                            "hard background edge: {style}/{variant} at {x},{y}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn random_motion_and_palettes_are_reproducible_and_diverse() {
+        let red = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            32,
+            32,
+            image::Rgb([220, 30, 40]),
+        ));
+        let blue = image::DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+            32,
+            32,
+            image::Rgb([20, 40, 230]),
+        ));
+        let mut layouts = std::collections::HashSet::new();
+        let mut lengths = std::collections::HashSet::new();
+        let (mut independent, mut influenced) = (false, false);
+        for seed in 0..24 {
+            let mut p = Painter::new("chrome", seed, 0);
+            let mut other = Painter::new("chrome", seed, 0);
+            p.set_cover(&red);
+            other.set_cover(&red);
+            assert_eq!(p.accent(), other.accent());
+            let mut other = Painter::new("chrome", seed, 0);
+            other.set_cover(&blue);
+            independent |= p.accent() == other.accent();
+            influenced |= p.accent() != other.accent();
+            layouts.insert(p.layout());
+            lengths.insert(p.timeline.len());
+            assert!(p.timeline.windows(2).all(|w| w[1].at > w[0].at));
+            assert_eq!(p.timeline.first().unwrap().at, 0.0);
+            assert_eq!(p.timeline.last().unwrap().at, 1.0);
+        }
+        assert_eq!(layouts.len(), 4);
+        assert!(lengths.len() > 1 && independent && influenced);
+    }
+
+    #[test]
+    fn bass_and_treble_are_separate_and_beats_decay() {
+        for frequency in [80.0, 5000.0] {
+            let samples: Vec<_> = (0..320000)
+                .map(|i| {
+                    if (16000..32000).contains(&i) {
+                        (2.0 * PI * frequency * i as f64 / 16000.0).sin()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let frames = analyze(&samples);
+            if frequency < 100.0 {
+                assert!(frames[45].bass > frames[45].treble);
+            } else {
+                assert!(frames[45].treble > frames[45].bass);
+            }
+            assert!(frames[29..33].iter().any(|f| f.beat > 0.1));
+            assert!(frames[90].beat < 0.01);
         }
     }
 }

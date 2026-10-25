@@ -1,6 +1,6 @@
 # Song video generator
 
-Rust Telegram bot that generates 20-second music snippets with 30 audio-reactive
+Rust Telegram bot that generates 20-second music snippets with 45 audio-reactive
 visual designs, publishes twice a day, and streams a Friends episode player.
 
 ## Requirements and build
@@ -59,11 +59,20 @@ The output must not already exist. Both the song-snippet CLI and the service use
 the same renderer. Audio must be at least 20 seconds long. Generation is limited
 to one renderer at a time; temporary files are cleaned up after use.
 
-Ten families each have three geometry/palette variants (0, 1, 2): `silver`,
-`violet`, `amber`, `aurora`, `prism`, `galaxy`, `tunnel`, `orbit`, `wave`, `rain`.
+Fifteen families each have three geometry/palette variants (0, 1, 2): `silver`,
+`violet`, `amber`, `aurora`, `prism`, `galaxy`, `tunnel`, `orbit`, `wave`, `rain`,
+`chrome`, `collage`, `silk`, `analog`, `cover`.
 `random` selects a family and variant. Motion uses 64 logarithmic audio bands,
-three depth planes, particles, bloom, and five evolving camera keyframes.
+three depth planes, particles, bloom, and irregular, independently randomized
+camera keyframes.
 Validated YouTube JPEG covers are cached in S3; a waveform is the fallback.
+
+Visuals independently randomize four cover/text compositions and 4-8 motion states
+with irregular timing. Bass, treble and transient accents drive different movements;
+there is no fixed build-up or climax. Cover-derived colours may be blended with
+other palettes or skipped entirely. New scenes include reflective liquid chrome,
+restrained paper fragments, flowing light ribbons, phosphor traces and softly
+animated, blurred cover backdrops.
 
 ## Stored state and publishing
 

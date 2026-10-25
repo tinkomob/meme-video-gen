@@ -1,5 +1,13 @@
 use super::Color;
 pub(super) fn palette(style: &str, variant: usize) -> [Color; 3] {
+    let style = match style {
+        "chrome" => "silver",
+        "collage" => "amber",
+        "silk" => "aurora",
+        "analog" => "rain",
+        "cover" => "prism",
+        other => other,
+    };
     match style {
         "tunnel" => [
             [
