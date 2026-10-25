@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 
+	"meme-video-gen/internal/audio"
 	"meme-video-gen/internal/model"
 )
 
@@ -39,6 +40,7 @@ func (g *Generator) GenerateSongSnippet(ctx context.Context, output, style, song
 	if err != nil {
 		return nil, err
 	}
+	song.Author = audio.CleanAuthorName(song.Author)
 	dir, err := os.MkdirTemp("", "song-snippet-")
 	if err != nil {
 		return nil, err

@@ -191,7 +191,7 @@ func (idx *Indexer) downloadSongAttempt(ctx context.Context, entry *youtube.Play
 	songsIdx.Items = append(songsIdx.Items, model.Song{
 		ID:         entry.ID,
 		Title:      entry.Title,
-		Author:     entry.Author,
+		Author:     CleanAuthorName(entry.Author),
 		SourceURL:  "https://www.youtube.com/watch?v=" + entry.ID,
 		AudioKey:   key,
 		DurationS:  float64(entry.Duration.Seconds()),
@@ -243,9 +243,9 @@ func isRetryableError(err error) bool {
 		strings.Contains(errStr, "EOF")
 }
 
-func cleanAuthorName(author string) string {
+func CleanAuthorName(author string) string {
 	// Remove " - Topic" suffix that YouTube adds to official audio channels
-	return strings.TrimSuffix(author, " - Topic")
+	return strings.TrimSpace(strings.TrimSuffix(strings.TrimSpace(author), " - Topic"))
 }
 
 func (idx *Indexer) songExists(songsIdx model.SongsIndex, id string) bool {
