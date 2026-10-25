@@ -9,9 +9,8 @@ token*.json
 instagram_session.json
 .claude/*.local.json
 
-# Go build outputs, coverage and local caches
+# Build outputs and local caches
 *.exe
-*.test
 *.out
 *.prof
 /meme-bot
@@ -20,11 +19,6 @@ instagram_session.json
 /build/
 /dist/
 /.cache/
-/.gocache/
-/.gomodcache/
-/gocache/
-/gomodcache/
-/go-build/
 /coverage/
 
 # Generated previews, downloads and runtime state
@@ -50,15 +44,9 @@ errors.log*
 *.opus
 song-snippet-*.jpg
 thumbnail*.jpg
-/video_history.json
-/download_history.json
 /snippet_schedule.json
 /songs.json
 /config.json
-/pins/
-/archived_audio/
-pins_*/
-audio_*/
 
 # Tooling and operating system files
 node_modules/
@@ -73,3 +61,7 @@ __pycache__/
 .DS_Store
 Thumbs.db
 Desktop.ini
+
+# Rust build outputs
+/target/
+/generate-token
