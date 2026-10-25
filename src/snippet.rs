@@ -237,44 +237,15 @@ fn font(serif: bool) -> String {
         .map(|f| format!("fontfile='{}':", escape_path(Path::new(f))))
         .unwrap_or_default()
 }
-fn filter(
-    accent: &str,
-    dir: &Path,
-    start: f64,
-    duration: f64,
-    title_size: usize,
-    layout: usize,
-) -> String {
+fn filter(accent: &str, dir: &Path, start: f64, duration: f64, title_size: usize) -> String {
     let sans = font(false);
     let serif = font(true);
     let title = escape_path(&dir.join("title.txt"));
     let artist = escape_path(&dir.join("artist.txt"));
     let elapsed = escape_path(&dir.join("elapsed.txt"));
     let total = escape_path(&dir.join("duration.txt"));
-    let (cover_size, cover_y, title_y, artist_y, progress_y, headline) = match layout {
-        1 => (760, 350, 1220, 1300, 1420, 1.0),
-        2 => (260, 1020, 1340, 1420, 1530, 1.0),
-        3 => (360, 730, 340, 470, 1360, 1.65),
-        _ => (520, 560, 1130, 1210, 1285, 1.0),
-    };
-    let title_chars = std::fs::read_to_string(dir.join("title.txt"))
-        .unwrap_or_default()
-        .chars()
-        .count()
-        .max(1);
-    let title_font = if layout == 3 { &sans } else { &serif };
-    let title_size =
-        ((title_size as f64 * headline).min(78.0) as usize).min((1600 / title_chars).max(1));
-    let artist_chars = std::fs::read_to_string(dir.join("artist.txt"))
-        .unwrap_or_default()
-        .chars()
-        .count()
-        .max(1);
-    let artist_size = (1400 / artist_chars).clamp(16, 28);
-    let time_y = progress_y + 35;
-    let dot_y = progress_y - 6;
     format!(
-        "[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,{FADE}[audio];[2:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=800:800:force_original_aspect_ratio=increase,crop=800:800,zoompan=z='1.04+0.025*sin(on/95)':x='iw/2-iw/zoom/2+8*sin(on/130)':y='ih/2-ih/zoom/2+8*cos(on/145)':d=600:s={cover_size}x{cover_size}:fps=30,setsar=1,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(max(abs(X-W/2)-(W/2-14),0),max(abs(Y-H/2)-(H/2-14),0)),14),255,0)'[cover];[bg][cover]overlay=x=(W-w)/2:y='{cover_y}+4*sin(t*0.8)':eof_action=repeat,drawtext={title_font}textfile='{title}':expansion=none:fontsize={title_size}:fontcolor=white:shadowcolor=black@0.7:shadowx=1:shadowy=2:box=1:boxcolor=black@0.28:boxborderw=12:x=(w-tw)/2:y={title_y},drawtext={sans}textfile='{artist}':expansion=none:fontsize={artist_size}:fontcolor=0xd0d0dc:box=1:boxcolor=black@0.25:boxborderw=8:x=(w-tw)/2:y={artist_y},drawtext={sans}textfile='{elapsed}':fontsize=22:fontcolor=0xd0d0d8:x=210:y={time_y},drawtext={sans}textfile='{total}':expansion=none:fontsize=22:fontcolor=0xd0d0d8:x=870-tw:y={time_y}[metadata];color=c=0x454550:s=660x4:r=30:d=20[track];color=c={accent}:s=660x4:r=30:d=20[fill];[track][fill]overlay=x='-660+660*min(({start:.6}+t)/{duration:.6},1)':y=0:eval=frame[progress];[metadata][progress]overlay=x=210:y={progress_y}:shortest=1,drawtext={sans}text='●':fontsize=25:fontcolor=white:x='198+660*min(({start:.6}+t)/{duration:.6},1)':y={dot_y},format=yuv420p[video]"
+        "[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,{FADE}[audio];[2:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=520:520:force_original_aspect_ratio=increase,crop=520:520,setsar=1,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(max(abs(X-W/2)-(W/2-14),0),max(abs(Y-H/2)-(H/2-14),0)),14),255,0)'[cover];[bg][cover]overlay=x=280:y=560:eof_action=repeat,drawtext={serif}textfile='{title}':expansion=none:fontsize={title_size}:fontcolor=white:shadowcolor=black@0.7:shadowx=1:shadowy=2:x=(w-tw)/2:y=1130,drawtext={sans}textfile='{artist}':expansion=none:fontsize=28:fontcolor=0xb7b7c5:x=(w-tw)/2:y=1210,drawtext={sans}textfile='{elapsed}':fontsize=22:fontcolor=0xd0d0d8:x=210:y=1320,drawtext={sans}textfile='{total}':expansion=none:fontsize=22:fontcolor=0xd0d0d8:x=870-tw:y=1320[metadata];color=c=0x454550:s=660x4:r=30:d=20[track];color=c={accent}:s=660x4:r=30:d=20[fill];[track][fill]overlay=x='-660+660*min(({start:.6}+t)/{duration:.6},1)':y=0:eval=frame[progress];[metadata][progress]overlay=x=210:y=1285:shortest=1,drawtext={sans}text='●':fontsize=25:fontcolor=white:x='198+660*min(({start:.6}+t)/{duration:.6},1)':y=1279,format=yuv420p[video]"
     )
 }
 struct Child(std::process::Child);
@@ -297,14 +268,7 @@ fn render(
     frames: Vec<visualizer::AudioFrame>,
     cancel: &CancellationToken,
 ) -> Result<()> {
-    let graph = filter(
-        &painter.accent(),
-        dir,
-        start,
-        duration,
-        size,
-        painter.layout(),
-    );
+    let graph = filter(&painter.accent(), dir, start, duration, size);
     let mut child = Child(
         Command::new("ffmpeg")
             .args([
@@ -441,7 +405,7 @@ mod cover_tests {
     use super::*;
 
     #[test]
-    fn ffmpeg_accepts_every_layout_with_new_scenes() {
+    fn ffmpeg_renders_every_scene_with_fixed_player() {
         let dir = tempfile::tempdir().unwrap();
         for (name, text) in [
             ("title.txt", "Ночной свет <&> 'test'"),
@@ -472,15 +436,8 @@ mod cover_tests {
         }));
         let cover_path = dir.path().join("input-cover.png");
         cover.save(&cover_path).unwrap();
-        for (index, style) in ["chrome", "collage", "silk", "analog", "cover"]
-            .into_iter()
-            .enumerate()
-        {
-            let layout = index % 4;
-            let mut painter = (0..100)
-                .map(|seed| Painter::new(style, seed, 1))
-                .find(|p| p.layout() == layout)
-                .unwrap();
+        for (index, style) in STYLES.into_iter().enumerate() {
+            let mut painter = Painter::new(style, index as u64, 1);
             painter.set_cover(&cover);
             let background = dir.path().join(format!("{style}-bg.png"));
             let frame = painter
@@ -492,6 +449,7 @@ mod cover_tests {
                         treble: 0.25,
                         beat: 0.35,
                         bands: [0.4; 64],
+                        ..visualizer::AudioFrame::default()
                     },
                 )
                 .to_vec();
@@ -499,7 +457,7 @@ mod cover_tests {
                 .unwrap()
                 .save(&background)
                 .unwrap();
-            let graph = filter(&painter.accent(), dir.path(), 0.0, 200.0, 48, layout);
+            let graph = filter(&painter.accent(), dir.path(), 0.0, 200.0, 48);
             let output = dir.path().join(format!("{style}.png"));
             let result = Command::new("ffmpeg")
                 .args(["-v", "error", "-y", "-i"])
@@ -522,7 +480,7 @@ mod cover_tests {
                 .unwrap();
             assert!(
                 result.status.success(),
-                "{style}, layout {layout}: {}",
+                "{style}: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
             let frame = image::open(output).unwrap();

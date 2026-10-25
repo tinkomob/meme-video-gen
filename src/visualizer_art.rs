@@ -1,10 +1,6 @@
 use super::*;
 
 impl Painter {
-    pub fn layout(&self) -> usize {
-        self.layout
-    }
-
     pub fn set_cover(&mut self, image: &image::DynamicImage) {
         let image = image
             .resize_to_fill(256, 256, image::imageops::FilterType::Triangle)
@@ -66,14 +62,14 @@ impl Painter {
     }
 
     pub(super) fn accents(&mut self, t: f64, a: AudioFrame) {
-        let radius = 70.0 + (1.0 - a.beat) * 330.0;
+        let radius = 230.0 + 35.0 * (t * 0.17 + self.phase).sin();
         for i in 0..180 {
             let angle = i as f64 * 2.0 * PI / 180.0;
             self.point(
                 270.0 + radius * angle.cos(),
                 460.0 + radius * angle.sin(),
                 self.palette[1],
-                a.beat * 0.7,
+                band_at(&a, i as f64 / 180.0) * 0.7,
             );
         }
         for i in 0..75 {
@@ -83,24 +79,24 @@ impl Painter {
                 p.u * 540.0,
                 (p.v * 960.0 - drift * 150.0).rem_euclid(960.0),
                 self.palette[2],
-                a.treble * (0.2 + p.depth),
+                band_at(&a, p.u + p.v * 0.37) * (0.2 + p.depth),
             );
         }
     }
 
     pub(super) fn chrome(&mut self, t: f64, a: AudioFrame) {
-        let size = 155.0 + self.variant * 12.0 + a.bass * 24.0 + a.beat * 12.0;
-        let cy = [270.0, 340.0, 370.0, 600.0][self.layout] + 40.0 * (t * 0.25 + self.phase).sin();
-        for y in 40..900 {
-            for x in 45..495 {
+        let size = 185.0 + self.variant * 10.0;
+        let cy = 430.0 + 25.0 * (t * 0.25 + self.phase).sin();
+        for y in 0..HEIGHT {
+            for x in 0..WIDTH {
                 let nx = (x as f64 - 270.0) / size;
                 let ny = (y as f64 - cy) / (size * 1.25);
                 let angle = ny.atan2(nx);
                 let edge = 1.0
-                    + (0.06 + self.morph * 0.09 + a.bass * 0.05)
-                        * (angle * (3.0 + self.variant) + t * 0.7).sin()
+                    + (0.06 + self.morph * 0.09) * (angle * (3.0 + self.variant) + t * 0.7).sin()
                     + 0.035 * (angle * 7.0 - t * 0.4).cos();
-                let r = nx.hypot(ny) / edge;
+                let energy = band_at(&a, angle / (2.0 * PI));
+                let r = nx.hypot(ny) / (edge + energy * 0.09);
                 if r >= 1.0 {
                     continue;
                 }
@@ -127,10 +123,11 @@ impl Painter {
             let phase = self.phase + ribbon as f64 * 1.5;
             for step in 0..190 {
                 let u = step as f64 / 189.0;
-                let y = 70.0 + u * 820.0;
+                let y = -240.0 + u * 1440.0;
                 let twist = u * (7.0 + self.variant * 2.0) - t * 0.6 + phase;
+                let energy = band_at(&a, u + ribbon as f64 * 0.23);
                 let x =
-                    270.0 + (85.0 + a.bass * 50.0) * twist.sin() + 40.0 * (u * 4.0 + phase).cos();
+                    270.0 + (125.0 + energy * 35.0) * twist.sin() + 40.0 * (u * 4.0 + phase).cos();
                 let width = (20.0 + 65.0 * (u * PI).sin()) * (0.25 + 0.75 * twist.cos().abs());
                 let c = mix_light(self.palette[ribbon % 3], self.palette[(ribbon + 1) % 3], u);
                 for strip in 0..12 {
@@ -143,7 +140,7 @@ impl Painter {
                         xx + width / 12.0,
                         yy + 2.0,
                         c,
-                        (0.06 + 0.2 * (v * PI).sin().powi(3)) * (0.6 + a.level * 0.4),
+                        (0.06 + 0.2 * (v * PI).sin().powi(3)) * (0.6 + energy * 0.4),
                     );
                 }
             }
@@ -158,22 +155,22 @@ impl Painter {
         );
         for row in 0..11 {
             let y = 160.0 + row as f64 * 55.0;
-            self.line(45.0, y, 495.0, y, green, 0.035);
+            self.line(-180.0, y, 720.0, y, green, 0.035);
         }
         for col in 0..9 {
             let x = 50.0 + col as f64 * 55.0;
-            self.line(x, 150.0, x, 750.0, green, 0.035);
+            self.line(x, -300.0, x, 1260.0, green, 0.035);
         }
         for trail in (0..5).rev() {
             let lag = trail as f64 * 0.055;
             let mut last = (0.0, 0.0);
             for step in 0..460 {
                 let u = step as f64 / 459.0;
-                let x = 40.0 + u * 460.0;
+                let x = -180.0 + u * 900.0;
                 let y = 440.0
-                    + (50.0 + 110.0 * band_at(a, u))
+                    + (50.0 + 110.0 * band_at(&a, u))
                         * (u * (16.0 + self.variant * 7.0) + (t - lag) * 3.0).sin()
-                    + a.bass * 45.0 * (u * 7.0 - t).cos();
+                    + band_at(&a, u) * 45.0 * (u * 7.0 - t).cos();
                 if step > 0 {
                     self.line(last.0, last.1, x, y, green, 0.5 / (1.0 + trail as f64));
                 }
@@ -187,14 +184,18 @@ impl Painter {
         let Some(soft) = self.cover_soft.as_ref() else {
             return;
         };
-        let zoom = 1.2 + self.variant * 0.06 + pose.zoom * 0.12 + a.bass * 0.025;
+        let zoom = 1.2 + self.variant * 0.06 + pose.zoom * 0.12;
         let angle = pose.turn * 0.12;
         let (sin, cos) = angle.sin_cos();
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let dx = (x as f64 - 270.0) / (960.0 * zoom);
                 let dy = (y as f64 - 480.0) / (960.0 * zoom);
-                let u = 0.5 + cos * dx + sin * dy + pose.x / 2200.0;
+                let energy = band_at(
+                    &a,
+                    x as f64 / WIDTH as f64 + y as f64 / HEIGHT as f64 * 0.37,
+                );
+                let u = 0.5 + cos * dx + sin * dy + pose.x / 2200.0 + energy * 0.012;
                 let v = 0.5 - sin * dx + cos * dy + pose.y / 2200.0;
                 let sample = soft
                     .get_pixel(

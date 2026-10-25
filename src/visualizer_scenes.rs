@@ -6,10 +6,8 @@ impl Painter {
             let i = i_index as f64;
             let x = i * 5.0 - 4.0;
             let mut wave = 660.0 + 55.0 * sin(x * 0.012 + t * 0.35 + self.phase);
-            let mut height = 35.0
-                + 210.0 * band_at(a, i / 110.0)
-                + 60.0 * a.level
-                + 140.0 * pow(abs(x - 270.0) / 270.0, 1.4);
+            let mut height =
+                35.0 + 270.0 * band_at(&a, i / 110.0) + 140.0 * pow(abs(x - 270.0) / 270.0, 1.4);
             height *= 0.75 + 0.45 * self.morph;
             if self.variant == 1.0 {
                 wave = 720.0 + 35.0 * cos(x * 0.018 - t * 0.3 + self.phase);
@@ -35,12 +33,15 @@ impl Painter {
             if self.variant == 2.0 {
                 for j_index in 0..5 {
                     let j = j_index as f64;
-                    let y = r#mod((i * 19.0 + j * 97.0) + t * (20.0 + 50.0 * a.level), 340.0);
+                    let y = r#mod(
+                        (i * 19.0 + j * 97.0) + t * 20.0 + 18.0 * band_at(&a, i / 110.0),
+                        340.0,
+                    );
                     self.line(
                         x,
                         y + 180.0,
                         x,
-                        y + 184.0 + 10.0 * band_at(a, i / 110.0),
+                        y + 184.0 + 10.0 * band_at(&a, i / 110.0),
                         self.palette[1],
                         0.35,
                     );
@@ -57,7 +58,7 @@ impl Painter {
                     + layer * 10.0 * self.spread
                     + 38.0 * sin(x * 0.014 + t * 0.35 + self.phase)
                     + 20.0 * sin(x * 0.028 - t * 0.5)
-                    + 26.0 * band_at(a, x / 540.0);
+                    + 26.0 * band_at(&a, x / 540.0);
                 if i > 0.0 {
                     self.line(
                         last_x,
@@ -76,7 +77,7 @@ impl Painter {
             let x = s.u * 540.0;
             let base = 700.0 + 45.0 * sin(x * 0.014 + t * 0.35 + self.phase);
             let y = base + (s.v - 0.5) * 280.0 + 8.0 * sin(t * (0.2 + s.depth) + s.phase);
-            let brightness = (0.15 + s.depth * 0.8) * (0.35 + a.level * 0.65);
+            let brightness = (0.15 + s.depth * 0.8) * (0.35 + band_at(&a, s.u) * 0.65);
             self.point(x, y, white, brightness);
             if s.depth > 0.97 {
                 self.line(x - 1.5, y, x + 1.5, y, white, brightness);
@@ -93,7 +94,7 @@ impl Painter {
             for i_index in 0..=720 {
                 let i = i_index as f64;
                 let angle = i / 720.0 * 2.0 * PI;
-                let energy = band_at(a, i / 720.0);
+                let energy = band_at(&a, i / 720.0);
                 let mut r = 1.0
                     + 0.035 * sin(angle * 7.0 + t * 0.8 + self.phase + layer * 0.4)
                     + 0.02 * sin(angle * 17.0 - t)
@@ -105,7 +106,7 @@ impl Painter {
                     r += 0.09 * sin(angle * 3.0 + t * 0.3 + self.phase + floor(layer / 6.0) * PI);
                 }
                 if self.variant == 2.0 {
-                    r += (0.065 + 0.035 * a.level) * sin(angle * 6.0 - t * 0.35 + self.phase);
+                    r += (0.065 + 0.035 * energy) * sin(angle * 6.0 - t * 0.35 + self.phase);
                 }
                 let x = 270.0 + (250.0 + layer * 1.5) * r * cos(angle) * self.spread;
                 let y = 470.0 + (340.0 + layer * 1.5) * r * sin(angle);
@@ -119,7 +120,7 @@ impl Painter {
         for particle_index in 0..self.particles.len() {
             let s = self.particles[particle_index];
             let angle = s.u * 2.0 * PI + t * (0.01 + s.depth * 0.025);
-            let energy = band_at(a, s.u);
+            let energy = band_at(&a, s.u);
             let mut r = 1.0
                 + (s.v - 0.5) * 0.28
                 + energy * 0.07
@@ -128,14 +129,19 @@ impl Painter {
                 r += 0.09 * sin(angle * 3.0 + t * 0.3 + self.phase);
             }
             if self.variant == 2.0 {
-                r += (0.065 + 0.035 * a.level) * sin(angle * 6.0 - t * 0.35 + self.phase);
+                r += (0.065 + 0.035 * energy) * sin(angle * 6.0 - t * 0.35 + self.phase);
             }
             let (x, y) = (
                 270.0 + 267.0 * r * cos(angle) * self.spread,
                 470.0 + 360.0 * r * sin(angle),
             );
             let c = mix_light(violet, blue, 0.5 + 0.5 * sin(angle * 2.0 + t * 0.3));
-            self.point(x, y, c, (0.15 + s.depth * 0.8) * (0.4 + 0.6 * a.level));
+            self.point(
+                x,
+                y,
+                c,
+                (0.15 + s.depth * 0.8) * (0.4 + 0.6 * band_at(&a, s.u)),
+            );
             if s.depth > 0.98 {
                 self.line(x - 1.0, y, x + 1.0, y, c, 1.0);
                 self.line(x, y - 1.0, x, y + 1.0, c, 1.0);
@@ -153,7 +159,7 @@ impl Painter {
                 for i_index in 0..=450 {
                     let i = i_index as f64;
                     let x = -40.0 + i * 620.0 / 450.0;
-                    let energy = band_at(a, i / 450.0);
+                    let energy = band_at(&a, i / 450.0);
                     let spread = (strand - 7.0)
                         * (2.0 + 3.0 * sin(x * 0.008 + t * 0.3 + phase))
                         * (0.65 + 0.7 * self.morph);
@@ -213,7 +219,7 @@ impl Painter {
                 x,
                 y,
                 mix_light(gold, coral, s.depth),
-                (0.1 + 0.8 * s.depth) * (0.4 + 0.6 * a.level),
+                (0.1 + 0.8 * s.depth) * (0.4 + 0.6 * band_at(&a, s.u)),
             );
         }
     }
@@ -224,7 +230,7 @@ impl Painter {
             for strand_index in 0..170 {
                 let strand = strand_index as f64;
                 let x = strand * 3.5 - 25.0;
-                let energy = band_at(a, strand / 170.0);
+                let energy = band_at(&a, strand / 170.0);
                 let mut base = 190.0 + curtain * 550.0 + 65.0 * sin(x * 0.009 + t * 0.25 + phase);
                 if self.variant == 1.0 {
                     base += 45.0 * sin(x * 0.021 - t * 0.3 + phase);
@@ -232,9 +238,7 @@ impl Painter {
                 if self.variant == 2.0 {
                     base += x * 0.22 - 70.0;
                 }
-                let height = (40.0 + 100.0 * energy + 25.0 * a.level)
-                    * self.spread
-                    * (0.7 + 0.6 * self.morph);
+                let height = (40.0 + 125.0 * energy) * self.spread * (0.7 + 0.6 * self.morph);
                 let color = mix_light(
                     self.palette[0],
                     self.palette[1],
@@ -274,7 +278,7 @@ impl Painter {
                     if self.variant == 2.0 {
                         y += x * 0.22 - 70.0;
                     }
-                    y += 12.0 * band_at(a, x / 540.0) * sin(x * 0.025 - t * 0.4 + layer);
+                    y += 12.0 * band_at(&a, x / 540.0) * sin(x * 0.025 - t * 0.4 + layer);
                     if step > 0.0 {
                         self.line(
                             last_x,
@@ -299,7 +303,7 @@ impl Painter {
                 x,
                 y,
                 mix_light(self.palette[1], self.palette[2], s.depth),
-                (0.05 + 0.4 * s.depth) * (0.4 + 0.6 * a.level),
+                (0.05 + 0.4 * s.depth) * (0.4 + 0.6 * band_at(&a, s.u)),
             );
         }
     }
@@ -319,7 +323,7 @@ impl Painter {
             for vertex_index in 0..sides as i32 + 1 {
                 let vertex = vertex_index as f64;
                 let angle = rotation + (vertex % sides) * 2.0 * PI / sides;
-                let energy = band_at(a, (vertex % sides) / sides + layer * 0.013);
+                let energy = band_at(&a, (vertex % sides) / sides + layer * 0.013);
                 let r = radius * (1.0 + 0.1 * energy);
                 let x = 270.0 + r * cos(angle);
                 let y = 470.0 + r * 1.22 * sin(angle);
@@ -336,7 +340,7 @@ impl Painter {
                 let angle = rotation + 2.0 * PI / sides + 0.045;
                 let x = 270.0 + (radius + 20.0) * cos(angle);
                 let y = 470.0 + (radius + 20.0) * 1.22 * sin(angle);
-                self.line(first_x, first_y, x, y, self.palette[2], 0.3 + 0.2 * a.level);
+                self.line(first_x, first_y, x, y, self.palette[2], 0.3);
             }
         }
         for particle_index in 0..self.particles.len() {
@@ -344,12 +348,12 @@ impl Painter {
             let i = particle_index as f64;
             if i < 22.0 {
                 let angle = s.u * 2.0 * PI + t * 0.035;
-                let radius = 290.0 + s.v * 100.0 + 25.0 * band_at(a, s.u);
+                let radius = 290.0 + s.v * 100.0 + 25.0 * band_at(&a, s.u);
                 let (x, y) = (
                     270.0 + radius * cos(angle),
                     470.0 + radius * 1.2 * sin(angle),
                 );
-                let size = 5.0 + 12.0 * s.depth + 8.0 * a.level;
+                let size = 5.0 + 12.0 * s.depth + 8.0 * band_at(&a, s.u);
                 for edge_index in 0..3 {
                     let edge = edge_index as f64;
                     let (a0, a1) = (
@@ -370,7 +374,7 @@ impl Painter {
                     s.u * 540.0,
                     r#mod(s.v * 960.0 + t * (s.depth - 0.5) * 3.0 + 960.0, 960.0),
                     self.palette[(i % 3.0) as usize],
-                    (0.06 + 0.35 * s.depth) * (0.4 + 0.6 * a.level),
+                    (0.06 + 0.35 * s.depth) * (0.4 + 0.6 * band_at(&a, s.u)),
                 );
             }
         }
@@ -385,7 +389,7 @@ impl Painter {
                 for step_index in 0..=420 {
                     let step = step_index as f64;
                     let f = step / 420.0;
-                    let energy = band_at(a, f);
+                    let energy = band_at(&a, f);
                     let r = 75.0 + f * 430.0 + energy * 12.0;
                     let angle = self.phase
                         + arm * 2.0 * PI / arms
@@ -415,13 +419,13 @@ impl Painter {
         for particle_index in 0..self.particles.len() {
             let s = self.particles[particle_index];
             let i = particle_index as f64;
-            let energy = band_at(a, s.u);
+            let energy = band_at(&a, s.u);
             if i % 3.0 == 0.0 {
                 self.point(
                     s.u * 540.0,
                     r#mod(s.v * 960.0 + t * (s.depth - 0.5) * 2.0 + 960.0, 960.0),
                     self.palette[2],
-                    (0.1 + s.depth * 0.6) * (0.4 + 0.6 * a.level),
+                    (0.1 + s.depth * 0.6) * (0.4 + 0.6 * band_at(&a, s.u)),
                 );
                 continue;
             }
@@ -467,7 +471,7 @@ impl Painter {
                 let step = step_index as f64;
                 let f = step / 240.0;
                 let angle = f * 2.0 * PI + self.phase + t * 0.08;
-                let energy = band_at(a, f + ring * 0.017);
+                let energy = band_at(&a, f + ring * 0.017);
                 let mut r = radius * (1.0 + 0.07 * energy);
                 r *= 1.0 + 0.035 * self.morph * sin(angle * 3.0 + depth * 5.0 + t * 0.2);
                 if self.variant == 1.0 {
@@ -505,8 +509,8 @@ impl Painter {
                 let step = step_index as f64;
                 let f = step / 300.0;
                 let angle = f * 2.0 * PI + t * 0.12;
-                let energy = band_at(a, f + ring * 0.021);
-                let radius = (220.0 + 25.0 * energy + 12.0 * a.level) * self.spread;
+                let energy = band_at(&a, f + ring * 0.021);
+                let radius = (220.0 + 37.0 * energy) * self.spread;
                 let (mut x, mut y) = (
                     radius * cos(angle),
                     radius * (0.16 + 0.28 * self.morph) * sin(angle),
@@ -546,7 +550,7 @@ impl Painter {
             for step_index in 0..=160 {
                 let step = step_index as f64;
                 let f = step / 160.0;
-                let energy = band_at(a, f + depth * 0.15);
+                let energy = band_at(&a, f + depth * 0.15);
                 let x = 270.0 + (f - 0.5) * (140.0 + depth * 620.0) * self.spread;
                 let mut y = 290.0
                     + depth * 570.0
@@ -588,7 +592,7 @@ impl Painter {
         for particle_index in 0..self.particles.len() {
             let s = self.particles[particle_index];
             let i = particle_index as f64;
-            let energy = band_at(a, s.u);
+            let energy = band_at(&a, s.u);
             let speed = 25.0 + s.depth * 90.0;
             let mut x = s.u * 620.0 - 40.0 + 18.0 * sin(t * 0.3 + s.phase) * self.spread;
             let mut y = r#mod(s.v * 1100.0 + t * speed, 1100.0) - 70.0;
@@ -606,7 +610,7 @@ impl Painter {
                 (dx, dy) = (-dy * 0.25 * cos(y * 0.014 + t * 0.4 + self.phase), -dy);
             }
             let color = mix_light(self.palette[0], self.palette[1], s.depth);
-            let brightness = (0.1 + s.depth * 0.6) * (0.35 + 0.65 * energy + 0.3 * a.level);
+            let brightness = (0.1 + s.depth * 0.6) * (0.35 + 0.95 * energy);
             self.line(x, y, x - dx, y - dy, color, brightness * 0.45);
             self.point(x, y, self.palette[2], brightness * 1.5);
             if i % 9.0 == 0.0 {

@@ -354,7 +354,7 @@ async fn actual_ffmpeg_renders_twenty_second_video_with_audio() {
             "-f",
             "lavfi",
             "-i",
-            "sine=frequency=440:duration=21",
+            "aevalsrc='0.5*sin(2*PI*(80+1800*floor(mod(t,2)))*t)*lt(mod(t,0.5),0.16)':s=48000:d=21",
             "-c:a",
             "aac",
             &audio_path.to_string_lossy(),
@@ -382,7 +382,7 @@ async fn actual_ffmpeg_renders_twenty_second_video_with_audio() {
         .write_to(&mut cover, image::ImageFormat::Jpeg)
         .unwrap();
     mock.put("covers/abcdefghijk.jpg", cover.into_inner());
-    let generated = snippet::generate(&mock.svc().store, "rain", 2, "")
+    let generated = snippet::generate(&mock.svc().store, "silver", 2, "")
         .await
         .unwrap();
     assert_eq!(generated.song.author, "Артист");

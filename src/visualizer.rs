@@ -15,6 +15,8 @@ pub struct AudioFrame {
     pub bass: f64,
     pub treble: f64,
     pub beat: f64,
+    pub event: u64,
+    pub event_age: f64,
 }
 impl Default for AudioFrame {
     fn default() -> Self {
@@ -24,6 +26,8 @@ impl Default for AudioFrame {
             bass: 0.0,
             treble: 0.0,
             beat: 0.0,
+            event: 0,
+            event_age: 0.0,
         }
     }
 }
@@ -59,6 +63,7 @@ pub fn analyze(samples: &[f64]) -> Vec<AudioFrame> {
         }
     }
     let mut previous = AudioFrame::default();
+    let (mut event, mut since_event) = (0, FPS);
     for frame in &mut frames {
         frame.level /= peak_level;
         for (b, value) in frame.bands.iter_mut().enumerate() {
@@ -68,10 +73,25 @@ pub fn analyze(samples: &[f64]) -> Vec<AudioFrame> {
         }
         frame.bass = frame.bands[..16].iter().sum::<f64>() / 16.0;
         frame.treble = frame.bands[40..].iter().sum::<f64>() / 24.0;
-        let onset = ((frame.bass - previous.bass) * 5.0
-            + (frame.level - previous.level).max(0.0) * 1.5)
+        let flux = frame
+            .bands
+            .iter()
+            .zip(previous.bands)
+            .map(|(now, before)| (now - before).max(0.0))
+            .sum::<f64>()
+            / BANDS as f64;
+        let onset = ((frame.bass - previous.bass).max(0.0) * 5.0
+            + (frame.level - previous.level).max(0.0) * 1.5
+            + flux * 6.0)
             .clamp(0.0, 1.0);
+        since_event += 1;
+        if onset > 0.12 && since_event >= FPS / 6 {
+            event += 1;
+            since_event = 0;
+        }
         frame.beat = onset.max(previous.beat * 0.78);
+        frame.event = event;
+        frame.event_age = since_event as f64 / FPS as f64;
         previous = *frame;
     }
     frames
@@ -144,7 +164,6 @@ pub struct Painter {
     rgb: Vec<u8>,
     particles: Vec<Particle>,
     timeline: Vec<Pose>,
-    layout: usize,
     cover: Option<image::RgbImage>,
     cover_soft: Option<image::RgbImage>,
     view: View,
@@ -157,12 +176,32 @@ fn mix_light(a: Color, b: Color, t: f64) -> Color {
         a.2 + (b.2 - a.2) * t,
     )
 }
-fn band_at(a: AudioFrame, position: f64) -> f64 {
-    let x = position.abs() % 1.0 * 63.0;
-    let i = x as usize;
-    let f = x - i as f64;
-    let f = f * f * (3.0 - 2.0 * f);
-    a.bands[i] + (a.bands[(i + 1).min(63)] - a.bands[i]) * f
+fn band_at(a: &AudioFrame, position: f64) -> f64 {
+    let position = position.rem_euclid(1.0);
+    // Each active region contains the entire spectrum, including sustained notes.
+    let response = |event: u64| {
+        let mut strength = 0.0_f64;
+        for part in 0..1 + event % 3 {
+            let bits = event
+                .wrapping_add(part * 0x9e3779b9)
+                .wrapping_mul(0x517cc1b727220a95);
+            let center = (bits ^ (bits >> 32)) as u32 as f64 / u32::MAX as f64;
+            let offset = (position - center + 0.5).rem_euclid(1.0) - 0.5;
+            let window = (1.0 - offset.abs() / 0.065).clamp(0.0, 1.0);
+            let gate = window * window * (3.0 - 2.0 * window);
+            if gate == 0.0 {
+                continue;
+            }
+            let x = ((offset / 0.13 + 0.5) * 63.0).clamp(0.0, 63.0);
+            let i = x as usize;
+            let energy = a.bands[i] + (a.bands[(i + 1).min(63)] - a.bands[i]) * (x - i as f64);
+            strength =
+                strength.max(gate * (energy * 0.65 + a.level * 0.25 + a.beat * 0.45).min(1.0));
+        }
+        strength
+    };
+    let fade = (a.event_age / 0.14).clamp(0.0, 1.0);
+    response(a.event.wrapping_sub(1)) * (1.0 - fade) + response(a.event) * fade
 }
 fn sin(v: f64) -> f64 {
     v.sin()
@@ -218,7 +257,6 @@ impl Painter {
                 })
                 .collect(),
             timeline: Vec::new(),
-            layout: r.random_range(0..4),
             cover: None,
             cover_soft: None,
             view: View::default(),
@@ -249,7 +287,7 @@ impl Painter {
                 let v = (1.0 - d).max(0.0);
                 let c = mix_light(Color(2.0, 3.0, 5.0), p.palette[0], 0.012 + 0.025 * v);
                 let i = (y * WIDTH + x) * 3;
-                let text_y = [620.0, 665.0, 715.0, 210.0][p.layout];
+                let text_y = 620.0;
                 let (dx, dy) = ((x as f64 - 270.0) / 240.0, (y as f64 - text_y) / 85.0);
                 p.shade[i / 3] = (1.0 - 0.55 * (-dx.powi(4) - dy.powi(4)).exp()) as f32;
                 p.base[i] = c.0 as f32;
@@ -374,9 +412,12 @@ impl Painter {
         for layer in 0..3 {
             let depth = 0.35 + layer as f64 * 0.325;
             let angle = pose.turn * depth + (1.0 - depth) * 0.2 * (phase + seconds * 0.12).sin();
-            let scale = (0.68 + layer as f64 * 0.2)
-                * pose.zoom
-                * (1.0 + a.bass * 0.045 * depth + a.beat * 0.035);
+            let bounded = matches!(self.style.as_str(), "violet" | "prism" | "orbit");
+            let scale = if bounded {
+                [0.85, 0.95, 1.02][layer]
+            } else {
+                [1.65, 1.4, 1.2][layer]
+            } * (0.98 + (pose.zoom - 1.0) * 0.2);
             let (sin, cos) = angle.sin_cos();
             self.view = View {
                 xx: scale * cos,
@@ -384,8 +425,12 @@ impl Painter {
                 yx: scale * sin,
                 yy: scale * cos * (0.9 + 0.1 * depth),
                 x: -pose.x * depth + (1.0 - depth) * 65.0 * (phase + seconds * 0.17).sin(),
-                y: -pose.y * depth
-                    + (1.0 - depth) * (55.0 * (phase + seconds * 0.13).cos() - 160.0),
+                y: -pose.y * depth * 0.35
+                    + if bounded {
+                        0.0
+                    } else {
+                        [-650.0, -250.0, 150.0][layer]
+                    },
                 light: [0.5, 0.4, 0.82][layer] * (0.8 + 0.3 * pose.density),
                 focus: [0.4, 0.7, 1.0][layer],
             };
@@ -409,7 +454,7 @@ impl Painter {
         self.spread = spread;
         self.view = View::default();
     }
-    fn atmosphere(&mut self, seconds: f64, pose: Pose, a: AudioFrame) {
+    fn atmosphere(&mut self, seconds: f64, pose: Pose) {
         let (w, h) = (WIDTH / 4, HEIGHT / 4);
         for cloud in 0..3 {
             let phase = self.phase + cloud as f64 * 2.1;
@@ -421,8 +466,7 @@ impl Painter {
                 self.palette[(cloud + 1) % 3],
                 pose.color,
             );
-            let strength =
-                (0.04 + 0.04 * pose.density) * (0.65 + 0.35 * band_at(a, cloud as f64 / 3.0));
+            let strength = (0.04 + 0.04 * pose.density) * 0.8;
             let horizontal: Vec<_> = (0..w)
                 .map(|x| (-((x as f64 - cx) / sx).powi(2)).exp())
                 .collect();
@@ -449,7 +493,7 @@ impl Painter {
             let y = 470.0 + (s.v - 0.5) * 1050.0 * perspective - pose.y * perspective
                 + 20.0 * angle.cos();
             let visibility = (z * PI).sin() * ((pose.density - s.v) * 3.0 + 0.5).clamp(0.0, 1.0);
-            let brightness = visibility * (0.15 + 0.65 * band_at(a, s.u)) * (0.25 + z * 0.6);
+            let brightness = visibility * (0.15 + 0.65 * band_at(&a, s.u)) * (0.25 + z * 0.6);
             let c = mix_light(self.palette[i % 3], self.palette[(i + 1) % 3], pose.color);
             self.view.focus = 1.0 - 0.8 * z * z;
             self.point(x, y, c, brightness);
@@ -486,7 +530,8 @@ impl Painter {
         }
         self.view.focus = 1.0;
     }
-    pub fn frame(&mut self, f: usize, a: AudioFrame) -> &[u8] {
+    pub fn frame(&mut self, f: usize, mut a: AudioFrame) -> &[u8] {
+        a.event = a.event.wrapping_add(self.phase.to_bits());
         self.pixels.copy_from_slice(&self.base);
         self.glow.fill(0.0);
         let seconds = f as f64 / FPS as f64;
@@ -494,7 +539,7 @@ impl Painter {
         if matches!(self.style.as_str(), "collage" | "cover") {
             self.cover_scene(seconds, pose, a);
         } else {
-            self.atmosphere(seconds, pose, a);
+            self.atmosphere(seconds, pose);
             if self.style == "chrome" {
                 self.morph = pose.unfold;
                 self.chrome(seconds * self.speed, a);
@@ -526,6 +571,47 @@ impl Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn sound_attacks_select_local_regions_without_scaling_the_whole_shape() {
+        let mut previous = vec![];
+        for event in 1..12 {
+            let audio = AudioFrame {
+                bands: [1.0; BANDS],
+                level: 1.0,
+                bass: 1.0,
+                treble: 1.0,
+                beat: 1.0,
+                event,
+                event_age: 0.3,
+            };
+            let regions: Vec<_> = (0..400)
+                .map(|i| band_at(&audio, i as f64 / 400.0))
+                .collect();
+            let active = regions.iter().filter(|v| **v > 0.0).count();
+            assert!(
+                (10..160).contains(&active),
+                "global or missing reaction: {active}"
+            );
+            assert!(
+                previous != regions,
+                "successive sounds reuse the same regions"
+            );
+            let start = AudioFrame {
+                event_age: 0.0,
+                ..audio
+            };
+            let before = AudioFrame {
+                event: event - 1,
+                ..audio
+            };
+            for i in 0..400 {
+                let position = i as f64 / 400.0;
+                assert!((band_at(&start, position) - band_at(&before, position)).abs() < 1e-9);
+            }
+            previous = regions;
+        }
+    }
+
     #[test]
     fn silence_is_finite() {
         let frames = analyze(&vec![0.0; 320000]);
@@ -613,7 +699,6 @@ mod tests {
             32,
             image::Rgb([20, 40, 230]),
         ));
-        let mut layouts = std::collections::HashSet::new();
         let mut lengths = std::collections::HashSet::new();
         let (mut independent, mut influenced) = (false, false);
         for seed in 0..24 {
@@ -626,14 +711,48 @@ mod tests {
             other.set_cover(&blue);
             independent |= p.accent() == other.accent();
             influenced |= p.accent() != other.accent();
-            layouts.insert(p.layout());
             lengths.insert(p.timeline.len());
             assert!(p.timeline.windows(2).all(|w| w[1].at > w[0].at));
             assert_eq!(p.timeline.first().unwrap().at, 0.0);
             assert_eq!(p.timeline.last().unwrap().at, 1.0);
         }
-        assert_eq!(layouts.len(), 4);
         assert!(lengths.len() > 1 && independent && influenced);
+    }
+
+    #[test]
+    fn sustained_notes_and_melody_react_without_drums_and_attacks_are_sharper() {
+        let tone = |frequency: f64| {
+            let samples: Vec<_> = (0..320000)
+                .map(|i| {
+                    let t = i as f64 / 16000.0;
+                    (t / 2.0).min(1.0) * (2.0 * PI * frequency * t).sin()
+                })
+                .collect();
+            analyze(&samples)[150]
+        };
+        let mut low = tone(440.0);
+        let mut high = tone(1760.0);
+        // Hold location and loudness fixed to test melodic response alone.
+        for frame in [&mut low, &mut high] {
+            frame.event = 10;
+            frame.event_age = 1.0;
+            frame.level = 0.5;
+            frame.beat = 0.0;
+        }
+        let response: Vec<_> = (0..4000)
+            .map(|i| {
+                let position = i as f64 / 4000.0;
+                (band_at(&low, position), band_at(&high, position))
+            })
+            .collect();
+        assert!(response.iter().any(|(v, _)| *v > 0.15));
+        assert!(response.iter().any(|(a, b)| (a - b).abs() > 0.05));
+        let attack = AudioFrame { beat: 0.8, ..low };
+        assert!((0..4000).any(|i| {
+            let position = i as f64 / 4000.0;
+            band_at(&attack, position) > band_at(&low, position) + 0.15
+        }));
+        assert_eq!(band_at(&AudioFrame::default(), 0.5), 0.0);
     }
 
     #[test]
@@ -656,6 +775,8 @@ mod tests {
             }
             assert!(frames[29..33].iter().any(|f| f.beat > 0.1));
             assert!(frames[90].beat < 0.01);
+            assert!(frames[33].event > frames[28].event);
+            assert_eq!(frames[90].event, frames[100].event);
         }
     }
 }

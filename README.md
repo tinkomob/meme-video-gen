@@ -67,8 +67,10 @@ three depth planes, particles, bloom, and irregular, independently randomized
 camera keyframes.
 Validated YouTube JPEG covers are cached in S3; a waveform is the fallback.
 
-Visuals independently randomize four cover/text compositions and 4-8 motion states
-with irregular timing. Bass, treble and transient accents drive different movements;
+The player keeps a fixed cover, title and artist layout. Visuals randomize 4-8 motion states
+with irregular timing. Each onset selects one or several local reactive regions;
+sustained notes continuously shape these regions while sharp attacks add faster accents.
+Volume never scales the whole scene. Expanded depth layers extend beyond the frame;
 there is no fixed build-up or climax. Cover-derived colours may be blended with
 other palettes or skipped entirely. New scenes include reflective liquid chrome,
 restrained paper fragments, flowing light ribbons, phosphor traces and softly
