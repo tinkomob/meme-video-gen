@@ -36,7 +36,7 @@ func TestSnippetControls(t *testing.T) {
 			actions = append(actions, action)
 		}
 	}
-	if got := strings.Join(actions, ","); got != "telegram,status,send,all,visual,random,list,delete" {
+	if got := strings.Join(actions, ","); got != "telegram,status,send,all,visual,random,random,delete" {
 		t.Fatalf("controls: %s", got)
 	}
 	if !strings.Contains(keyboard.InlineKeyboard[0][0].Text, "☑️") || !strings.Contains(keyboard.InlineKeyboard[0][1].Text, "✅") {

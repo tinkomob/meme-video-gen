@@ -5,6 +5,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -95,6 +97,37 @@ func TestSnippetStyleSelection(t *testing.T) {
 	}{{"unknown", -1}, {"silver", -2}, {"galaxy", 3}} {
 		if _, err := g.GenerateSongSnippet(context.Background(), "unused.mp4", tc.style, "", tc.variant); err == nil {
 			t.Fatalf("accepted invalid style/variant: %+v", tc)
+		}
+	}
+}
+
+func TestSnippetAudioUsesSelectedExcerpt(t *testing.T) {
+	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		t.Skip("ffmpeg unavailable")
+	}
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "song.wav")
+	output, err := exec.CommandContext(ctx, "ffmpeg", "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=20", "-f", "lavfi", "-i", "sine=frequency=1760:duration=20", "-filter_complex", "[0:a][1:a]concat=n=2:v=0:a=1", path).CombinedOutput()
+	if err != nil {
+		t.Fatalf("create test song: %v: %s", err, output)
+	}
+	for _, tc := range []struct{ start, frequency float64 }{{0, 440}, {20, 1760}} {
+		frames, err := snippetAudio(ctx, path, tc.start)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(frames) != DurationSeconds*visualFPS {
+			t.Fatalf("unexpected frame count: %d", len(frames))
+		}
+		peak := 0
+		for b, value := range frames[100].bands {
+			if value > frames[100].bands[peak] {
+				peak = b
+			}
+		}
+		frequency := 40 * math.Pow(7000.0/40, float64(peak)/(visualBands-1))
+		if math.Abs(frequency-tc.frequency) > tc.frequency*.1 {
+			t.Fatalf("offset %.0f: expected %.0fHz, got %.0fHz", tc.start, tc.frequency, frequency)
 		}
 	}
 }

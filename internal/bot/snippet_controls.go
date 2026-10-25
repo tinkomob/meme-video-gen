@@ -44,7 +44,7 @@ func snippetControls(d *model.SnippetDraft) tgbotapi.InlineKeyboardMarkup {
 		targets,
 		tgbotapi.NewInlineKeyboardRow(snippetButton("📤 Отправить выбранные", "send", d.ID), snippetButton("📤 Во все", "all", d.ID)),
 		tgbotapi.NewInlineKeyboardRow(snippetButton("🎨 Новый визуал", "visual", d.ID), snippetButton("🎲 Другая песня", "random", d.ID)),
-		tgbotapi.NewInlineKeyboardRow(snippetButton("📋 Выбрать песню", "list", d.ID+":0"), snippetButton("🗑 Удалить черновик", "delete", d.ID)),
+		tgbotapi.NewInlineKeyboardRow(snippetButton("📋 Выбрать песню", "random", d.ID), snippetButton("🗑 Удалить черновик", "delete", d.ID)),
 	)
 }
 
@@ -176,9 +176,7 @@ func (b *TelegramBot) handleSnippetCallback(ctx context.Context, cb *tgbotapi.Ca
 			if err == nil {
 				err = controlsErr
 			}
-		case "visual":
-			b.startSnippetGeneration(ctx, draft.ChatID, draft.UserID, "random", -1, draft.Song.ID)
-		case "random":
+		case "visual", "random", "list":
 			var songs []*model.Song
 			songs, err = b.svc.GetAllSongs(actionCtx)
 			if err == nil {
@@ -186,12 +184,13 @@ func (b *TelegramBot) handleSnippetCallback(ctx context.Context, cb *tgbotapi.Ca
 				if len(pool) == 0 {
 					err = fmt.Errorf("в библиотеке нет другой подходящей песни")
 				} else {
-					b.startSnippetGeneration(ctx, draft.ChatID, draft.UserID, draft.Style, draft.Variant, pool[rand.Intn(len(pool))].ID)
+					style, variant := draft.Style, draft.Variant
+					if action == "visual" {
+						style, variant = "random", -1
+					}
+					b.startSnippetGeneration(ctx, draft.ChatID, draft.UserID, style, variant, pool[rand.Intn(len(pool))].ID)
 				}
 			}
-		case "list":
-			offset, _ := strconv.Atoi(value)
-			err = b.showSnippetSongs(actionCtx, cb.Message, draft, offset)
 		case "track":
 			err = b.updateSnippetControls(cb.Message, draft)
 			if err == nil {
@@ -261,39 +260,4 @@ func snippetSongChoices(songs []*model.Song, excludeID string) []*model.Song {
 		}
 	}
 	return choices
-}
-
-func (b *TelegramBot) showSnippetSongs(ctx context.Context, message *tgbotapi.Message, draft *model.SnippetDraft, offset int) error {
-	songs, err := b.svc.GetAllSongs(ctx)
-	if err != nil {
-		return err
-	}
-	songs = snippetSongChoices(songs, "")
-	if len(songs) == 0 {
-		return fmt.Errorf("в библиотеке нет подходящих песен")
-	}
-	if offset >= len(songs) {
-		offset = 0
-	}
-	var rows [][]tgbotapi.InlineKeyboardButton
-	for _, song := range songs[offset:min(offset+8, len(songs))] {
-		label := []rune(song.Author + " — " + song.Title)
-		if len(label) > 48 {
-			label = append(label[:47], '…')
-		}
-		rows = append(rows, tgbotapi.NewInlineKeyboardRow(snippetButton(string(label), "track", draft.ID+":"+song.ID)))
-	}
-	var nav []tgbotapi.InlineKeyboardButton
-	if offset > 0 {
-		nav = append(nav, snippetButton("←", "list", draft.ID+":"+strconv.Itoa(max(0, offset-8))))
-	}
-	if offset+8 < len(songs) {
-		nav = append(nav, snippetButton("→", "list", draft.ID+":"+strconv.Itoa(offset+8)))
-	}
-	if len(nav) > 0 {
-		rows = append(rows, nav)
-	}
-	rows = append(rows, tgbotapi.NewInlineKeyboardRow(snippetButton("Назад", "back", draft.ID)))
-	_, err = b.tg.Request(tgbotapi.NewEditMessageReplyMarkup(message.Chat.ID, message.MessageID, tgbotapi.NewInlineKeyboardMarkup(rows...)))
-	return err
 }
