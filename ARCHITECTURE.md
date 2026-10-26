@@ -11,8 +11,12 @@ The application is implemented entirely in Rust. `Cargo.lock` pins dependencies.
   FFprobe, hashes downloads, and saves each successful song in S3.
 - `src/snippet.rs` selects the excerpt, validates/caches covers, serializes
   rendering, streams raw frames to FFmpeg, overlays metadata, and manages temps.
-- `src/visualizer.rs`, `visualizer_scenes.rs`, and `visualizer_palettes.rs` implement
-  64-band audio analysis and the original ten visual families × three variants.
+- `src/visualizer.rs` and `visualizer_*.rs` implement 64-band audio analysis,
+  separate frequency attacks, deterministic motion and 17 visual families × three
+  variants. All families have material-specific transients. A precomputed
+  direction pass tracks energy, pauses, spectral turns and the strongest phrase
+  to drive composition with audio lookahead. Volumes and chrome occlude distant
+  particles and glow; depth planes differ in focus and illumination.
 - `src/schedule.rs` validates/generates/migrates two daily Tomsk slots with 10–14
   hour gaps. `src/service.rs` persists schedule claims before scheduled uploads.
 - `src/model.rs` preserves the Go JSON schema. `src/service.rs` saves drafts and

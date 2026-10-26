@@ -14,10 +14,9 @@ impl Painter {
         self.cover = Some(image);
     }
 
-    pub(super) fn volume(&mut self, t: f64, pose: Pose, _a: AudioFrame) {
+    pub(super) fn volume(&mut self, t: f64, pose: Pose, a: AudioFrame) {
         let (w, h) = (WIDTH / 2, HEIGHT / 2);
-        let mut field = image::Rgb32FImage::new(w as u32, h as u32);
-        // Music advances flow; attacks illuminate the material without displacing it.
+        let mut field = image::Rgba32FImage::new(w as u32, h as u32);
         let bodies: [_; 7] = std::array::from_fn(|i| {
             let p = self.particles[i];
             let r = self.response[i];
@@ -39,8 +38,10 @@ impl Painter {
         for y in 0..h {
             for x in 0..w {
                 let local = self.field_at(x as f64 * 2.0, y as f64 * 2.0);
-                let u = (x as f64 / w as f64 - 0.5) * 3.0 - pose.x / 900.0 + local.dx / 420.0;
-                let v = (y as f64 / h as f64 - 0.5) * 5.0 - pose.y / 1100.0 + local.dy / 500.0;
+                let u = (x as f64 / w as f64 - 0.5) * 3.0 / pose.zoom.max(0.7) - pose.x / 900.0
+                    + local.dx / 420.0;
+                let v = (y as f64 / h as f64 - 0.5) * 5.0 / pose.zoom.max(0.7) - pose.y / 1100.0
+                    + local.dy / 500.0;
                 let mut light = [0.0_f32; 3];
                 let mut transmission = 1.0;
                 let slices = if self.style == "nebula" { 6 } else { 16 };
@@ -73,7 +74,10 @@ impl Painter {
                                 *out += influence * value;
                             }
                         }
-                        let surface = mass - 1.3 + folds * 0.14 + grain * 0.025;
+                        let wave = audio_wave(a, 0, (u * u + v * v * 0.4 + z * z * 0.5).sqrt());
+                        let surface = mass - 1.3 + folds * 0.14 + grain * 0.025 + wave * 0.16;
+                        normal[0] += wave * u * 0.6;
+                        normal[1] += wave * v * 0.4;
                         density = 0.55 / (1.0 + (-surface * 14.0).exp());
                         color = Color(pigment[0] / mass, pigment[1] / mass, pigment[2] / mass);
                     } else {
@@ -86,7 +90,8 @@ impl Painter {
                                 - flow * 0.25
                                 - folds * 0.08
                                 - local.opening * 0.15;
-                            (-(surface * 7.0).powi(2) - z * z * 0.5).exp()
+                            let petal = audio_wave(a, 1, radius + z.abs() * 0.3);
+                            (-((surface - petal * 0.08) * 7.0).powi(2) - z * z * 0.5).exp()
                         } else {
                             let threads = ((u + folds * 0.12) * 41.0 + z * 7.0).sin()
                                 * ((v + flow * 0.16) * 29.0 - z * 11.0).cos();
@@ -129,7 +134,13 @@ impl Painter {
                     };
                     let light_front =
                         (0.5 + 0.5 * (u * 2.4 + v * 1.8 + z - flow_time * 2.0).sin()).powi(4);
-                    let accent = local.light * (0.25 + 0.75 * light_front);
+                    let glint = audio_wave(
+                        a,
+                        if self.style == "nebula" { 0 } else { 2 },
+                        (u * 0.6 + v * 0.4 + z * 0.3).abs(),
+                    )
+                    .abs();
+                    let accent = local.light * (0.25 + 0.75 * light_front) + glint * 0.7;
                     let highlight = diffuse.powi(14) * 0.8 + reflection * (0.7 + accent);
                     let neon = self.neon_strength(x as f64 * 2.0, y as f64 * 2.0);
                     let illumination = 0.25
@@ -146,7 +157,11 @@ impl Painter {
                     }
                     transmission *= 1.0 - opacity;
                 }
-                field.put_pixel(x as u32, y as u32, image::Rgb(light));
+                field.put_pixel(
+                    x as u32,
+                    y as u32,
+                    image::Rgba([light[0], light[1], light[2], transmission as f32]),
+                );
             }
         }
         let field = image::imageops::resize(
@@ -155,8 +170,23 @@ impl Painter {
             HEIGHT as u32,
             image::imageops::FilterType::CatmullRom,
         );
-        for (target, value) in self.pixels.iter_mut().zip(field.as_raw()) {
-            *target += value * 255.0;
+        for (i, (target, value)) in self
+            .pixels
+            .as_chunks_mut::<3>()
+            .0
+            .iter_mut()
+            .zip(field.as_raw().as_chunks::<4>().0.iter())
+            .enumerate()
+        {
+            if (i % WIDTH).is_multiple_of(4) && (i / WIDTH).is_multiple_of(4) {
+                let gi = ((i / WIDTH / 4) * (WIDTH / 4) + i % WIDTH / 4) * 3;
+                for glow in &mut self.glow[gi..gi + 3] {
+                    *glow *= value[3].clamp(0.0, 1.0);
+                }
+            }
+            for c in 0..3 {
+                target[c] = target[c] * value[3].clamp(0.0, 1.0) + value[c] * 255.0;
+            }
         }
     }
 
@@ -184,7 +214,7 @@ impl Painter {
     }
 
     pub(super) fn chrome(&mut self, t: f64, a: AudioFrame) {
-        let size = 185.0 + self.variant * 10.0;
+        let size = (185.0 + self.variant * 10.0) * self.spread;
         let cy = 430.0 + 25.0 * (t * 0.25 + self.phase).sin();
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
@@ -207,8 +237,9 @@ impl Painter {
                 let z = (1.0 - r.min(1.0 - 0.5 / size).powi(2)).sqrt();
                 let reflected = (ny * 4.0 + z * 3.0 + (nx * 3.0 + t * 0.3).sin() * 0.6).sin();
                 let stripe = (1.0 - reflected.abs()).powi(14);
+                let glint = audio_wave(a, 1, (angle / PI + 1.0) * 0.8 + z * 0.5).abs();
                 let rim = (1.0 - z).powi(5);
-                let light = 0.09 + 0.35 * z + 0.55 * stripe + 0.5 * rim;
+                let light = 0.09 + 0.35 * z + (0.55 + glint) * stripe + 0.5 * rim;
                 let color = self.local_color(
                     mix_light(
                         self.palette[0],
@@ -219,8 +250,15 @@ impl Painter {
                     z,
                 );
                 let i = (y * WIDTH + x) * 3;
+                if x.is_multiple_of(4) && y.is_multiple_of(4) {
+                    let gi = ((y / 4) * (WIDTH / 4) + x / 4) * 3;
+                    for glow in &mut self.glow[gi..gi + 3] {
+                        *glow *= (1.0 - coverage) as f32;
+                    }
+                }
                 for (j, value) in [color.0, color.1, color.2].into_iter().enumerate() {
-                    self.pixels[i + j] += ((value * light + stripe * 100.0) * coverage) as f32;
+                    self.pixels[i + j] = self.pixels[i + j] * (1.0 - coverage) as f32
+                        + ((value * light + stripe * 100.0) * coverage) as f32;
                 }
             }
         }
@@ -234,21 +272,27 @@ impl Painter {
                 let y = -240.0 + u * 1440.0;
                 let twist = u * (7.0 + self.variant * 2.0) - t * 0.6 + phase;
                 let energy = band_at(&a, u + ribbon as f64 * 0.23);
-                let x =
-                    270.0 + (125.0 + energy * 35.0) * twist.sin() + 40.0 * (u * 4.0 + phase).cos();
+                let fold = audio_wave(a, 1, (u * 3.0 - ribbon as f64 * 0.25).abs());
+                let shimmer = audio_wave(a, 2, u * 3.0 + ribbon as f64 * 0.12).abs();
+                let x = 270.0
+                    + (125.0 + energy * 35.0) * twist.sin()
+                    + 40.0 * (u * 4.0 + phase).cos()
+                    + fold * 24.0;
                 let width = (20.0 + 65.0 * (u * PI).sin()) * (0.25 + 0.75 * twist.cos().abs());
                 let c = mix_light(self.palette[ribbon % 3], self.palette[(ribbon + 1) % 3], u);
                 for strip in 0..12 {
                     let v = strip as f64 / 11.0;
                     let xx = x + (v - 0.5) * width;
-                    let yy = y + (v - 0.5) * 30.0 * twist.sin();
+                    let yy = y + (v - 0.5) * (30.0 * twist.sin() + fold * 35.0);
+                    let facing = (twist.cos() * (v - 0.5) * 2.0).max(0.0);
                     self.line(
                         xx,
                         yy,
                         xx + width / 12.0,
                         yy + 2.0,
                         c,
-                        (0.15 + 0.45 * (v * PI).sin().powi(3)) * (0.6 + energy * 0.4),
+                        (0.09 + 0.38 * (v * PI).sin().powi(3) + facing.powi(8) * (0.4 + shimmer))
+                            * (0.6 + energy * 0.4),
                     );
                 }
             }
@@ -278,7 +322,8 @@ impl Painter {
                 let y = 440.0
                     + (50.0 + 110.0 * band_at(&a, u))
                         * (u * (16.0 + self.variant * 7.0) + (t - lag) * 3.0).sin()
-                    + band_at(&a, u) * 45.0 * (u * 7.0 - t).cos();
+                    + band_at(&a, u) * 45.0 * (u * 7.0 - t).cos()
+                    + audio_wave(a, 1, u * 3.0 + lag) * 35.0;
                 if step > 0 {
                     self.line(last.0, last.1, x, y, green, 0.5 / (1.0 + trail as f64));
                 }
@@ -314,7 +359,10 @@ impl Painter {
                 .unwrap()
                 .0;
                 let vignette = (1.0 - 0.5 * (dx * dx + dy * dy)).max(0.0);
-                let strength = if collage { 0.055 } else { 0.24 } * vignette;
+                let pulse = audio_wave(a, 0, dx.hypot(dy) * 4.0).abs();
+                let strength = if collage { 0.055 } else { 0.24 }
+                    * vignette
+                    * (0.85 + pose.unfold * 0.3 + pulse * 0.2);
                 let grain = ((x * 17 + y * 31 + x * y % 23) % 7) as f64 * 0.12;
                 let i = (y * WIDTH + x) * 3;
                 for (j, value) in sample.into_iter().enumerate() {

@@ -73,7 +73,7 @@ its own attack, release and delay; responses are precomputed from the audio so
 seeking and repeated frames remain deterministic. Music advances local flow clocks
 and slowly opens geometry. Accents are calibrated per frequency voice from the clip itself, preserving small
 changes in compressed tracks. They accelerate flow up to four times and create
-travelling surface highlights without kicking positions or density. Spatial lights
+travelling surface highlights without global position kicks. Spatial lights
 preserve local peaks instead of averaging them away. Damped spring oscillations are reserved for strings,
 ribbons and waves; liquid bodies drift, stretch and merge with moving reflections.
 
@@ -83,6 +83,26 @@ have moving, fading local highlights. Background veils, refracted light and
 particles occupy different depth planes. `nebula`, `liquid` and `bloom` integrate
 procedural density through depth with internal folds, surface lighting and
 occlusion; liquid bodies have independent motion and audio responses.
+
+All families use separate low-, mid- and high-frequency attacks measured before
+spectrum compression. Bass launches liquid surface waves and light fronts through
+galaxy arms and tunnel depth; midrange attacks pluck amber threads, fold silk,
+open bloom petals, and sweep highlights across violet, prism and chrome. Aurora
+and rain shimmer on high-frequency attacks; wave receives travelling swells and
+foam, analog a travelling deflection, and cover a soft radial lighting pulse.
+Each frequency region retains its latest wave.
+
+Before rendering, a clip-wide direction pass measures sustained energy and
+spectral changes, locates its strongest energetic phrase, and finds rises and
+pauses. Smooth envelopes gather the composition before a rise, open it around
+the strongest phrase, change colour around spectral turns, and leave more empty
+space in pauses. Constant sound does not invent a climax or structural changes;
+this analysis does not identify instruments, lyrics or verse/chorus labels.
+All decisions are precomputed and deterministic when seeking or replaying.
+
+Depth planes have distinct sharpness and lighting. Defocused elements retain
+soft light even without neon. Nebula, liquid, bloom and chrome attenuate distant
+particles and their glow behind the material, with near particles in front.
 
 ## Stored state and publishing
 

@@ -17,9 +17,15 @@ impl Painter {
                 wave = 610.0 + 70.0 * sin(x * 0.009 + t * 0.25 + self.phase);
                 height *= 0.6 + 0.35 * pow(sin(x * 0.015 + self.phase), 2.0);
             }
+            wave += audio_wave(a, 0, x / 200.0) * 24.0;
             self.line(x, wave - height, x, wave, white, 0.65);
             self.line(x, wave + 8.0, x, wave + height * 0.3 + 8.0, white, 0.08);
-            self.point(x, wave - height, white, 1.7);
+            self.point(
+                x,
+                wave - height,
+                white,
+                1.7 + audio_wave(a, 2, x / 180.0).abs(),
+            );
             if self.variant == 1.0 {
                 self.line(
                     x,
@@ -117,8 +123,16 @@ impl Painter {
                 let x = 270.0 + (250.0 + layer * 1.5) * r * cos(angle) * self.spread;
                 let y = 470.0 + (340.0 + layer * 1.5) * r * sin(angle);
                 let color = mix_light(violet, blue, 0.5 + 0.5 * sin(angle * 2.0 + t * 0.3));
+                let light = audio_wave(a, 1, angle / PI + layer * 0.08).abs();
                 if i > 0.0 {
-                    self.line(last_x, last_y, x, y, color, 0.13 + 0.19 * energy);
+                    self.line(
+                        last_x,
+                        last_y,
+                        x,
+                        y,
+                        color,
+                        0.13 + 0.19 * energy + light * 0.5,
+                    );
                 }
                 (last_x, last_y) = (x, y);
             }
@@ -196,8 +210,17 @@ impl Painter {
                         c = teal;
                         y += 80.0;
                     }
+                    let pluck = audio_wave(a, 1, (x + 40.0) / 210.0 + strand * 0.025);
+                    y += pluck * 18.0 * sin(strand * 0.4);
                     if i > 0.0 {
-                        self.line(last_x, last_y, x, y, c, 0.22 + 0.2 * energy);
+                        self.line(
+                            last_x,
+                            last_y,
+                            x,
+                            y,
+                            c,
+                            0.22 + 0.2 * energy + pluck.abs() * 0.25,
+                        );
                     }
                     (last_x, last_y) = (x, y);
                 }
@@ -256,7 +279,10 @@ impl Painter {
                 for step_index in 1..16 + 1 {
                     let step = step_index as f64;
                     let f = step / 16.0;
-                    let xx = x + 14.0 * sin(f * 3.0 + t * 0.25 + phase) * f;
+                    let shimmer = audio_wave(a, 2, x / 210.0 + f * 0.5).abs();
+                    let xx = x
+                        + 14.0 * sin(f * 3.0 + t * 0.25 + phase) * f
+                        + audio_wave(a, 1, x / 240.0) * f * 18.0;
                     let yy = base - height * f;
                     self.line(
                         last_x,
@@ -264,7 +290,7 @@ impl Painter {
                         xx,
                         yy,
                         mix_light(color, self.palette[2], f * 0.6),
-                        (0.12 + 0.2 * energy) * (1.0 - f * 0.65),
+                        (0.12 + 0.2 * energy + shimmer * 0.55) * (1.0 - f * 0.65),
                     );
                     (last_x, last_y) = (xx, yy);
                 }
@@ -339,12 +365,15 @@ impl Painter {
                 let x = 270.0 + r * cos(angle);
                 let y = 470.0 + r * 1.22 * sin(angle);
                 let color = mix_light(self.palette[0], self.palette[1], layer / 9.0);
+                let glint = audio_wave(a, 1, vertex / sides + layer * 0.14).abs();
+                let edge_light = 0.3 + 0.2 * (angle + layer * 0.3).cos().abs() + glint * 1.2;
                 if vertex == 0.0 {
                     (first_x, first_y) = (x, y);
                 } else {
-                    self.line(last_x, last_y, x, y, color, 0.5 + 0.35 * energy);
+                    self.line(last_x, last_y, x, y, color, edge_light + 0.35 * energy);
                 }
-                self.point(x, y, self.palette[2], 1.2 + energy);
+                let sparkle = audio_wave(a, 2, vertex / sides + layer * 0.09).abs();
+                self.point(x, y, self.palette[2], 0.8 + energy + sparkle * 1.5);
                 (last_x, last_y) = (x, y);
             }
             if layer % 3.0 == 0.0 {
@@ -413,6 +442,7 @@ impl Painter {
                         470.0 + r * 1.25 * sin(angle),
                     );
                     let color = mix_light(self.palette[0], self.palette[1], f);
+                    let front = audio_wave(a, 0, f * 3.0 + arm * 0.2).abs();
                     if step > 0.0 {
                         self.line(
                             last_x,
@@ -420,7 +450,7 @@ impl Painter {
                             x,
                             y,
                             color,
-                            (0.2 + 0.3 * energy) * (1.0 - f * 0.5),
+                            (0.2 + 0.3 * energy + front * 0.65) * (1.0 - f * 0.5),
                         );
                     }
                     (last_x, last_y) = (x, y);
@@ -476,6 +506,7 @@ impl Painter {
             let ring = ring_index as f64;
             let depth = r#mod(ring / 18.0 + t * 0.045, 1.0);
             let radius = 25.0 + depth * 560.0 * self.spread;
+            let pulse = audio_wave(a, 0, depth * 3.0).abs();
             let mut last_x: f64 = 0.0;
             let mut last_y: f64 = 0.0;
             for step_index in 0..=240 {
@@ -504,7 +535,7 @@ impl Painter {
                         x,
                         y,
                         mix_light(self.palette[0], self.palette[1], depth),
-                        (0.12 + 0.5 * depth) * (0.5 + energy),
+                        (0.12 + 0.5 * depth) * (0.5 + energy + pulse),
                     );
                 }
                 (last_x, last_y) = (x, y);
@@ -526,7 +557,9 @@ impl Painter {
                 let f = step / 300.0;
                 let angle = f * 2.0 * PI;
                 let energy = band_at(&a, f + ring * 0.021);
-                let radius = (220.0 + 55.0 * energy + 28.0 * response.light) * self.spread;
+                let orbit_wave = audio_wave(a, 0, f * 2.0 + ring * 0.08);
+                let radius = (220.0 + 55.0 * energy + 28.0 * response.light + orbit_wave * 14.0)
+                    * self.spread;
                 let (mut x, mut y) = (
                     radius * cos(angle),
                     radius * (0.16 + 0.28 * self.morph) * sin(angle),
@@ -587,6 +620,8 @@ impl Painter {
                             * cos(depth * (4.0 + 5.0 * self.morph) - t * 0.3);
                 }
                 let color = mix_light(self.palette[0], self.palette[1], depth);
+                let swell = audio_wave(a, 0, depth * 2.5 + (f - 0.5).abs());
+                y += swell * (10.0 + depth * 22.0);
                 if step > 0.0 {
                     self.line(
                         last_x,
@@ -594,7 +629,9 @@ impl Painter {
                         x,
                         y,
                         color,
-                        0.15 + 0.35 * depth + 0.25 * energy,
+                        0.15 + 0.35 * depth
+                            + 0.25 * energy
+                            + audio_wave(a, 2, depth * 2.0 + f).abs() * 0.4,
                     );
                 }
                 if step % 8.0 == 0.0 {
@@ -626,7 +663,8 @@ impl Painter {
                 (dx, dy) = (-dy * 0.25 * cos(y * 0.014 + t * 0.4 + self.phase), -dy);
             }
             let color = mix_light(self.palette[0], self.palette[1], s.depth);
-            let brightness = (0.1 + s.depth * 0.6) * (0.35 + 0.95 * energy);
+            let sparkle = audio_wave(a, 2, s.v * 3.0 + s.depth * 0.3).abs();
+            let brightness = (0.1 + s.depth * 0.6) * (0.35 + 0.95 * energy + sparkle);
             self.line(x, y, x - dx, y - dy, color, brightness * 0.45);
             self.point(x, y, self.palette[2], brightness * 1.5);
             if i % 9.0 == 0.0 {

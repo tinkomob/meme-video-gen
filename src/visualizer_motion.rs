@@ -4,6 +4,93 @@ const VOICES: usize = 12;
 const GRID_W: usize = 19;
 const GRID_H: usize = 33;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct Direction {
+    pub(super) energy: f64,
+    pub(super) space: f64,
+    pub(super) tension: f64,
+    pub(super) climax: f64,
+    pub(super) change: f64,
+}
+
+fn direct(frames: &[AudioFrame]) -> Vec<Direction> {
+    if frames.is_empty() {
+        return Vec::new();
+    }
+    let window = |i: usize, radius: usize| {
+        &frames[i.saturating_sub(radius)..(i + radius + 1).min(frames.len())]
+    };
+    let energy: Vec<_> = (0..frames.len())
+        .map(|i| {
+            let w = &frames[i.saturating_sub(FPS)..=i];
+            w.iter()
+                .map(|a| a.level * 0.6 + a.bands.iter().sum::<f64>() / BANDS as f64 * 0.4)
+                .sum::<f64>()
+                / w.len() as f64
+        })
+        .collect();
+    let novelty: Vec<_> = (0..frames.len())
+        .map(|i| {
+            let before = window(i.saturating_sub(FPS / 2), FPS / 4);
+            let after = window((i + FPS / 2).min(frames.len() - 1), FPS / 4);
+            (0..BANDS)
+                .map(|b| {
+                    (before.iter().map(|a| a.bands[b]).sum::<f64>() / before.len() as f64
+                        - after.iter().map(|a| a.bands[b]).sum::<f64>() / after.len() as f64)
+                        .abs()
+                })
+                .sum::<f64>()
+                / BANDS as f64
+        })
+        .collect();
+    let maximum = energy.iter().copied().fold(0.0, f64::max);
+    let interior =
+        &energy[FPS.min(frames.len())..frames.len().saturating_sub(FPS).max(FPS.min(frames.len()))];
+    let interior_max = interior.iter().copied().fold(0.0, f64::max);
+    let minimum = interior.iter().copied().fold(1.0, f64::min);
+    let novelty_peak = novelty.iter().copied().fold(0.0, f64::max);
+    let mut candidates: Vec<_> = (FPS..frames.len().saturating_sub(FPS))
+        .filter(|i| novelty[*i] > 0.04_f64.max(novelty_peak * 0.45))
+        .collect();
+    candidates.sort_by(|a, b| novelty[*b].total_cmp(&novelty[*a]));
+    let mut sections = Vec::new();
+    for i in candidates {
+        if sections.iter().all(|s: &usize| s.abs_diff(i) >= FPS * 2) {
+            sections.push(i);
+        }
+    }
+    let climax = (FPS..frames.len().saturating_sub(FPS))
+        .max_by(|a, b| {
+            let score = |i: usize| {
+                energy[i]
+                    + (energy[i] - energy[i.saturating_sub(FPS * 2)]).max(0.0) * 1.5
+                    + frames[i].attacks.iter().sum::<f64>() * 0.04
+            };
+            score(*a).total_cmp(&score(*b))
+        })
+        .filter(|_| interior_max - minimum > 0.08);
+    (0..frames.len())
+        .map(|i| {
+            let current = energy[i];
+            let future = energy[(i + FPS).min(frames.len() - 1)];
+            let peak_distance = climax.map_or(100.0, |peak| (i as f64 - peak as f64) / FPS as f64);
+            Direction {
+                energy: current,
+                space: (1.0 - current / maximum.max(0.01)).clamp(0.0, 1.0),
+                tension: ((future - current).max(0.0) * 2.0).min(1.0),
+                climax: (-peak_distance.powi(2) / 0.65).exp(),
+                change: sections
+                    .iter()
+                    .map(|s| {
+                        let distance = (i as f64 - *s as f64) / FPS as f64;
+                        (-distance.powi(2) / 0.5).exp() * novelty[*s] / novelty_peak.max(0.01)
+                    })
+                    .fold(0.0, f64::max),
+            }
+        })
+        .collect()
+}
+
 #[derive(Clone, Copy, Default)]
 pub(super) struct Response {
     pub(super) energy: f64,
@@ -34,6 +121,27 @@ pub(super) fn hue_color(hue: f64) -> Color {
 }
 
 impl Painter {
+    pub(super) fn musical_pose(&self, frame: usize, mut pose: Pose) -> Pose {
+        let energy = |responses: &[Response; VOICES]| {
+            responses.iter().map(|r| r.opening).sum::<f64>() / VOICES as f64
+        };
+        let current = energy(&self.response);
+        let upcoming = self.responses.get(frame + FPS / 2).map_or(current, energy);
+        // The entire clip is known: gently gather the scene before a rise.
+        let gathering = (upcoming - current).max(0.0);
+        pose.zoom *= 0.96 + current * 0.12 - gathering * 0.08;
+        pose.unfold = (pose.unfold * 0.7 + current * 0.5).min(1.0);
+        pose.density = (pose.density * 0.65 + current * 0.5 - gathering * 0.15).clamp(0.0, 1.0);
+        if let Some(d) = self.direction.get(frame) {
+            pose.zoom *= 1.0 + d.climax * 0.1 - d.tension * 0.06 - d.space * 0.035;
+            pose.unfold = (pose.unfold + d.climax * 0.22 - d.tension * 0.12).clamp(0.0, 1.0);
+            pose.density = (pose.density + d.energy * 0.12 - d.space * 0.15).clamp(0.0, 1.0);
+            pose.color = (pose.color * 0.75 + d.change * 0.25).clamp(0.0, 1.0);
+            pose.turn += d.change * 0.035 * self.phase.sin();
+        }
+        pose
+    }
+
     pub(super) fn elastic(&self) -> bool {
         matches!(
             self.style.as_str(),
@@ -65,6 +173,7 @@ impl Painter {
     }
 
     pub fn prepare_audio(&mut self, frames: &[AudioFrame]) {
+        self.direction = direct(frames);
         let drives: Vec<[f64; VOICES]> = (0..frames.len())
             .map(|frame| {
                 std::array::from_fn(|voice| {
@@ -230,6 +339,88 @@ impl Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn direction_finds_changes_peak_build_and_silence_without_inventing_constant_track_events() {
+        assert!(direct(&[]).is_empty());
+        for count in [1, 30, 600] {
+            let constant = AudioFrame {
+                level: 0.5,
+                bands: [0.4; BANDS],
+                ..AudioFrame::default()
+            };
+            assert!(
+                direct(&vec![constant; count])
+                    .iter()
+                    .all(|d| d.climax == 0.0 && d.change == 0.0 && d.tension == 0.0)
+            );
+        }
+        let mut frames = vec![AudioFrame::default(); 600];
+        for (i, a) in frames.iter_mut().enumerate().take(450).skip(90) {
+            a.level = if i >= 270 { 0.9 } else { 0.3 };
+            if i < 270 {
+                a.bands[..24].fill(0.4);
+            } else {
+                a.bands[32..].fill(0.9);
+            }
+        }
+        let d = direct(&frames);
+        assert!(
+            d[240..270].iter().any(|d| d.tension > 0.3),
+            "missing buildup"
+        );
+        assert!(
+            d[270..360].iter().any(|d| d.climax > 0.9),
+            "missing strongest phrase"
+        );
+        assert!(
+            d[255..285].iter().any(|d| d.change > 0.8),
+            "missing spectral change"
+        );
+        assert!(
+            d[520].space > 0.99 && d[520].energy == 0.0,
+            "pause never opens space"
+        );
+        for pair in d.windows(2) {
+            assert!((pair[0].climax - pair[1].climax).abs() < 0.08);
+            assert!((pair[0].change - pair[1].change).abs() < 0.08);
+        }
+        let shifted: Vec<_> = std::iter::repeat_n(AudioFrame::default(), 45)
+            .chain(frames)
+            .collect();
+        let shifted = direct(&shifted);
+        assert!(
+            (shifted[345].climax - d[300].climax).abs() < 1e-9,
+            "climax is tied to a fixed time"
+        );
+    }
+
+    #[test]
+    fn composition_follows_phrases_and_gathers_before_a_rise() {
+        let mut p = Painter::new("liquid", 71, 1);
+        let mut audio = vec![AudioFrame::default(); 300];
+        for a in &mut audio[90..180] {
+            a.bands.fill(0.8);
+        }
+        p.prepare_audio(&audio);
+        let pose = Pose {
+            zoom: 1.0,
+            density: 0.5,
+            ..Pose::default()
+        };
+        p.update_field(60, audio[60]);
+        let quiet = p.musical_pose(60, pose);
+        p.update_field(88, audio[88]);
+        let before = p.musical_pose(88, pose);
+        p.update_field(160, audio[160]);
+        let loud = p.musical_pose(160, pose);
+        assert!(before.zoom < quiet.zoom, "no anticipation");
+        assert!(
+            loud.zoom > quiet.zoom && loud.density > quiet.density && loud.unfold > quiet.unfold
+        );
+        p.update_field(299, audio[299]);
+        assert!(p.musical_pose(299, pose).zoom.is_finite());
+    }
 
     #[test]
     fn voices_select_frequencies_keep_inertia_and_replay_identically() {

@@ -17,6 +17,10 @@ pub struct AudioFrame {
     pub beat: f64,
     pub event: u64,
     pub event_age: f64,
+    /// Low, mid and high attacks, measured before visual spectrum compression.
+    pub attacks: [f64; 3],
+    /// Seconds since the latest attack in each frequency region.
+    pub attack_age: [f64; 3],
 }
 impl Default for AudioFrame {
     fn default() -> Self {
@@ -28,6 +32,8 @@ impl Default for AudioFrame {
             beat: 0.0,
             event: 0,
             event_age: 0.0,
+            attacks: [0.0; 3],
+            attack_age: [10.0; 3],
         }
     }
 }
@@ -63,13 +69,38 @@ pub fn analyze(samples: &[f64]) -> Vec<AudioFrame> {
         }
     }
     let mut previous = AudioFrame::default();
+    let mut previous_spectrum = [0.0; BANDS];
+    let mut average_flux = [0.0_f64; 3];
     let (mut event, mut since_event) = (0, FPS);
     for frame in &mut frames {
         frame.level /= peak_level;
+        let mut rises = [0.0; 3];
         for (b, value) in frame.bands.iter_mut().enumerate() {
+            let magnitude = *value / peak;
             let v = (60.0 * (*value) / peak).ln_1p() / 61.0_f64.ln();
+            let region = if b < 16 {
+                0
+            } else if b < 40 {
+                1
+            } else {
+                2
+            };
+            rises[region] += (magnitude - previous_spectrum[b]).max(0.0).powi(2);
+            previous_spectrum[b] = magnitude;
             let weight = if v < previous.bands[b] { 0.2 } else { 0.65 };
             *value = previous.bands[b] + weight * (v - previous.bands[b]);
+        }
+        for region in 0..3 {
+            let rise = (rises[region] / [16.0, 24.0, 24.0][region]).sqrt();
+            let age = previous.attack_age[region] + 1.0 / FPS as f64;
+            if rise > (average_flux[region] * 1.8 + 0.012) && age >= 0.1 {
+                frame.attacks[region] = (rise / (average_flux[region] * 3.0 + 0.06)).min(1.0);
+                frame.attack_age[region] = 0.0;
+            } else {
+                frame.attacks[region] = previous.attacks[region] * 0.97;
+                frame.attack_age[region] = age;
+            }
+            average_flux[region] += (rise - average_flux[region]) * 0.08;
         }
         frame.bass = frame.bands[..16].iter().sum::<f64>() / 16.0;
         frame.treble = frame.bands[40..].iter().sum::<f64>() / 24.0;
@@ -171,6 +202,7 @@ pub struct Painter {
     neon: bool,
     neon_time: f64,
     responses: Vec<[motion::Response; 12]>,
+    direction: Vec<motion::Direction>,
     response: [motion::Response; 12],
     field: Vec<motion::Field>,
 }
@@ -180,6 +212,15 @@ fn mix_light(a: Color, b: Color, t: f64) -> Color {
         a.1 + (b.1 - a.1) * t,
         a.2 + (b.2 - a.2) * t,
     )
+}
+fn audio_wave(a: AudioFrame, region: usize, distance: f64) -> f64 {
+    // shortcut: one wave per region; retain overlapping waves if dense percussion clips tails.
+    let age = a.attack_age[region];
+    let front = distance - age * 2.8;
+    if a.attacks[region] == 0.0 || front.abs() > 1.0 {
+        return 0.0;
+    }
+    a.attacks[region] * (-age * 2.0 - front * front * 18.0).exp() * (front * 13.0).cos()
 }
 fn band_at(a: &AudioFrame, position: f64) -> f64 {
     let position = position.rem_euclid(1.0);
@@ -274,6 +315,7 @@ impl Painter {
             neon: !seed.is_multiple_of(4),
             neon_time: 0.0,
             responses: Vec::new(),
+            direction: Vec::new(),
             response: [motion::Response::default(); 12],
             field: vec![motion::Field::default(); 19 * 33],
         };
@@ -358,17 +400,20 @@ impl Painter {
             }
         }
         let neon = self.neon_strength(x, y);
-        if neon == 0.0 {
+        let defocus = (1.0 - self.view.focus).clamp(0.0, 1.0);
+        if neon == 0.0 && defocus == 0.0 {
             return;
         }
         let (gx, gy) = ((x / 4.0) as i32, (y / 4.0) as i32);
-        for dy in -3..=3 {
-            for dx in -3..=3 {
+        let radius = if neon > 0.0 { 3 } else { 1 };
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
                 let (xx, yy) = (gx + dx, gy + dy);
                 if xx < 0 || xx >= WIDTH as i32 / 4 || yy < 0 || yy >= HEIGHT as i32 / 4 {
                     continue;
                 }
-                let a = intensity * neon * 0.11 / (1 + dx * dx + dy * dy) as f64;
+                let a =
+                    intensity * (neon * 0.11 + defocus * 0.018) / (1 + dx * dx + dy * dy) as f64;
                 let i = (yy as usize * (WIDTH / 4) + xx as usize) * 3;
                 for (j, v) in [c.0, c.1, c.2].iter().enumerate() {
                     self.glow[i + j] += (v * a) as f32;
@@ -476,8 +521,8 @@ impl Painter {
                     } else {
                         [-650.0, -250.0, 150.0][layer]
                     },
-                light: [0.5, 0.4, 0.82][layer] * (0.8 + 0.3 * pose.density),
-                focus: [0.4, 0.7, 1.0][layer],
+                light: [0.28, 0.45, 0.9][layer] * (0.7 + 0.4 * pose.density),
+                focus: [0.25, 0.65, 1.0][layer],
             };
             for i in 0..3 {
                 self.palette[i] = mix_light(
@@ -534,7 +579,7 @@ impl Painter {
                     let light = if matches!(self.style.as_str(), "cover" | "collage") {
                         (-dx * dx - dy * dy).exp() * (0.09 + 0.04 * r.energy)
                     } else {
-                        veil * (0.14 + 0.1 * pose.density + 0.07 * r.opening)
+                        veil * (0.08 + 0.06 * pose.density + 0.04 * r.opening)
                             * (0.7 + caustic * 1.6)
                     };
                     let c = self.local_color(self.palette[cloud % 3], local, p.depth);
@@ -546,10 +591,19 @@ impl Painter {
             }
         }
     }
-    fn depth_particles(&mut self, seconds: f64, pose: Pose, a: AudioFrame) {
+    fn depth_particles(
+        &mut self,
+        seconds: f64,
+        pose: Pose,
+        a: AudioFrame,
+        depths: std::ops::Range<f64>,
+    ) {
         for i in 0..720 {
             let s = self.particles[i];
             let z = (s.depth + seconds * (0.015 + 0.01 * s.u)) % 1.0;
+            if !depths.contains(&z) {
+                continue;
+            }
             let perspective = 0.35 + z * z * 1.9;
             let angle =
                 self.phase + s.phase + 0.4 * (seconds * (0.07 + s.u * 0.12) + s.phase).sin();
@@ -603,24 +657,31 @@ impl Painter {
         let pose = self.evolution(f as f64 / 599.0);
         self.neon_time = seconds;
         self.update_field(f, a);
+        let pose = self.musical_pose(f, pose);
         a = self.shape_audio(a);
         if matches!(self.style.as_str(), "collage" | "cover") {
             self.cover_scene(seconds, pose, a);
         } else {
             if matches!(self.style.as_str(), "nebula" | "liquid" | "bloom") {
+                self.depth_particles(seconds, pose, a, 0.0..0.65);
                 self.volume(seconds * self.speed, pose, a);
-                self.depth_particles(seconds, pose, a);
+                self.depth_particles(seconds, pose, a, 0.65..1.0);
             } else if self.style == "chrome" {
+                self.depth_particles(seconds, pose, a, 0.0..0.65);
                 self.morph = pose.unfold;
+                let spread = self.spread;
+                self.spread *= pose.zoom;
                 self.chrome(self.response[0].travel * self.speed * 2.0, a);
+                self.spread = spread;
+                self.depth_particles(seconds, pose, a, 0.65..1.0);
             } else {
                 self.depth_layers(seconds, pose, a);
             }
             if !matches!(
                 self.style.as_str(),
-                "analog" | "nebula" | "liquid" | "bloom"
+                "analog" | "chrome" | "nebula" | "liquid" | "bloom"
             ) {
-                self.depth_particles(seconds, pose, a);
+                self.depth_particles(seconds, pose, a, 0.0..1.0);
                 self.accents(seconds, a);
             }
         }
@@ -748,6 +809,7 @@ mod tests {
                 beat: 1.0,
                 event,
                 event_age: 0.3,
+                ..AudioFrame::default()
             };
             let regions: Vec<_> = (0..400)
                 .map(|i| band_at(&audio, i as f64 / 400.0))
@@ -783,6 +845,14 @@ mod tests {
         p.light_point(270.0, 480.0, Color(255.0, 100.0, 50.0), 1.0);
         assert!(p.glow.iter().all(|v| *v == 0.0));
         assert!(p.pixels.iter().any(|v| *v > 0.0));
+        p.view.focus = 0.25;
+        p.light_point(270.0, 480.0, Color(255.0, 100.0, 50.0), 1.0);
+        assert!(
+            p.glow.iter().any(|v| *v > 0.0),
+            "defocus disappears when neon is disabled"
+        );
+        p.view.focus = 1.0;
+        p.glow.fill(0.0);
         p.neon = true;
         let mut masks = Vec::new();
         for second in 0..20 {
@@ -1018,6 +1088,163 @@ mod tests {
             band_at(&attack, position) > band_at(&low, position) + 0.15
         }));
         assert_eq!(band_at(&AudioFrame::default(), 0.5), 0.0);
+    }
+
+    #[test]
+    fn frequency_attacks_are_separate_and_sustained_notes_do_not_retrigger() {
+        for (region, frequency) in [80.0, 500.0, 5000.0].into_iter().enumerate() {
+            let samples: Vec<_> = (0..64000)
+                .map(|i| {
+                    if (16000..48000).contains(&i) {
+                        (2.0 * PI * frequency * i as f64 / 16000.0).sin()
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let frames = analyze(&samples);
+            let peak: [f64; 3] = std::array::from_fn(|r| {
+                frames[28..34]
+                    .iter()
+                    .map(|f| f.attacks[r])
+                    .fold(0.0, f64::max)
+            });
+            assert!(peak[region] > 0.3, "missing attack: {region}: {peak:?}");
+            for other in 0..3 {
+                if other != region {
+                    assert!(
+                        peak[other] < peak[region] * 0.5,
+                        "cross-band attack: {peak:?}"
+                    );
+                }
+            }
+            assert!(
+                frames[75].attack_age[region] > 1.0,
+                "sustain retriggers attack"
+            );
+            assert!(frames[220].attacks[region] < 0.05);
+        }
+        assert!(
+            analyze(&vec![0.0; 32000])
+                .iter()
+                .all(|f| f.attacks == [0.0; 3])
+        );
+    }
+
+    #[test]
+    fn every_family_and_variant_has_its_own_material_attack() {
+        let cover = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(256, 256, |x, y| {
+            image::Rgb([x as u8, y as u8, 140])
+        }));
+        for (style, region) in [
+            ("silver", 0),
+            ("violet", 1),
+            ("amber", 1),
+            ("aurora", 2),
+            ("prism", 1),
+            ("galaxy", 0),
+            ("tunnel", 0),
+            ("orbit", 0),
+            ("wave", 0),
+            ("rain", 2),
+            ("chrome", 1),
+            ("silk", 1),
+            ("analog", 1),
+            ("cover", 0),
+            ("nebula", 0),
+            ("liquid", 0),
+            ("bloom", 1),
+        ] {
+            for variant in 0..3 {
+                let mut p = Painter::new(style, 71, variant);
+                p.set_cover(&cover);
+                let quiet = p.frame(240, AudioFrame::default()).to_vec();
+                let mut attack = AudioFrame::default();
+                attack.attacks[region] = 1.0;
+                attack.attack_age[region] = 0.3;
+                let active = p.frame(240, attack).to_vec();
+                let changed = quiet
+                    .iter()
+                    .zip(&active)
+                    .filter(|(a, b)| a.abs_diff(**b) > 3)
+                    .count();
+                assert!(
+                    changed > 100,
+                    "missing material attack: {style}/{variant}: {changed}"
+                );
+                assert_eq!(
+                    active,
+                    p.frame(240, attack),
+                    "material state depends on render order: {style}/{variant}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn volumes_occlude_background_light_but_keep_empty_space_transparent() {
+        for style in ["liquid", "nebula", "bloom"] {
+            let mut p = Painter::new(style, 71, 1);
+            p.update_field(120, AudioFrame::default());
+            p.pixels.fill(0.0);
+            p.volume(4.0, Pose::default(), AudioFrame::default());
+            let dark = p.pixels.clone();
+            p.pixels.fill(100.0);
+            p.volume(4.0, Pose::default(), AudioFrame::default());
+            let transmission: Vec<_> = p
+                .pixels
+                .iter()
+                .zip(&dark)
+                .map(|(a, b)| (a - b) / 100.0)
+                .collect();
+            assert!(transmission.iter().all(|t| (-0.001..=1.001).contains(t)));
+            assert!(
+                transmission
+                    .iter()
+                    .any(|t| *t < if style == "liquid" { 0.3 } else { 0.95 }),
+                "volume does not attenuate distant particles: {style}"
+            );
+            assert!(
+                transmission.iter().any(|t| *t > 0.9),
+                "empty space hides distant particles"
+            );
+        }
+    }
+
+    #[test]
+    fn waves_travel_and_materials_keep_separate_audio_responses() {
+        let mut a = AudioFrame {
+            attacks: [1.0; 3],
+            attack_age: [0.0; 3],
+            ..AudioFrame::default()
+        };
+        assert!(audio_wave(a, 0, 0.0) > 0.9);
+        assert!(audio_wave(a, 0, 1.4).abs() < 0.01);
+        a.attack_age = [0.5; 3];
+        assert!(audio_wave(a, 0, 1.4) > 0.3);
+        assert!(audio_wave(a, 0, 0.0).abs() < 0.01);
+        assert_eq!(audio_wave(AudioFrame::default(), 0, 0.0), 0.0);
+        for (style, regions) in [
+            ("liquid", &[0, 2][..]),
+            ("silk", &[1, 2][..]),
+            ("prism", &[1, 2][..]),
+        ] {
+            let mut painter = Painter::new(style, 71, 1);
+            let quiet = painter.frame(120, AudioFrame::default()).to_vec();
+            for &region in regions {
+                let mut accent = AudioFrame::default();
+                accent.attacks[region] = 1.0;
+                accent.attack_age[region] = 0.3;
+                let loud = painter.frame(120, accent).to_vec();
+                let changed = quiet
+                    .iter()
+                    .zip(&loud)
+                    .filter(|(a, b)| a.abs_diff(**b) > 3)
+                    .count();
+                assert!(changed > 100, "missing {style} region {region}: {changed}");
+                assert_eq!(loud, painter.frame(120, accent), "non-deterministic render");
+            }
+        }
     }
 
     #[test]
