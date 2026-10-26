@@ -397,14 +397,16 @@ impl Painter {
         {
             return;
         }
-        let n = (x1 - x0).hypot(y1 - y0).ceil().max(1.0) as usize;
-        for i in 0..=n {
-            let t = i as f64 / n as f64;
+        let length = (x1 - x0).hypot(y1 - y0);
+        let n = (length * 2.0).ceil().max(1.0) as usize;
+        // Integrate coverage without drawing shared segment endpoints twice.
+        for i in 0..n {
+            let t = (i as f64 + 0.5) / n as f64;
             self.light_point(
                 x0 + (x1 - x0) * t,
                 y0 + (y1 - y0) * t,
                 c,
-                intensity * self.view.light,
+                intensity * self.view.light * length / n as f64,
             );
         }
     }
@@ -514,8 +516,21 @@ impl Painter {
                     let fold = (dx * 3.7 + dy * 2.1 + p.phase).sin() * (dy * 3.1 - time).cos();
                     let veil = (-dx * dx - dy * dy).exp()
                         * (0.3 + 0.7 * (fold * 2.0 + local.opening).sin().powi(2));
-                    let fine = (dx * 9.0 + dy * 6.0 + fold * 3.0 - time * 0.7).sin();
-                    let caustic = (1.0 - fine.abs()).powi(12);
+                    // Thin orbit background ridges need coverage over the low-resolution pixel.
+                    let samples = if self.style == "orbit" { 4 } else { 1 };
+                    let mut caustic = 0.0;
+                    for sy in 0..samples {
+                        for sx in 0..samples {
+                            let dx = dx
+                                + ((sx as f64 + 0.5) / samples as f64 - 0.5)
+                                    / (34.0 + p.depth * 22.0);
+                            let dy = dy + ((sy as f64 + 0.5) / samples as f64 - 0.5) / 70.0;
+                            let fold =
+                                (dx * 3.7 + dy * 2.1 + p.phase).sin() * (dy * 3.1 - time).cos();
+                            let fine = (dx * 9.0 + dy * 6.0 + fold * 3.0 - time * 0.7).sin();
+                            caustic += (1.0 - fine.abs()).powi(12) / (samples * samples) as f64;
+                        }
+                    }
                     let light = if matches!(self.style.as_str(), "cover" | "collage") {
                         (-dx * dx - dy * dy).exp() * (0.09 + 0.04 * r.energy)
                     } else {
@@ -610,6 +625,15 @@ impl Painter {
             }
         }
         self.atmosphere(seconds, pose);
+        if self.style == "orbit" {
+            let glow = image::Rgb32FImage::from_raw(
+                (WIDTH / 4) as u32,
+                (HEIGHT / 4) as u32,
+                std::mem::take(&mut self.glow),
+            )
+            .unwrap();
+            self.glow = image::imageops::blur(&glow, 0.7).into_raw();
+        }
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let i = (y * WIDTH + x) * 3;
@@ -643,6 +667,40 @@ impl Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn line_coverage_is_independent_of_segment_boundaries() {
+        let mut p = Painter::new("orbit", 42, 0);
+        p.pixels.fill(0.0);
+        let color = Color(100.0, 100.0, 100.0);
+        p.line(100.0, 100.25, 120.0, 100.25, color, 1.0);
+        let whole = p.pixels.clone();
+        p.pixels.fill(0.0);
+        for x in 100..120 {
+            p.line(x as f64, 100.25, x as f64 + 1.0, 100.25, color, 1.0);
+        }
+        assert!(
+            whole
+                .iter()
+                .zip(&p.pixels)
+                .all(|(a, b)| (a - b).abs() < 0.001)
+        );
+        assert!(whole.iter().any(|v| *v > 0.0));
+    }
+
+    #[test]
+    fn orbit_accents_move_the_rings_without_changing_their_light() {
+        for variant in 0..3 {
+            let mut p = Painter::new("orbit", 42, variant);
+            p.pixels.fill(0.0);
+            p.orbit(1.0, AudioFrame::default());
+            let quiet = p.pixels.clone();
+            p.pixels.fill(0.0);
+            p.response[3].light = 1.0;
+            p.orbit(1.0, AudioFrame::default());
+            assert_ne!(quiet, p.pixels, "orbit/{variant} ignores accents");
+        }
+    }
+
     #[test]
     fn sound_attacks_select_local_regions_without_scaling_the_whole_shape() {
         let mut previous = vec![];

@@ -514,7 +514,11 @@ impl Painter {
     pub(super) fn orbit(&mut self, t: f64, a: AudioFrame) {
         for ring_index in 0..11 {
             let ring = ring_index as f64;
-            let tilt = ring * PI / 11.0 + self.phase + 0.16 * sin(t * 0.19 + ring * 1.7);
+            let response = self.response[ring_index];
+            let tilt = ring * PI / 11.0
+                + self.phase
+                + response.travel * 0.12
+                + 0.24 * sin(t * 0.19 + ring * 1.7);
             let mut last_x: f64 = 0.0;
             let mut last_y: f64 = 0.0;
             for step_index in 0..=300 {
@@ -522,7 +526,7 @@ impl Painter {
                 let f = step / 300.0;
                 let angle = f * 2.0 * PI;
                 let energy = band_at(&a, f + ring * 0.021);
-                let radius = (220.0 + 37.0 * energy) * self.spread;
+                let radius = (220.0 + 55.0 * energy + 28.0 * response.light) * self.spread;
                 let (mut x, mut y) = (
                     radius * cos(angle),
                     radius * (0.16 + 0.28 * self.morph) * sin(angle),
