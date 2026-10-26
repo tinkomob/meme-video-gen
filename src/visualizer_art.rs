@@ -282,10 +282,13 @@ impl Painter {
     pub(super) fn silk(&mut self, t: f64, a: AudioFrame) {
         for ribbon in 0..4 {
             let phase = self.phase + ribbon as f64 * 1.5;
-            for step in 0..190 {
-                let u = step as f64 / 189.0;
+            let head = silk_head(t, self.phase + ribbon as f64 * 0.75);
+            let mut previous = [None; 12];
+            for step in 0..=360 {
+                let along = step as f64 / 360.0;
+                let u = head - 0.95 + along * 0.95;
                 let y = -240.0 + u * 1440.0;
-                let twist = u * (7.0 + self.variant * 2.0) - t * 0.6 + phase;
+                let twist = u * (7.0 + self.variant * 2.0) + phase;
                 let energy = band_at(&a, u + ribbon as f64 * 0.23);
                 let fold = audio_wave(a, 1, (u * 3.0 - ribbon as f64 * 0.25).abs());
                 let shimmer = audio_wave(a, 2, u * 3.0 + ribbon as f64 * 0.12).abs();
@@ -293,22 +296,31 @@ impl Painter {
                     + (125.0 + energy * 35.0) * twist.sin()
                     + 40.0 * (u * 4.0 + phase).cos()
                     + fold * 24.0;
-                let width = (20.0 + 65.0 * (u * PI).sin()) * (0.25 + 0.75 * twist.cos().abs());
+                let taper = (along / 0.12).min((1.0 - along) / 0.08).clamp(0.0, 1.0);
+                let width = (20.0 + 65.0 * (u * PI).sin().abs())
+                    * (0.25 + 0.75 * twist.cos().abs())
+                    * taper;
                 let c = mix_light(self.palette[ribbon % 3], self.palette[(ribbon + 1) % 3], u);
-                for strip in 0..12 {
+                for (strip, previous) in previous.iter_mut().enumerate() {
                     let v = strip as f64 / 11.0;
                     let xx = x + (v - 0.5) * width;
                     let yy = y + (v - 0.5) * (30.0 * twist.sin() + fold * 35.0);
                     let facing = (twist.cos() * (v - 0.5) * 2.0).max(0.0);
-                    self.line(
-                        xx,
-                        yy,
-                        xx + width / 12.0,
-                        yy + 2.0,
-                        c,
-                        (0.09 + 0.38 * (v * PI).sin().powi(3) + facing.powi(8) * (0.4 + shimmer))
-                            * (0.6 + energy * 0.4),
-                    );
+                    if let Some((last_x, last_y)) = *previous {
+                        self.line(
+                            last_x,
+                            last_y,
+                            xx,
+                            yy,
+                            c,
+                            (0.09
+                                + 0.38 * (v * PI).sin().powi(3)
+                                + facing.powi(8) * (0.4 + shimmer))
+                                * (0.6 + energy * 0.4)
+                                * taper,
+                        );
+                    }
+                    *previous = Some((xx, yy));
                 }
             }
         }
@@ -437,6 +449,31 @@ impl Painter {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+// Restart only after the tail has left the frame, including the depth-layer overscan.
+fn silk_head(t: f64, phase: f64) -> f64 {
+    -0.35 + (t * 0.22 + phase).rem_euclid(3.0)
+}
+
+#[cfg(test)]
+mod silk_tests {
+    use super::*;
+
+    #[test]
+    fn ribbons_advance_continuously_and_restart_outside_the_frame() {
+        let dt = 1.0 / FPS as f64;
+        for frame in 0..20 * FPS {
+            let before = silk_head(frame as f64 / FPS as f64, 1.5);
+            let after = silk_head(frame as f64 / FPS as f64 + dt, 1.5);
+            if after < before {
+                assert!(before - 0.95 > 1.6, "tail still visible at restart");
+                assert!(after < -0.3, "head restarted inside the frame");
+            } else {
+                assert!((after - before - dt * 0.22).abs() < 1e-12);
             }
         }
     }
