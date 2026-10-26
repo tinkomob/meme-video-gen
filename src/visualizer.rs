@@ -138,7 +138,6 @@ struct Particle {
 }
 #[derive(Clone, Copy, Default)]
 struct Pose {
-    at: f64,
     zoom: f64,
     turn: f64,
     x: f64,
@@ -194,7 +193,6 @@ pub struct Painter {
     shade: Vec<f32>,
     rgb: Vec<u8>,
     particles: Vec<Particle>,
-    timeline: Vec<Pose>,
     cover: Option<image::RgbImage>,
     cover_soft: Option<image::RgbImage>,
     view: View,
@@ -202,7 +200,6 @@ pub struct Painter {
     neon: bool,
     neon_time: f64,
     responses: Vec<[motion::Response; 12]>,
-    direction: Vec<motion::Direction>,
     response: [motion::Response; 12],
     field: Vec<motion::Field>,
 }
@@ -307,7 +304,6 @@ impl Painter {
                     phase: r.random::<f64>() * 2.0 * PI,
                 })
                 .collect(),
-            timeline: Vec::new(),
             cover: None,
             cover_soft: None,
             view: View::default(),
@@ -315,32 +311,16 @@ impl Painter {
             neon: !seed.is_multiple_of(4),
             neon_time: 0.0,
             responses: Vec::new(),
-            direction: Vec::new(),
             response: [motion::Response::default(); 12],
             field: vec![motion::Field::default(); 19 * 33],
         };
         let hue = r.random::<f64>();
         for i in 0..3 {
-            p.palette[i] = mix_light(p.palette[i], motion::hue_color(hue + i as f64 * 0.31), 0.8);
-        }
-        let count = r.random_range(4..9);
-        let mut times = vec![0.0, 1.0];
-        // Stratified times keep transitions smooth without fixing their number or rhythm.
-        for i in 1..count - 1 {
-            times.push((i as f64 + r.random_range(-0.4..0.4)) / (count - 1) as f64);
-        }
-        times.sort_by(f64::total_cmp);
-        for at in times {
-            p.timeline.push(Pose {
-                at,
-                zoom: r.random_range(0.78..1.22),
-                turn: r.random_range(-0.22..0.22),
-                x: r.random_range(-45.0..45.0),
-                y: r.random_range(-65.0..65.0),
-                unfold: r.random_range(0.05..1.0),
-                color: r.random_range(0.0..0.8),
-                density: r.random_range(0.2..1.0),
-            });
+            p.palette[i] = mix_light(
+                p.palette[i],
+                motion::hue_color(hue + [0.0, 0.09, 0.48][i]),
+                0.55,
+            );
         }
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
@@ -483,29 +463,18 @@ impl Painter {
             );
         }
     }
-    fn evolution(&self, progress: f64) -> Pose {
-        let progress = progress.clamp(0.0, 1.0);
-        for i in 1..self.timeline.len() {
-            let b = self.timeline[i];
-            if progress > b.at {
-                continue;
-            }
-            let a = self.timeline[i - 1];
-            let f = (progress - a.at) / (b.at - a.at);
-            let f = f * f * (3.0 - 2.0 * f);
-            let lerp = |a: f64, b: f64| a + (b - a) * f;
-            return Pose {
-                at: progress,
-                zoom: lerp(a.zoom, b.zoom),
-                turn: lerp(a.turn, b.turn),
-                x: lerp(a.x, b.x),
-                y: lerp(a.y, b.y),
-                unfold: lerp(a.unfold, b.unfold),
-                color: lerp(a.color, b.color),
-                density: lerp(a.density, b.density),
-            };
+    fn evolution(&self, seconds: f64) -> Pose {
+        let t = seconds * (0.65 + self.speed * 0.12) + self.variant * 0.7;
+        let breath = (t + self.phase).sin();
+        Pose {
+            zoom: 1.0 + breath * 0.035,
+            turn: (t * 0.37 + self.phase).sin() * 0.12,
+            x: (t * 0.29 + self.phase).sin() * 22.0,
+            y: (t * 0.23 - self.phase).cos() * 28.0,
+            unfold: 0.45 + breath * 0.12 + (t * 0.71).sin() * 0.05,
+            color: 0.18 + (t * 0.19 + self.phase).sin() * 0.1,
+            density: 0.55 + (t * 0.83 - self.phase).sin() * 0.08,
         }
-        *self.timeline.last().unwrap()
     }
     fn scene(&mut self, t: f64, a: AudioFrame) {
         match self.style.as_str() {
@@ -682,7 +651,7 @@ impl Painter {
         self.pixels.copy_from_slice(&self.base);
         self.glow.fill(0.0);
         let seconds = f as f64 / FPS as f64;
-        let pose = self.evolution(f as f64 / 599.0);
+        let pose = self.evolution(seconds);
         self.neon_time = seconds;
         self.update_field(f, a);
         let pose = self.musical_pose(f, pose);
@@ -734,14 +703,18 @@ impl Painter {
                     0
                 };
                 let (fx, fy) = ((x % 4) as f32 * 0.25, (y % 4) as f32 * 0.25);
-                for c in 0..3 {
+                let light: [f32; 3] = std::array::from_fn(|c| {
                     let halo = self.glow[gi + c] * (1.0 - fx) * (1.0 - fy)
                         + self.glow[gi + right + c] * fx * (1.0 - fy)
                         + self.glow[gi + below + c] * (1.0 - fx) * fy
                         + self.glow[gi + below + right + c] * fx * fy;
-                    let mut value = (self.pixels[i + c] + halo) * self.shade[i / 3];
-                    value = value.max(0.0);
-                    value = value * 1.8 / (1.0 + value / 320.0);
+                    ((self.pixels[i + c] + halo) * self.shade[i / 3]).max(0.0)
+                });
+                // One exposure for all channels preserves pigment hues in bright light.
+                let peak = light.into_iter().fold(0.0_f32, f32::max);
+                let exposure = 1.8 / (1.0 + peak / 320.0);
+                for (c, value) in light.into_iter().enumerate() {
+                    let mut value = value * exposure;
                     if self.style == "analog" {
                         let noise = ((x * 17 + y * 31 + f * 13) % 11) as f32 * 0.22;
                         value = value * (if y % 3 == 0 { 0.72 } else { 1.0 }) + noise;
@@ -1184,7 +1157,6 @@ mod tests {
             32,
             image::Rgb([20, 40, 230]),
         ));
-        let mut lengths = std::collections::HashSet::new();
         let mut colors = std::collections::HashSet::new();
         for seed in 0..24 {
             let mut p = Painter::new("chrome", seed, 0);
@@ -1197,12 +1169,10 @@ mod tests {
             assert_eq!(p.accent(), other.accent());
             assert_eq!(p.base, other.base);
             colors.insert(p.accent());
-            lengths.insert(p.timeline.len());
-            assert!(p.timeline.windows(2).all(|w| w[1].at > w[0].at));
-            assert_eq!(p.timeline.first().unwrap().at, 0.0);
-            assert_eq!(p.timeline.last().unwrap().at, 1.0);
+            assert_eq!(p.evolution(3.0).zoom, other.evolution(3.0).zoom);
+            assert!((p.evolution(3.0).zoom - p.evolution(25.0).zoom).abs() > 1e-6);
         }
-        assert!(lengths.len() > 1 && colors.len() > 8);
+        assert!(colors.len() > 8);
     }
 
     #[test]

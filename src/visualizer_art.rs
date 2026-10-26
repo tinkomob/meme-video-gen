@@ -30,8 +30,8 @@ impl Painter {
             let z = (p.depth - 0.5) * 1.6 + 0.2 * (time * 0.83 + p.phase).cos();
             let color = mix_light(
                 self.palette[i % 3],
-                motion::hue_color(p.u + t * (0.008 + p.v * 0.01) + r.opening * 0.1),
-                0.55,
+                self.palette[(i + 1) % 3],
+                0.2 + 0.15 * (t * 0.12 + p.phase).sin(),
             );
             (x, y, z, 0.19 + p.v * 0.11 + r.opening * 0.12, color)
         });
@@ -48,6 +48,10 @@ impl Painter {
                 for slice in 0..slices {
                     let z = slice as f64 * 3.3 / (slices - 1) as f64 - 1.65;
                     let flow_time = local.travel;
+                    let breath = (t * 0.72 + u * 1.3 - v * 0.8 + z + self.phase).sin();
+                    let curl = (u * 2.1 + v * 1.7 + flow_time * 0.4).sin();
+                    let u = u + 0.045 * breath + 0.065 * curl * (v + z).cos();
+                    let v = v + 0.045 * (breath + z).cos() - 0.065 * curl * (u - z).sin();
                     let u = u + local.opening * 0.12 * (v * 2.3 + z).sin();
                     let v = v + local.opening * 0.1 * (u * 3.1 - z).cos();
                     let flow = (u * 1.7 + z * 1.3 + flow_time * 0.45).sin()
@@ -74,12 +78,21 @@ impl Painter {
                                 *out += influence * value;
                             }
                         }
-                        let wave = audio_wave(a, 0, (u * u + v * v * 0.4 + z * z * 0.5).sqrt());
-                        let surface = mass - 1.3 + folds * 0.14 + grain * 0.025 + wave * 0.16;
+                        let distance = (u * u + v * v * 0.4 + z * z * 0.5).sqrt();
+                        let wave = audio_wave(a, 0, distance);
+                        let folds_audio = audio_wave(a, 1, distance);
+                        let veins = (folds * 3.0 + grain * 0.3 + flow_time * 0.12).sin().abs();
+                        let surface = mass - 1.3
+                            + folds * (0.14 + folds_audio * 0.07)
+                            + grain * 0.025
+                            + wave * 0.16
+                            + breath * 0.045;
                         normal[0] += wave * u * 0.6;
                         normal[1] += wave * v * 0.4;
                         density = 0.55 / (1.0 + (-surface * 14.0).exp());
                         color = Color(pigment[0] / mass, pigment[1] / mass, pigment[2] / mass);
+                        color = mix_light(color, self.palette[2], (-veins * 18.0).exp() * 0.48);
+                        density *= 0.78 + veins * 0.22;
                     } else {
                         let radius = (u * u + v * v * 0.44).sqrt();
                         let structure = if self.style == "bloom" {
@@ -141,18 +154,27 @@ impl Painter {
                     )
                     .abs();
                     let accent = local.light * (0.25 + 0.75 * light_front) + glint * 0.7;
-                    let highlight = diffuse.powi(14) * 0.8 + reflection * (0.7 + accent);
+                    let highlight = diffuse.powi(14) * 0.45 + reflection * (0.5 + accent);
+                    let backlight = rim * (0.5 + 0.5 * (z + flow_time * 0.2).sin());
+                    let shadow = mix_light(self.palette[1], color, 0.3);
+                    color = mix_light(shadow, color, 0.45 + diffuse * 0.55);
                     let neon = self.neon_strength(x as f64 * 2.0, y as f64 * 2.0);
                     let illumination = 0.25
                         + diffuse * 0.9
-                        + rim * 0.55
+                        + rim * 0.4
+                        + backlight * 0.45
                         + neon * rim * 1.4
                         + accent * (1.6 + rim * 2.5);
                     let opacity = density.clamp(0.0, 0.85);
                     let brightness = opacity * transmission * illumination;
-                    for (channel, value) in light.iter_mut().zip([color.0, color.1, color.2]) {
+                    let tint = mix_light(color, self.palette[0], 0.35);
+                    for ((channel, value), specular) in light
+                        .iter_mut()
+                        .zip([color.0, color.1, color.2])
+                        .zip([tint.0, tint.1, tint.2])
+                    {
                         *channel += ((value * brightness
-                            + highlight * 100.0 * opacity * transmission)
+                            + highlight * (45.0 + specular * 0.3) * opacity * transmission)
                             / 255.0) as f32;
                     }
                     transmission *= 1.0 - opacity;
@@ -410,7 +432,7 @@ impl Painter {
             let width = 280.0 + self.variant * 25.0;
             let height = 115.0 + self.variant * 12.0;
             let cx = if layer == 0 { 75.0 } else { 465.0 };
-            let cy = if layer == 0 { 60.0 } else { 865.0 };
+            let cy = if layer == 0 { 40.0 } else { 890.0 };
             let cy = cy + 8.0 * (t * 0.13 + p.phase).sin() - pose.y * 0.04;
             let angle = (if layer == 0 { -0.09 } else { 0.07 }) + pose.turn * 0.06;
             let (sin, cos) = angle.sin_cos();
