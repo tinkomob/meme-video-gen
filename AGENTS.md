@@ -14,7 +14,7 @@ and S3 credentials. YouTube publishing additionally requires OAuth credentials.
 
 This Rust Telegram bot generates and publishes 20-second song snippets:
 
-- `src/snippet.rs` and `src/visualizer*.rs` render 54 audio-reactive visual designs.
+- `src/snippet.rs` and `src/visualizer*.rs` render 51 audio-reactive visual designs.
 - `src/audio.rs` maintains the S3 song library with hourly playlist indexing.
 - `src/service.rs` configures storage and publication and persists drafts/claims.
 - `src/schedule.rs` saves two daily times 10–14 hours apart in Asia/Tomsk.

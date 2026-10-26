@@ -4,9 +4,9 @@ pub const WIDTH: usize = 540;
 pub const HEIGHT: usize = 960;
 pub const FPS: usize = 30;
 pub const BANDS: usize = 64;
-pub const STYLES: [&str; 18] = [
+pub const STYLES: [&str; 17] = [
     "silver", "violet", "amber", "aurora", "prism", "galaxy", "tunnel", "orbit", "wave", "rain",
-    "chrome", "collage", "silk", "analog", "cover", "nebula", "liquid", "bloom",
+    "chrome", "silk", "analog", "cover", "nebula", "liquid", "bloom",
 ];
 #[derive(Clone, Copy, Debug)]
 pub struct AudioFrame {

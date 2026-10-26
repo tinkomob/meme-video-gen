@@ -1,6 +1,6 @@
 # Song video generator
 
-Rust Telegram bot that generates 20-second music snippets with 54 audio-reactive
+Rust Telegram bot that generates 20-second music snippets with 51 audio-reactive
 visual designs, publishes twice a day, and streams a Friends episode player.
 
 ## Requirements and build
@@ -61,13 +61,13 @@ to one renderer at a time; temporary files are cleaned up after use.
 
 Eighteen families each have three geometry/palette variants (0, 1, 2): `silver`,
 `violet`, `amber`, `aurora`, `prism`, `galaxy`, `tunnel`, `orbit`, `wave`, `rain`,
-`chrome`, `collage`, `silk`, `analog`, `cover`, `nebula`, `liquid`, `bloom`.
+`chrome`, `silk`, `analog`, `cover`, `nebula`, `liquid`, `bloom`.
 `random` selects a family and variant. Motion uses 64 logarithmic audio bands,
 three depth planes, particles, bloom, and irregular, independently randomized
 camera keyframes.
 Validated YouTube JPEG covers are cached in S3; a waveform is the fallback.
 
-The player keeps a fixed cover, title and artist layout. All 54 variants share a
+The player keeps a fixed cover, title and artist layout. All 51 variants share a
 spatial flow field driven by twelve independent frequency voices. Each voice has
 its own attack, release and delay; responses are precomputed from the audio so
 seeking and repeated frames remain deterministic. Music advances local flow clocks

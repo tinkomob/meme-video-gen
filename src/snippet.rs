@@ -245,7 +245,7 @@ fn filter(accent: &str, dir: &Path, start: f64, duration: f64, title_size: usize
     let elapsed = escape_path(&dir.join("elapsed.txt"));
     let total = escape_path(&dir.join("duration.txt"));
     format!(
-        "[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,{FADE}[audio];[2:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=520:520:force_original_aspect_ratio=increase,crop=520:520,setsar=1,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(max(abs(X-W/2)-(W/2-14),0),max(abs(Y-H/2)-(H/2-14),0)),14),255,0)'[cover];[bg][cover]overlay=x=280:y=560:eof_action=repeat,drawtext={serif}textfile='{title}':expansion=none:fontsize={title_size}:fontcolor=white:shadowcolor=black@0.7:shadowx=1:shadowy=2:x=(w-tw)/2:y=1130,drawtext={sans}textfile='{artist}':expansion=none:fontsize=28:fontcolor=0xb7b7c5:x=(w-tw)/2:y=1210,drawtext={sans}textfile='{elapsed}':fontsize=22:fontcolor=0xd0d0d8:x=210:y=1320,drawtext={sans}textfile='{total}':expansion=none:fontsize=22:fontcolor=0xd0d0d8:x=870-tw:y=1320[metadata];color=c=0x454550:s=660x4:r=30:d=20[track];color=c={accent}:s=660x4:r=30:d=20[fill];[track][fill]overlay=x='-660+660*min(({start:.6}+t)/{duration:.6},1)':y=0:eval=frame[progress];[metadata][progress]overlay=x=210:y=1285:shortest=1,drawtext={sans}text='●':fontsize=25:fontcolor=white:x='198+660*min(({start:.6}+t)/{duration:.6},1)':y=1279,format=yuv420p[video]"
+        "[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,{FADE}[audio];[2:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=520:520:force_original_aspect_ratio=increase,crop=520:520,setsar=1,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(max(abs(X-W/2)-(W/2-14),0),max(abs(Y-H/2)-(H/2-14),0)),14),255,0)'[cover];[bg][cover]overlay=x=280:y=560:eof_action=repeat,drawtext={serif}textfile='{title}':expansion=none:fontsize={title_size}:fontcolor=white:shadowcolor=black@0.7:shadowx=1:shadowy=2:x=(w-tw)/2:y=1130,drawtext={sans}textfile='{artist}':expansion=none:fontsize=28:fontcolor=0xb7b7c5:x=(w-tw)/2:y=1210,drawtext={sans}textfile='{elapsed}':fontsize=22:fontcolor=0xd0d0d8:x=210:y=1320,drawtext={sans}textfile='{total}':expansion=none:fontsize=22:fontcolor=0xd0d0d8:x=870-tw:y=1320[metadata];color=c=0x454550:s=660x4:r=30:d=20[track];color=c={accent}:s=660x4:r=30:d=20[fill];[track][fill]overlay=x='-660+660*min(({start:.6}+t)/{duration:.6},1)':y=0:eval=frame[progress];[metadata][progress]overlay=x=210:y=1285:shortest=1,drawtext={sans}text='●':fontsize=25:fontcolor=white:x='210+660*min(({start:.6}+t)/{duration:.6},1)-text_w/2':y=1287-text_h/2,format=yuv420p[video]"
     )
 }
 struct Child(std::process::Child);
@@ -406,6 +406,11 @@ mod cover_tests {
     use super::*;
 
     #[test]
+    fn collage_is_unavailable() {
+        assert!(validate("collage", 0).is_err());
+    }
+
+    #[test]
     fn ffmpeg_renders_every_scene_with_fixed_player() {
         let dir = tempfile::tempdir().unwrap();
         for (name, text) in [
@@ -486,6 +491,17 @@ mod cover_tests {
             );
             let frame = image::open(output).unwrap();
             assert_eq!((frame.width(), frame.height()), (1080, 1920));
+            let pixels = frame.to_rgb8();
+            let white_rows: Vec<_> = (1260..1310)
+                .filter(|&y| {
+                    (195..225).any(|x| pixels.get_pixel(x, y).0.into_iter().all(|c| c > 230))
+                })
+                .collect();
+            let center = (white_rows.first().unwrap() + white_rows.last().unwrap()) as f64 / 2.0;
+            assert!(
+                (center - 1287.0).abs() <= 1.0,
+                "{style}: thumb center {center}"
+            );
         }
     }
 
