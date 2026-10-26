@@ -19,6 +19,7 @@ pub struct Service {
     pub cfg: Config,
     pub posts: Arc<Mutex<i64>>,
     pub generation: Arc<tokio::sync::Semaphore>,
+    schedule: Arc<Mutex<Option<Plan>>>,
 }
 impl Service {
     pub fn new(cfg: Config) -> Result<Self> {
@@ -28,6 +29,7 @@ impl Service {
             posts: Arc::new(Mutex::new(cfg.posts_chat_id)),
             cfg,
             generation: Arc::new(tokio::sync::Semaphore::new(1)),
+            schedule: Default::default(),
         })
     }
     pub async fn posts_chat(&self) -> Result<i64> {
@@ -190,11 +192,11 @@ impl Service {
         ensure!(success, "snippet not published");
         Ok(())
     }
-    async fn claim_slot(
+    async fn load_plan(
         &self,
         plan: &mut Option<Plan>,
         now: chrono::DateTime<chrono::FixedOffset>,
-    ) -> Result<bool> {
+    ) -> Result<()> {
         let today = now.format("%Y-%m-%d").to_string();
         if plan
             .as_ref()
@@ -220,6 +222,14 @@ impl Service {
             };
             *plan = Some(p);
         }
+        Ok(())
+    }
+    async fn claim_slot(
+        &self,
+        plan: &mut Option<Plan>,
+        now: chrono::DateTime<chrono::FixedOffset>,
+    ) -> Result<bool> {
+        self.load_plan(plan, now).await?;
         let mut next = plan.as_ref().unwrap().clone();
         let (changed, due) = next.claim(now);
         if changed {
@@ -228,17 +238,46 @@ impl Service {
         }
         Ok(due)
     }
-    async fn schedule_tick(&self, plan: &mut Option<Plan>) -> Result<()> {
-        if self
-            .claim_slot(plan, Utc::now().with_timezone(&tomsk()))
-            .await?
-        {
+    pub async fn snippet_schedule(&self, args: &str) -> Result<String> {
+        let now = Utc::now().with_timezone(&tomsk());
+        let mut plan = self.schedule.lock().await;
+        self.load_plan(&mut plan, now).await?;
+        let mut next = plan.as_ref().unwrap().clone();
+        if !args.trim().is_empty() {
+            next.reschedule(args, now)?;
+            self.store.write("snippet_schedule.json", &next).await?;
+            *plan = Some(next.clone());
+        }
+        let mut lines = vec![format!("Расписание сниппетов на {} (Томск):", next.date)];
+        for (i, slot) in next.slots.iter().enumerate() {
+            lines.push(format!(
+                "#{} — {} {}",
+                i + 1,
+                slot.format("%H:%M"),
+                if next.handled[i] {
+                    "обработан"
+                } else if *slot < now {
+                    "пропущен"
+                } else {
+                    "ожидает"
+                }
+            ));
+        }
+        lines.push("/setsnippet <номер> <HH:MM | +30m | -1h | YYYY-MM-DD HH:MM>\nДва слота в день, интервал 10–14 часов. Изменения действуют на сегодня.".into());
+        Ok(lines.join("\n"))
+    }
+    async fn schedule_tick(&self) -> Result<()> {
+        let due = {
+            let mut plan = self.schedule.lock().await;
+            self.claim_slot(&mut plan, Utc::now().with_timezone(&tomsk()))
+                .await?
+        };
+        if due {
             tokio::time::timeout(Duration::from_secs(900), self.scheduled_publish()).await??;
         }
         Ok(())
     }
     pub async fn run_schedule(&self, cancel: CancellationToken) {
-        let mut plan = None;
         loop {
             let delay = 60 - Utc::now().second() as u64;
             tokio::select! {
@@ -247,7 +286,7 @@ impl Service {
             }
             let result = tokio::select! {
                 _ = cancel.cancelled() => break,
-                result = self.schedule_tick(&mut plan) => result
+                result = self.schedule_tick() => result
             };
             if let Err(e) = result {
                 tracing::error!("schedule: {}", self.telegram.redact(&e.to_string()));

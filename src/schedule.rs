@@ -1,4 +1,4 @@
-use anyhow::{Result, bail, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, TimeZone, Timelike};
 use rand::Rng;
 use serde::{Deserialize, Serialize};
@@ -100,6 +100,56 @@ impl Plan {
         p.validate()?;
         Ok(p)
     }
+    pub fn reschedule(&mut self, args: &str, now: DateTime<FixedOffset>) -> Result<()> {
+        let parts: Vec<_> = args.split_whitespace().collect();
+        ensure!(
+            (2..=3).contains(&parts.len()),
+            "использование: /setsnippet <номер> <HH:MM | +30m | -1h | YYYY-MM-DD HH:MM>"
+        );
+        let index: usize = parts[0].parse().context("неверный номер слота")?;
+        ensure!(
+            (1..=self.slots.len()).contains(&index),
+            "неверный номер слота"
+        );
+        let index = index - 1;
+        ensure!(!self.handled[index], "слот уже обработан");
+        let raw = parts[1..].join(" ").replace('T', " ");
+        let target = if raw.starts_with(['+', '-']) {
+            ensure!(raw.is_ascii(), "неверный сдвиг времени");
+            let (amount, unit) = raw.split_at(raw.len() - 1);
+            let amount: i64 = amount.parse().context("неверный сдвиг времени")?;
+            let factor = match unit {
+                "m" => 1,
+                "h" => 60,
+                "d" => 1440,
+                _ => bail!("единица времени: m, h или d"),
+            };
+            let delta = amount
+                .checked_mul(factor)
+                .and_then(Duration::try_minutes)
+                .context("слишком большой сдвиг времени")?;
+            self.slots[index]
+                .checked_add_signed(delta)
+                .context("слишком большой сдвиг времени")?
+        } else {
+            let raw = if raw.contains(' ') {
+                raw
+            } else {
+                format!("{} {raw}", self.date)
+            };
+            let time = chrono::NaiveDateTime::parse_from_str(&raw, "%Y-%m-%d %H:%M")
+                .context("неверное время: используйте HH:MM или YYYY-MM-DD HH:MM")?;
+            tomsk().from_local_datetime(&time).unwrap()
+        };
+        ensure!(target > now, "нельзя установить время в прошлом");
+        let mut next = self.clone();
+        next.slots[index] = target;
+        next.validate().context(
+            "слоты должны оставаться в своей половине текущего дня с интервалом 10–14 часов",
+        )?;
+        *self = next;
+        Ok(())
+    }
     pub fn claim(&mut self, now: DateTime<FixedOffset>) -> (bool, bool) {
         let (mut changed, mut due) = (false, false);
         for (i, s) in self.slots.iter().enumerate() {
@@ -116,6 +166,53 @@ impl Plan {
 mod tests {
     use super::*;
     use rand::SeedableRng;
+    #[test]
+    fn rescheduling_validates_times_and_preserves_claims() {
+        let now = DateTime::parse_from_rfc3339("2026-10-25T00:00:00+07:00").unwrap();
+        let original = Plan {
+            date: "2026-10-25".into(),
+            slots: vec![now + Duration::hours(6), now + Duration::hours(18)],
+            handled: vec![false, false],
+        };
+        for args in [
+            "2 18:30",
+            "2 +30m",
+            "2 2026-10-25 18:30",
+            "2 2026-10-25T18:30",
+        ] {
+            let mut plan = original.clone();
+            plan.reschedule(args, now).unwrap();
+            assert_eq!(plan.slots[1], now + Duration::minutes(1110));
+            assert_eq!(plan.handled, original.handled);
+        }
+        let mut plan = original.clone();
+        plan.reschedule("2 -1h", now).unwrap();
+        assert_eq!(plan.slots[1], now + Duration::hours(17));
+        for args in [
+            "",
+            "0 18:30",
+            "3 18:30",
+            "2 25:00",
+            "2 +1x",
+            "2 +я",
+            "2 +",
+            "2 +999999999999999999h",
+            "2 +1d",
+            "2 12:00",
+            "1 18:00",
+            "1 00:00",
+            "2 18:00 extra",
+        ] {
+            let mut plan = original.clone();
+            assert!(plan.reschedule(args, now).is_err(), "{args}");
+            assert_eq!(plan.slots, original.slots);
+        }
+        let mut plan = original;
+        plan.handled[0] = true;
+        assert!(plan.reschedule("1 07:00", now).is_err());
+        plan.reschedule("2 +30m", now).unwrap();
+        assert!(plan.handled[0]);
+    }
     #[test]
     fn schedules_keep_gaps_across_midnight() {
         let mut rng = rand::rngs::StdRng::seed_from_u64(42);

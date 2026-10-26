@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/snippet [стиль] [0|1|2] — 20-секундный сниппет\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: два случайных времени в день (Томск), интервал 10–14 часов.\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
+const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/snippet [стиль] [0|1|2] — 20-секундный сниппет\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: два случайных времени в день (Томск), интервал 10–14 часов.\n/setsnippet [номер время] — посмотреть или изменить расписание\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
 pub fn command_args(args: &str) -> Result<(String, i32)> {
     let parts: Vec<_> = args.split_whitespace().collect();
     ensure!(parts.len() <= 2, "использование: /snippet [стиль] [0|1|2]");
@@ -523,6 +523,10 @@ impl Bot {
                         self.generate(chat, user, &style, variant, "", None).await?;
                     }
                 }
+                "/setsnippet" => {
+                    let text = self.svc.snippet_schedule(args).await?;
+                    self.svc.telegram.text(chat, &text, None).await?;
+                }
                 "/song" => {
                     if !args.trim().is_empty() {
                         self.song_list(chat, 0, Some(args)).await?;
@@ -638,7 +642,7 @@ pub async fn run(svc: Service, cancel: CancellationToken) -> Result<()> {
         tracing::error!("continuing without Telegram after five attempts");
         return Ok(());
     }
-    let commands = json!({"commands":[{"command":"start","description":"Запустить бота"},{"command":"help","description":"Список команд"},{"command":"snippet","description":"Создать музыкальный сниппет"},{"command":"song","description":"Найти и скачать песню"},{"command":"chatid","description":"Показать ID чата"}]});
+    let commands = json!({"commands":[{"command":"start","description":"Запустить бота"},{"command":"help","description":"Список команд"},{"command":"snippet","description":"Создать музыкальный сниппет"},{"command":"setsnippet","description":"Посмотреть или изменить расписание"},{"command":"song","description":"Найти и скачать песню"},{"command":"chatid","description":"Показать ID чата"}]});
     if let Err(e) = bot.svc.telegram.call("setMyCommands", commands).await {
         tracing::warn!("command menu: {e}");
     }
