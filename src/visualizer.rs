@@ -200,6 +200,7 @@ pub struct Painter {
     neon: bool,
     neon_time: f64,
     responses: Vec<[motion::Response; 12]>,
+    rhythm: Vec<rhythm::Rhythm>,
     response: [motion::Response; 12],
     field: Vec<motion::Field>,
 }
@@ -266,6 +267,8 @@ fn r#mod(v: f64, d: f64) -> f64 {
 }
 #[path = "visualizer_palettes.rs"]
 mod palettes;
+#[path = "visualizer_rhythm.rs"]
+mod rhythm;
 use palettes::palette;
 #[path = "visualizer_art.rs"]
 mod art;
@@ -311,6 +314,7 @@ impl Painter {
             neon: !seed.is_multiple_of(4),
             neon_time: 0.0,
             responses: Vec::new(),
+            rhythm: Vec::new(),
             response: [motion::Response::default(); 12],
             field: vec![motion::Field::default(); 19 * 33],
         };

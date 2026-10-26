@@ -13,6 +13,7 @@ pub(super) struct Response {
     pub(super) light: f64,
     pub(super) displacement: f64,
     pub(super) velocity: f64,
+    pub(super) pulse: f64,
 }
 #[derive(Clone, Copy, Default)]
 pub(super) struct Field {
@@ -23,6 +24,7 @@ pub(super) struct Field {
     pub(super) opening: f64,
     pub(super) light: f64,
     pub(super) color: [f64; 3],
+    pub(super) pulse: f64,
 }
 
 pub(super) fn hue_color(hue: f64) -> Color {
@@ -34,8 +36,14 @@ pub(super) fn hue_color(hue: f64) -> Color {
 }
 
 impl Painter {
-    pub(super) fn musical_pose(&self, _frame: usize, mut pose: Pose) -> Pose {
+    pub(super) fn musical_pose(&self, frame: usize, mut pose: Pose) -> Pose {
         let current = self.response.iter().map(|r| r.opening).sum::<f64>() / VOICES as f64;
+        if let Some(rhythm) = self.rhythm.get(frame) {
+            let breath = (rhythm.phase * PI / 2.0).sin();
+            pose.zoom = 1.0
+                + (pose.zoom - 1.0) * (1.0 - rhythm.confidence)
+                + breath * 0.035 * rhythm.confidence;
+        }
         pose.zoom *= 0.97 + current * 0.08;
         pose.unfold = (pose.unfold + current * 0.25).min(1.0);
         pose.density = (pose.density + current * 0.2).min(1.0);
@@ -73,6 +81,7 @@ impl Painter {
     }
 
     pub fn prepare_audio(&mut self, frames: &[AudioFrame]) {
+        self.rhythm = rhythm::track(frames);
         let drives: Vec<[f64; VOICES]> = (0..frames.len())
             .map(|frame| {
                 std::array::from_fn(|voice| {
@@ -117,6 +126,11 @@ impl Painter {
                         0.025 + p.v * 0.055
                     };
                     state.attack = onset.max(state.attack * 0.58);
+                    let rhythm = self.rhythm[frame];
+                    let delay = p.depth * 0.08 * rhythm.bpm / 60.0;
+                    // Merge coincident accents instead of adding a second impulse.
+                    let contraction = onset.max(rhythm.pulse(delay) * 0.7) * drive;
+                    state.pulse += (contraction - state.pulse) * 0.3;
                     state.energy += (drive - state.energy) * rate;
                     state.opening += (state.energy - state.opening) * 0.025;
                     let target = (state.attack + frames[frame].attacks[2] * 0.2 * drive).min(1.5);
@@ -150,9 +164,11 @@ impl Painter {
                 light: a.beat * band_at(&a, i as f64 / VOICES as f64),
                 displacement: self.voice_drive(a, i),
                 velocity: 0.0,
+                pulse: 0.0,
             })
         });
         let t = self.neon_time;
+        let rhythm = self.rhythm.get(frame).copied().unwrap_or_default();
         let centers: [_; VOICES] = std::array::from_fn(|i| {
             let p = self.particles[i];
             (
@@ -173,6 +189,9 @@ impl Painter {
                     let influence = (-dx * dx - dy * dy).exp();
                     let time = r.travel * (0.6 + p.u * 0.5);
                     let breath = (t * (0.65 + p.u * 0.18) + p.phase + dx * 0.6 - dy * 0.4).sin();
+                    let synced =
+                        (rhythm.phase * PI / 2.0 + p.phase * 0.2 + dx * 0.6 - dy * 0.4).sin();
+                    let breath = breath * (1.0 - rhythm.confidence) + synced * rhythm.confidence;
                     let ripple = (dx * 2.7 - dy * 1.9 + p.phase + time * 0.3).sin();
                     let flex = if self.elastic() {
                         r.displacement
@@ -180,14 +199,16 @@ impl Painter {
                         r.opening * 0.2
                     };
                     field.dx += influence
-                        * (32.0 * (time + p.phase).sin()
-                            + 35.0 * flex * ripple
+                        * (32.0 * (time + p.phase).sin() + 35.0 * flex * ripple
+                            - 24.0 * r.pulse * dx
                             + 9.0 * breath * dy);
                     field.dy += influence
                         * (38.0 * (time * 0.73 - p.phase).sin()
                             + 30.0 * flex * (dy * 2.3 + p.phase).cos()
+                            - 24.0 * r.pulse * dy
                             - 9.0 * breath * dx);
                     field.energy += influence * r.energy;
+                    field.pulse += influence * r.pulse;
                     field.travel += influence * r.travel;
                     field.opening += influence * r.opening;
                     field.light = field.light.max(influence * r.light);
@@ -204,6 +225,7 @@ impl Painter {
                 field.dx /= weight;
                 field.dy /= weight;
                 field.energy /= weight;
+                field.pulse /= weight;
                 field.travel /= weight;
                 field.opening /= weight;
                 field.color.iter_mut().for_each(|c| *c /= weight);
@@ -229,6 +251,7 @@ impl Painter {
             out.dx += f.dx * w;
             out.dy += f.dy * w;
             out.energy += f.energy * w;
+            out.pulse += f.pulse * w;
             out.travel += f.travel * w;
             out.opening += f.opening * w;
             out.light += f.light * w;
@@ -248,6 +271,57 @@ impl Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rhythmic_contractions_preserve_offbeat_attacks_and_do_not_double_accents() {
+        let mut frames: Vec<_> = (0..600)
+            .map(|i| {
+                let level = (-((i + 10) % 15) as f64 * 0.5).exp();
+                AudioFrame {
+                    bands: [level; BANDS],
+                    level,
+                    ..AudioFrame::default()
+                }
+            })
+            .collect();
+        frames[247].bands.fill(1.0);
+        let mut p = Painter::new("liquid", 71, 1);
+        p.prepare_audio(&frames);
+        assert!(p.rhythm[200].confidence > 0.5);
+        assert!(
+            p.responses[247..254]
+                .iter()
+                .flatten()
+                .any(|r| r.attack > 0.5),
+            "syncopation was lost"
+        );
+        assert!(
+            p.responses
+                .iter()
+                .flatten()
+                .all(|r| (0.0..=1.0).contains(&r.pulse)),
+            "coincident impulses were added"
+        );
+        assert!(p.responses.windows(2).all(|r| {
+            r[0].iter()
+                .zip(r[1])
+                .all(|(a, b)| (a.pulse - b.pulse).abs() <= 0.3)
+        }));
+        let audio = AudioFrame {
+            attacks: [0.8, 0.6, 0.4],
+            attack_age: [0.0; 3],
+            ..AudioFrame::default()
+        };
+        p.neon_time = 8.0;
+        p.update_field(240, frames[240]);
+        assert_eq!(p.shape_audio(audio).attacks, audio.attacks);
+        let first = p.frame(240, frames[240]).to_vec();
+        p.frame(300, frames[300]);
+        assert!(
+            first == p.frame(240, frames[240]),
+            "rhythm depends on render order"
+        );
+    }
 
     #[test]
     fn organism_breathes_in_silence_and_does_not_anticipate_future_music() {

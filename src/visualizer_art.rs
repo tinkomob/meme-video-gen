@@ -79,7 +79,7 @@ impl Painter {
                             }
                         }
                         let distance = (u * u + v * v * 0.4 + z * z * 0.5).sqrt();
-                        let wave = audio_wave(a, 0, distance);
+                        let wave = audio_wave(a, 0, distance).max(local.pulse * 0.7);
                         let folds_audio = audio_wave(a, 1, distance);
                         let veins = (folds * 3.0 + grain * 0.3 + flow_time * 0.12).sin().abs();
                         let surface = mass - 1.3
