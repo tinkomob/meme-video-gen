@@ -1,6 +1,6 @@
 # Song video generator
 
-Rust Telegram bot that generates 20-second music snippets with 45 audio-reactive
+Rust Telegram bot that generates 20-second music snippets with 54 audio-reactive
 visual designs, publishes twice a day, and streams a Friends episode player.
 
 ## Requirements and build
@@ -59,22 +59,30 @@ The output must not already exist. Both the song-snippet CLI and the service use
 the same renderer. Audio must be at least 20 seconds long. Generation is limited
 to one renderer at a time; temporary files are cleaned up after use.
 
-Fifteen families each have three geometry/palette variants (0, 1, 2): `silver`,
+Eighteen families each have three geometry/palette variants (0, 1, 2): `silver`,
 `violet`, `amber`, `aurora`, `prism`, `galaxy`, `tunnel`, `orbit`, `wave`, `rain`,
-`chrome`, `collage`, `silk`, `analog`, `cover`.
+`chrome`, `collage`, `silk`, `analog`, `cover`, `nebula`, `liquid`, `bloom`.
 `random` selects a family and variant. Motion uses 64 logarithmic audio bands,
 three depth planes, particles, bloom, and irregular, independently randomized
 camera keyframes.
 Validated YouTube JPEG covers are cached in S3; a waveform is the fallback.
 
-The player keeps a fixed cover, title and artist layout. Visuals randomize 4-8 motion states
-with irregular timing. Each onset selects one or several local reactive regions;
-sustained notes continuously shape these regions while sharp attacks add faster accents.
-Volume never scales the whole scene. Expanded depth layers extend beyond the frame;
-there is no fixed build-up or climax. Cover-derived colours may be blended with
-other palettes or skipped entirely. New scenes include reflective liquid chrome,
-restrained paper fragments, flowing light ribbons, phosphor traces and softly
-animated, blurred cover backdrops.
+The player keeps a fixed cover, title and artist layout. All 54 variants share a
+spatial flow field driven by twelve independent frequency voices. Each voice has
+its own attack, release and delay; responses are precomputed from the audio so
+seeking and repeated frames remain deterministic. Music advances local flow clocks
+and slowly opens geometry. Accents are calibrated per frequency voice from the clip itself, preserving small
+changes in compressed tracks. They accelerate flow up to four times and create
+travelling surface highlights without kicking positions or density. Spatial lights
+preserve local peaks instead of averaging them away. Damped spring oscillations are reserved for strings,
+ribbons and waves; liquid bodies drift, stretch and merge with moving reflections.
+
+Colours evolve independently across regions and depth, with saturated contrasting
+accents selected independently of the cover. Some snippets have no neon; others
+have moving, fading local highlights. Background veils, refracted light and
+particles occupy different depth planes. `nebula`, `liquid` and `bloom` integrate
+procedural density through depth with internal folds, surface lighting and
+occlusion; liquid bodies have independent motion and audio responses.
 
 ## Stored state and publishing
 

@@ -4,9 +4,9 @@ pub const WIDTH: usize = 540;
 pub const HEIGHT: usize = 960;
 pub const FPS: usize = 30;
 pub const BANDS: usize = 64;
-pub const STYLES: [&str; 15] = [
+pub const STYLES: [&str; 18] = [
     "silver", "violet", "amber", "aurora", "prism", "galaxy", "tunnel", "orbit", "wave", "rain",
-    "chrome", "collage", "silk", "analog", "cover",
+    "chrome", "collage", "silk", "analog", "cover", "nebula", "liquid", "bloom",
 ];
 #[derive(Clone, Copy, Debug)]
 pub struct AudioFrame {
@@ -168,6 +168,11 @@ pub struct Painter {
     cover_soft: Option<image::RgbImage>,
     view: View,
     morph: f64,
+    neon: bool,
+    neon_time: f64,
+    responses: Vec<[motion::Response; 12]>,
+    response: [motion::Response; 12],
+    field: Vec<motion::Field>,
 }
 fn mix_light(a: Color, b: Color, t: f64) -> Color {
     Color(
@@ -226,6 +231,8 @@ mod palettes;
 use palettes::palette;
 #[path = "visualizer_art.rs"]
 mod art;
+#[path = "visualizer_motion.rs"]
+mod motion;
 #[path = "visualizer_scenes.rs"]
 mod scenes;
 impl Painter {
@@ -239,7 +246,10 @@ impl Painter {
         let mut p = Self {
             style: style.into(),
             variant: variant as f64,
-            palette: palette(style, variant),
+            palette: palette(
+                STYLES[r.random_range(0..STYLES.len())],
+                r.random_range(0..3),
+            ),
             speed: 0.75 + r.random::<f64>() * 0.5,
             spread: 0.88 + r.random::<f64>() * 0.24,
             phase: r.random::<f64>() * 2.0 * PI,
@@ -261,7 +271,16 @@ impl Painter {
             cover_soft: None,
             view: View::default(),
             morph: 0.0,
+            neon: !seed.is_multiple_of(4),
+            neon_time: 0.0,
+            responses: Vec::new(),
+            response: [motion::Response::default(); 12],
+            field: vec![motion::Field::default(); 19 * 33],
         };
+        let hue = r.random::<f64>();
+        for i in 0..3 {
+            p.palette[i] = mix_light(p.palette[i], motion::hue_color(hue + i as f64 * 0.31), 0.8);
+        }
         let count = r.random_range(4..9);
         let mut times = vec![0.0, 1.0];
         // Stratified times keep transitions smooth without fixing their number or rhythm.
@@ -308,6 +327,15 @@ impl Painter {
         self.light_point(x, y, c, intensity * self.view.light);
     }
     fn light_point(&mut self, x: f64, y: f64, c: Color, intensity: f64) {
+        let field = self.field_at(x, y);
+        let c = self.local_color(c, field, 1.0 - self.view.focus);
+        let (x, y) = (
+            x + field.dx * self.view.focus,
+            y + field.dy * self.view.focus,
+        );
+        let light_front = (0.5 + 0.5 * (x * 0.012 + y * 0.008 - field.travel * 2.0).sin()).powi(3);
+        let intensity = intensity
+            * (1.15 + field.opening * 0.35 + field.light * (0.2 + 0.8 * light_front) * 3.5);
         if x < -16.0 || y < -16.0 || x >= WIDTH as f64 + 16.0 || y >= HEIGHT as f64 + 16.0 {
             return;
         }
@@ -329,6 +357,10 @@ impl Painter {
                 }
             }
         }
+        let neon = self.neon_strength(x, y);
+        if neon == 0.0 {
+            return;
+        }
         let (gx, gy) = ((x / 4.0) as i32, (y / 4.0) as i32);
         for dy in -3..=3 {
             for dx in -3..=3 {
@@ -336,13 +368,24 @@ impl Painter {
                 if xx < 0 || xx >= WIDTH as i32 / 4 || yy < 0 || yy >= HEIGHT as i32 / 4 {
                     continue;
                 }
-                let a = intensity * 0.025 / (1 + dx * dx + dy * dy) as f64;
+                let a = intensity * neon * 0.11 / (1 + dx * dx + dy * dy) as f64;
                 let i = (yy as usize * (WIDTH / 4) + xx as usize) * 3;
                 for (j, v) in [c.0, c.1, c.2].iter().enumerate() {
                     self.glow[i + j] += (v * a) as f32;
                 }
             }
         }
+    }
+    fn neon_strength(&self, x: f64, y: f64) -> f64 {
+        if !self.neon {
+            return 0.0;
+        }
+        let t = self.neon_time;
+        let envelope = ((t * 0.73 + self.phase).sin() - 0.15).max(0.0);
+        let cx = 270.0 + 240.0 * (t * 0.39 + self.phase).sin();
+        let cy = 480.0 + 420.0 * (t * 0.31 - self.phase).cos();
+        let distance = ((x - cx) / 170.0).hypot((y - cy) / 250.0);
+        envelope * (1.0 - distance).max(0.0).powi(2)
     }
     fn line(&mut self, x0: f64, y0: f64, x1: f64, y1: f64, c: Color, intensity: f64) {
         let (x0, y0) = self.view.project(x0, y0);
@@ -411,7 +454,7 @@ impl Painter {
         let (palette, phase, spread) = (self.palette, self.phase, self.spread);
         for layer in 0..3 {
             let depth = 0.35 + layer as f64 * 0.325;
-            let angle = pose.turn * depth + (1.0 - depth) * 0.2 * (phase + seconds * 0.12).sin();
+            let angle = pose.turn * depth * 0.15;
             let bounded = matches!(self.style.as_str(), "violet" | "prism" | "orbit");
             let scale = if bounded {
                 [0.85, 0.95, 1.02][layer]
@@ -442,10 +485,11 @@ impl Painter {
                 );
             }
             self.phase = phase + (1.0 - depth) * 1.4 + pose.unfold * 0.4;
-            self.spread = spread * (0.85 + 0.3 * pose.unfold);
-            self.morph = pose.unfold;
+            self.spread = spread * (0.85 + 0.3 * pose.unfold + 0.04 * self.response[layer].opening);
+            self.morph = (pose.unfold + self.response[layer + 3].opening * 0.2).min(1.0);
             self.scene(
-                seconds * self.speed * (0.65 + 0.35 * depth) + (1.0 - depth) * 3.0,
+                self.response[layer].travel * self.speed * (0.65 + 0.35 * depth) * 2.0
+                    + (1.0 - depth) * 3.0,
                 a,
             );
         }
@@ -454,26 +498,31 @@ impl Painter {
         self.spread = spread;
         self.view = View::default();
     }
-    fn atmosphere(&mut self, seconds: f64, pose: Pose) {
+    fn atmosphere(&mut self, _seconds: f64, pose: Pose) {
         let (w, h) = (WIDTH / 4, HEIGHT / 4);
-        for cloud in 0..3 {
-            let phase = self.phase + cloud as f64 * 2.1;
-            let cx = 67.0 + 48.0 * (phase + seconds * 0.08).sin() - pose.x * 0.12;
-            let cy = 120.0 + 95.0 * (phase + seconds * 0.06).cos() - pose.y * 0.12;
-            let (sx, sy) = (32.0 + 15.0 * pose.unfold, 55.0 + 25.0 * phase.sin().powi(2));
-            let c = mix_light(
-                self.palette[cloud],
-                self.palette[(cloud + 1) % 3],
-                pose.color,
-            );
-            let strength = (0.04 + 0.04 * pose.density) * 0.8;
-            let horizontal: Vec<_> = (0..w)
-                .map(|x| (-((x as f64 - cx) / sx).powi(2)).exp())
-                .collect();
+        for cloud in 0..4 {
+            let p = self.particles[cloud + 8];
+            let r = self.response[cloud + 8];
+            let time = r.travel * (0.22 + p.u * 0.15);
+            let cx = 30.0 + p.u * 75.0 + 15.0 * (time + p.phase).sin();
+            let cy = 20.0 + cloud as f64 * 65.0 + 18.0 * (time * 0.71 - p.phase).sin();
             for y in 0..h {
-                let vertical = strength * (-((y as f64 - cy) / sy).powi(2)).exp();
-                for (x, horizontal) in horizontal.iter().enumerate() {
-                    let light = vertical * horizontal;
+                for x in 0..w {
+                    let local = self.field_at(x as f64 * 4.0, y as f64 * 4.0);
+                    let dx = (x as f64 - cx + local.dx * 0.08) / (34.0 + p.depth * 22.0);
+                    let dy = (y as f64 - cy + local.dy * 0.08) / 70.0;
+                    let fold = (dx * 3.7 + dy * 2.1 + p.phase).sin() * (dy * 3.1 - time).cos();
+                    let veil = (-dx * dx - dy * dy).exp()
+                        * (0.3 + 0.7 * (fold * 2.0 + local.opening).sin().powi(2));
+                    let fine = (dx * 9.0 + dy * 6.0 + fold * 3.0 - time * 0.7).sin();
+                    let caustic = (1.0 - fine.abs()).powi(12);
+                    let light = if matches!(self.style.as_str(), "cover" | "collage") {
+                        (-dx * dx - dy * dy).exp() * (0.09 + 0.04 * r.energy)
+                    } else {
+                        veil * (0.14 + 0.1 * pose.density + 0.07 * r.opening)
+                            * (0.7 + caustic * 1.6)
+                    };
+                    let c = self.local_color(self.palette[cloud % 3], local, p.depth);
                     let i = (y * w + x) * 3;
                     for (j, v) in [c.0, c.1, c.2].iter().enumerate() {
                         self.glow[i + j] += (v * light) as f32;
@@ -483,11 +532,12 @@ impl Painter {
         }
     }
     fn depth_particles(&mut self, seconds: f64, pose: Pose, a: AudioFrame) {
-        for i in 0..360 {
+        for i in 0..720 {
             let s = self.particles[i];
             let z = (s.depth + seconds * (0.015 + 0.01 * s.u)) % 1.0;
             let perspective = 0.35 + z * z * 1.9;
-            let angle = self.phase + s.phase + seconds * 0.035;
+            let angle =
+                self.phase + s.phase + 0.4 * (seconds * (0.07 + s.u * 0.12) + s.phase).sin();
             let x = 270.0 + (s.u - 0.5) * 650.0 * perspective - pose.x * perspective
                 + 12.0 * angle.sin();
             let y = 470.0 + (s.v - 0.5) * 1050.0 * perspective - pose.y * perspective
@@ -536,27 +586,49 @@ impl Painter {
         self.glow.fill(0.0);
         let seconds = f as f64 / FPS as f64;
         let pose = self.evolution(f as f64 / 599.0);
+        self.neon_time = seconds;
+        self.update_field(f, a);
+        a = self.shape_audio(a);
         if matches!(self.style.as_str(), "collage" | "cover") {
             self.cover_scene(seconds, pose, a);
         } else {
-            self.atmosphere(seconds, pose);
-            if self.style == "chrome" {
+            if matches!(self.style.as_str(), "nebula" | "liquid" | "bloom") {
+                self.volume(seconds * self.speed, pose, a);
+                self.depth_particles(seconds, pose, a);
+            } else if self.style == "chrome" {
                 self.morph = pose.unfold;
-                self.chrome(seconds * self.speed, a);
+                self.chrome(self.response[0].travel * self.speed * 2.0, a);
             } else {
                 self.depth_layers(seconds, pose, a);
             }
-            if self.style != "analog" {
+            if !matches!(
+                self.style.as_str(),
+                "analog" | "nebula" | "liquid" | "bloom"
+            ) {
                 self.depth_particles(seconds, pose, a);
                 self.accents(seconds, a);
             }
         }
+        self.atmosphere(seconds, pose);
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let i = (y * WIDTH + x) * 3;
                 let gi = ((y / 4) * (WIDTH / 4) + x / 4) * 3;
+                let right = if x / 4 + 1 < WIDTH / 4 { 3 } else { 0 };
+                let below = if y / 4 + 1 < HEIGHT / 4 {
+                    WIDTH / 4 * 3
+                } else {
+                    0
+                };
+                let (fx, fy) = ((x % 4) as f32 * 0.25, (y % 4) as f32 * 0.25);
                 for c in 0..3 {
-                    let mut value = (self.pixels[i + c] + self.glow[gi + c]) * self.shade[i / 3];
+                    let halo = self.glow[gi + c] * (1.0 - fx) * (1.0 - fy)
+                        + self.glow[gi + right + c] * fx * (1.0 - fy)
+                        + self.glow[gi + below + c] * (1.0 - fx) * fy
+                        + self.glow[gi + below + right + c] * fx * fy;
+                    let mut value = (self.pixels[i + c] + halo) * self.shade[i / 3];
+                    value = value.max(0.0);
+                    value = value * 1.8 / (1.0 + value / 320.0);
                     if self.style == "analog" {
                         let noise = ((x * 17 + y * 31 + f * 13) % 11) as f32 * 0.22;
                         value = value * (if y % 3 == 0 { 0.72 } else { 1.0 }) + noise;
@@ -613,6 +685,104 @@ mod tests {
     }
 
     #[test]
+    fn neon_is_optional_local_and_changes_over_time() {
+        let mut p = Painter::new("silver", 4, 0);
+        p.light_point(270.0, 480.0, Color(255.0, 100.0, 50.0), 1.0);
+        assert!(p.glow.iter().all(|v| *v == 0.0));
+        assert!(p.pixels.iter().any(|v| *v > 0.0));
+        p.neon = true;
+        let mut masks = Vec::new();
+        for second in 0..20 {
+            p.neon_time = second as f64;
+            let mask: Vec<_> = (0..100)
+                .map(|i| p.neon_strength((i % 10) as f64 * 54.0, (i / 10) as f64 * 96.0))
+                .collect();
+            assert!(mask.iter().filter(|v| **v > 0.0).count() < 35);
+            masks.push(mask);
+        }
+        assert!(masks.iter().any(|m| m.iter().all(|v| *v == 0.0)));
+        assert!(masks.iter().any(|m| m.iter().any(|v| *v > 0.0)));
+        assert!(masks.windows(2).any(|m| m[0] != m[1]));
+        p.neon_time = (PI / 2.0 - p.phase).rem_euclid(2.0 * PI) / 0.73;
+        let t = p.neon_time;
+        let x = 270.0 + 240.0 * (t * 0.39 + p.phase).sin();
+        let y = 480.0 + 420.0 * (t * 0.31 - p.phase).cos();
+        p.light_point(x, y, Color(255.0, 100.0, 50.0), 1.0);
+        assert!(p.glow.iter().any(|v| *v > 0.0));
+    }
+
+    #[test]
+    fn procedural_volumes_react_to_audio() {
+        for style in ["nebula", "liquid", "bloom"] {
+            let mut p = Painter::new(style, 42, 1);
+            let quiet = p.frame(120, AudioFrame::default()).to_vec();
+            let loud = p.frame(
+                120,
+                AudioFrame {
+                    bands: [0.8; BANDS],
+                    level: 0.8,
+                    bass: 0.7,
+                    beat: 0.5,
+                    ..AudioFrame::default()
+                },
+            );
+            assert!(quiet != loud, "unresponsive volume: {style}");
+        }
+    }
+
+    #[test]
+    fn volume_detail_and_short_audio_attacks_are_visible() {
+        for style in ["nebula", "liquid", "bloom"] {
+            let mut p = Painter::new(style, 71, 1);
+            let mut audio = vec![AudioFrame::default(); 180];
+            p.prepare_audio(&audio);
+            let quiet = p.frame(106, audio[106]).to_vec();
+            for a in &mut audio[100..106] {
+                a.bands.fill(0.8);
+            }
+            p.prepare_audio(&audio);
+            let reactive = p.frame(106, audio[106]).to_vec();
+            let difference = quiet
+                .iter()
+                .zip(&reactive)
+                .map(|(a, b)| a.abs_diff(*b) as f64)
+                .sum::<f64>()
+                / quiet.len() as f64;
+            let visible = quiet
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(reactive.as_chunks::<3>().0.iter())
+                .filter(|(a, b)| a.iter().zip(*b).any(|(a, b)| a.abs_diff(*b) > 12))
+                .count();
+            assert!(
+                difference > 3.0,
+                "inaudible visual response: {style}: {difference}"
+            );
+            assert!(
+                visible > WIDTH * HEIGHT / 10,
+                "too little visible reaction: {style}"
+            );
+            if style == "nebula" {
+                let gradient = reactive
+                    .as_chunks::<{ WIDTH * 3 }>()
+                    .0
+                    .iter()
+                    .map(|row| {
+                        row.iter()
+                            .skip(3)
+                            .zip(row)
+                            .map(|(a, b)| a.abs_diff(*b) as f64)
+                            .sum::<f64>()
+                    })
+                    .sum::<f64>()
+                    / reactive.len() as f64;
+                assert!(gradient > 0.65, "structure is blurred away: {gradient}");
+            }
+        }
+    }
+
+    #[test]
     fn silence_is_finite() {
         let frames = analyze(&vec![0.0; 320000]);
         assert_eq!(frames.len(), 600);
@@ -645,6 +815,7 @@ mod tests {
                     bands: [0.3; 64],
                     ..AudioFrame::default()
                 };
+                p.prepare_audio(&vec![a; 600]);
                 let first = p.frame(0, a).to_vec();
                 assert_eq!(first.len(), WIDTH * HEIGHT * 3);
                 assert!(first != p.frame(300, a), "static scene: {style}/{v}");
@@ -700,7 +871,7 @@ mod tests {
             image::Rgb([20, 40, 230]),
         ));
         let mut lengths = std::collections::HashSet::new();
-        let (mut independent, mut influenced) = (false, false);
+        let mut colors = std::collections::HashSet::new();
         for seed in 0..24 {
             let mut p = Painter::new("chrome", seed, 0);
             let mut other = Painter::new("chrome", seed, 0);
@@ -709,14 +880,15 @@ mod tests {
             assert_eq!(p.accent(), other.accent());
             let mut other = Painter::new("chrome", seed, 0);
             other.set_cover(&blue);
-            independent |= p.accent() == other.accent();
-            influenced |= p.accent() != other.accent();
+            assert_eq!(p.accent(), other.accent());
+            assert_eq!(p.base, other.base);
+            colors.insert(p.accent());
             lengths.insert(p.timeline.len());
             assert!(p.timeline.windows(2).all(|w| w[1].at > w[0].at));
             assert_eq!(p.timeline.first().unwrap().at, 0.0);
             assert_eq!(p.timeline.last().unwrap().at, 1.0);
         }
-        assert!(lengths.len() > 1 && independent && influenced);
+        assert!(lengths.len() > 1 && colors.len() > 8);
     }
 
     #[test]

@@ -1,6 +1,9 @@
 use super::Color;
 pub(super) fn palette(style: &str, variant: usize) -> [Color; 3] {
     let style = match style {
+        "nebula" => "galaxy",
+        "liquid" => "violet",
+        "bloom" => "aurora",
         "chrome" => "silver",
         "collage" => "amber",
         "silk" => "aurora",

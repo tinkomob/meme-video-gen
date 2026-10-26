@@ -268,6 +268,7 @@ fn render(
     frames: Vec<visualizer::AudioFrame>,
     cancel: &CancellationToken,
 ) -> Result<()> {
+    painter.prepare_audio(&frames);
     let graph = filter(&painter.accent(), dir, start, duration, size);
     let mut child = Child(
         Command::new("ffmpeg")

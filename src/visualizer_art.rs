@@ -5,53 +5,6 @@ impl Painter {
         let image = image
             .resize_to_fill(256, 256, image::imageops::FilterType::Triangle)
             .to_rgb8();
-        let mut rng = rand::rngs::StdRng::seed_from_u64(self.phase.to_bits());
-        let mode = rng.random_range(0..3);
-        if mode != 0 {
-            // Frequent saturated buckets preserve accents instead of averaging to grey.
-            let mut buckets = [(0_u32, [0_u32; 3]); 64];
-            for pixel in image.pixels() {
-                let [r, g, b] = pixel.0;
-                if r.max(g).max(b) < 35 || r.max(g).max(b) - r.min(g).min(b) < 18 {
-                    continue;
-                }
-                let bucket =
-                    &mut buckets[(r as usize / 64) * 16 + (g as usize / 64) * 4 + b as usize / 64];
-                bucket.0 += 1;
-                for (sum, value) in bucket.1.iter_mut().zip(pixel.0) {
-                    *sum += value as u32;
-                }
-            }
-            buckets.sort_by_key(|b| std::cmp::Reverse(b.0));
-            for (i, (count, sums)) in buckets.iter().filter(|b| b.0 > 0).take(3).enumerate() {
-                let c = sums.map(|s| s as f64 / *count as f64);
-                let peak = c.into_iter().fold(1.0, f64::max);
-                let color = Color(
-                    c[0] * 240.0 / peak,
-                    c[1] * 240.0 / peak,
-                    c[2] * 240.0 / peak,
-                );
-                self.palette[i] =
-                    mix_light(self.palette[i], color, if mode == 1 { 0.35 } else { 0.75 });
-            }
-        }
-        // An independent palette is also a valid choice, even with a colourful cover.
-        if mode != 2 {
-            let other = palette(
-                STYLES[rng.random_range(0..STYLES.len())],
-                rng.random_range(0..3),
-            );
-            for (color, extra) in self.palette.iter_mut().zip(other) {
-                *color = mix_light(*color, extra, rng.random_range(0.15..0.55));
-            }
-        }
-        for (i, pixel) in self.base.as_chunks_mut::<3>().0.iter_mut().enumerate() {
-            let x = (i % WIDTH) as f64;
-            let y = (i / WIDTH) as f64;
-            let v = (1.0 - ((x - 270.0) / 430.0).hypot((y - 480.0) / 700.0)).max(0.0);
-            let color = mix_light(Color(2.0, 3.0, 5.0), self.palette[0], 0.012 + 0.025 * v);
-            pixel.copy_from_slice(&[color.0 as f32, color.1 as f32, color.2 as f32]);
-        }
         self.cover_soft = Some(image::imageops::resize(
             &image::imageops::blur(&image, 22.0),
             128,
@@ -59,6 +12,152 @@ impl Painter {
             image::imageops::FilterType::Triangle,
         ));
         self.cover = Some(image);
+    }
+
+    pub(super) fn volume(&mut self, t: f64, pose: Pose, _a: AudioFrame) {
+        let (w, h) = (WIDTH / 2, HEIGHT / 2);
+        let mut field = image::Rgb32FImage::new(w as u32, h as u32);
+        // Music advances flow; attacks illuminate the material without displacing it.
+        let bodies: [_; 7] = std::array::from_fn(|i| {
+            let p = self.particles[i];
+            let r = self.response[i];
+            let time = r.travel * (0.65 + p.u * 0.5);
+            let x = (p.u - 0.5) * 2.4
+                + 0.25 * (time + p.phase).sin()
+                + r.opening * 0.23 * p.phase.cos();
+            let y = (i as f64 / 6.0 - 0.5) * 4.0
+                + 0.25 * (time * 0.71 - p.phase).sin()
+                + r.opening * 0.2;
+            let z = (p.depth - 0.5) * 1.6 + 0.2 * (time * 0.83 + p.phase).cos();
+            let color = mix_light(
+                self.palette[i % 3],
+                motion::hue_color(p.u + t * (0.008 + p.v * 0.01) + r.opening * 0.1),
+                0.55,
+            );
+            (x, y, z, 0.19 + p.v * 0.11 + r.opening * 0.12, color)
+        });
+        for y in 0..h {
+            for x in 0..w {
+                let local = self.field_at(x as f64 * 2.0, y as f64 * 2.0);
+                let u = (x as f64 / w as f64 - 0.5) * 3.0 - pose.x / 900.0 + local.dx / 420.0;
+                let v = (y as f64 / h as f64 - 0.5) * 5.0 - pose.y / 1100.0 + local.dy / 500.0;
+                let mut light = [0.0_f32; 3];
+                let mut transmission = 1.0;
+                let slices = if self.style == "nebula" { 6 } else { 16 };
+                for slice in 0..slices {
+                    let z = slice as f64 * 3.3 / (slices - 1) as f64 - 1.65;
+                    let flow_time = local.travel;
+                    let u = u + local.opening * 0.12 * (v * 2.3 + z).sin();
+                    let v = v + local.opening * 0.1 * (u * 3.1 - z).cos();
+                    let flow = (u * 1.7 + z * 1.3 + flow_time * 0.45).sin()
+                        * (v * 1.4 - z * 1.7 - flow_time * 0.32).cos();
+                    let folds = ((u + flow * 0.5) * 4.3 + z * 3.1).sin()
+                        * ((v - flow * 0.4) * 3.5 - z * 2.3 + flow_time * 0.38).cos();
+                    let grain = ((u + folds * 0.09) * 17.0 + z * 11.0).sin()
+                        * ((v + flow * 0.08) * 14.0 - z * 9.0).cos();
+                    let mut density;
+                    let mut normal = [0.0; 3];
+                    let mut color;
+                    if self.style == "liquid" {
+                        let mut mass = 0.0;
+                        let mut pigment = [0.0; 3];
+                        for &(cx, cy, cz, radius, c) in &bodies {
+                            let (dx, dy, dz) = (u - cx, v - cy, z - cz);
+                            let d = 0.1 + dx * dx + dy * dy + dz * dz;
+                            let influence = radius / d;
+                            mass += influence;
+                            for (n, delta) in normal.iter_mut().zip([dx, dy, dz]) {
+                                *n += delta * influence / d;
+                            }
+                            for (out, value) in pigment.iter_mut().zip([c.0, c.1, c.2]) {
+                                *out += influence * value;
+                            }
+                        }
+                        let surface = mass - 1.3 + folds * 0.14 + grain * 0.025;
+                        density = 0.55 / (1.0 + (-surface * 14.0).exp());
+                        color = Color(pigment[0] / mass, pigment[1] / mass, pigment[2] / mass);
+                    } else {
+                        let radius = (u * u + v * v * 0.44).sqrt();
+                        let structure = if self.style == "bloom" {
+                            let lobes = (u.atan2(v) * (4.0 + self.variant) + z * 1.7).sin();
+                            let surface = radius
+                                - 1.0
+                                - lobes * (0.18 + pose.unfold * 0.23)
+                                - flow * 0.25
+                                - folds * 0.08
+                                - local.opening * 0.15;
+                            (-(surface * 7.0).powi(2) - z * z * 0.5).exp()
+                        } else {
+                            let threads = ((u + folds * 0.12) * 41.0 + z * 7.0).sin()
+                                * ((v + flow * 0.16) * 29.0 - z * 11.0).cos();
+                            let cloud = flow * 0.55 + folds * 0.3 + grain * 0.13 + threads * 0.06;
+                            let ridge = (1.0 - (cloud * 3.2 + 0.15).abs()).max(0.0).powi(4);
+                            (ridge * (0.65 + grain * 0.3 + threads * 0.12)
+                                + (cloud - 0.3).max(0.0) * 0.35)
+                                * (-u * u * 0.28 - v * v * 0.09 - z * z * 0.25).exp()
+                        };
+                        density = structure * (0.22 + 0.22 * (folds * 2.0).sin().abs());
+                        normal = [flow + folds * 0.5, (v * 2.1 - z).cos(), 0.45 + grain * 0.12];
+                        let pigment =
+                            0.5 + 0.5 * (v * 1.1 + u * 0.6 + z * 0.8 + flow + t * 0.04).sin();
+                        let sector = pigment * 2.0;
+                        let index = (sector as usize).min(1);
+                        color = mix_light(
+                            self.palette[index],
+                            self.palette[index + 1],
+                            sector - index as f64,
+                        );
+                        color = self.local_color(color, local, z * 0.2);
+                    }
+                    density *= 0.8 + 0.2 * local.opening;
+                    let length = (normal.iter().map(|n| n * n).sum::<f64>())
+                        .sqrt()
+                        .max(0.001);
+                    let light_z = if self.style == "liquid" { -0.7 } else { 0.7 };
+                    let diffuse = ((normal[0] * -0.45 + normal[1] * -0.55 + normal[2] * light_z)
+                        / length)
+                        .max(0.0);
+                    let rim = (1.0 - (normal[2] / length).abs()).powi(3);
+                    let reflection = if self.style == "liquid" {
+                        (1.0 - (normal[0] / length * 2.1 + normal[1] / length * 3.0 + flow * 0.4)
+                            .sin()
+                            .abs())
+                        .powi(12)
+                            * diffuse
+                    } else {
+                        0.0
+                    };
+                    let light_front =
+                        (0.5 + 0.5 * (u * 2.4 + v * 1.8 + z - flow_time * 2.0).sin()).powi(4);
+                    let accent = local.light * (0.25 + 0.75 * light_front);
+                    let highlight = diffuse.powi(14) * 0.8 + reflection * (0.7 + accent);
+                    let neon = self.neon_strength(x as f64 * 2.0, y as f64 * 2.0);
+                    let illumination = 0.25
+                        + diffuse * 0.9
+                        + rim * 0.55
+                        + neon * rim * 1.4
+                        + accent * (1.6 + rim * 2.5);
+                    let opacity = density.clamp(0.0, 0.85);
+                    let brightness = opacity * transmission * illumination;
+                    for (channel, value) in light.iter_mut().zip([color.0, color.1, color.2]) {
+                        *channel += ((value * brightness
+                            + highlight * 100.0 * opacity * transmission)
+                            / 255.0) as f32;
+                    }
+                    transmission *= 1.0 - opacity;
+                }
+                field.put_pixel(x as u32, y as u32, image::Rgb(light));
+            }
+        }
+        let field = image::imageops::resize(
+            &field,
+            WIDTH as u32,
+            HEIGHT as u32,
+            image::imageops::FilterType::CatmullRom,
+        );
+        for (target, value) in self.pixels.iter_mut().zip(field.as_raw()) {
+            *target += value * 255.0;
+        }
     }
 
     pub(super) fn accents(&mut self, t: f64, a: AudioFrame) {
@@ -89,12 +188,15 @@ impl Painter {
         let cy = 430.0 + 25.0 * (t * 0.25 + self.phase).sin();
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                let nx = (x as f64 - 270.0) / size;
-                let ny = (y as f64 - cy) / (size * 1.25);
+                let local = self.field_at(x as f64, y as f64);
+                let nx = (x as f64 - 270.0 + local.dx) / size;
+                let ny = (y as f64 - cy + local.dy) / (size * 1.25);
                 let angle = ny.atan2(nx);
                 let edge = 1.0
-                    + (0.06 + self.morph * 0.09) * (angle * (3.0 + self.variant) + t * 0.7).sin()
-                    + 0.035 * (angle * 7.0 - t * 0.4).cos();
+                    + (0.06 + self.morph * 0.09)
+                        * (angle * (3.0 + self.variant) + self.phase).sin()
+                        * (t * 0.37).sin()
+                    + 0.035 * (angle * 7.0 + self.phase).cos() * (t * 0.29).cos();
                 let energy = band_at(&a, angle / (2.0 * PI));
                 let r = nx.hypot(ny) / (edge + energy * 0.09);
                 if r >= 1.0 {
@@ -105,10 +207,14 @@ impl Painter {
                 let stripe = (1.0 - reflected.abs()).powi(14);
                 let rim = (1.0 - z).powi(5);
                 let light = 0.09 + 0.35 * z + 0.55 * stripe + 0.5 * rim;
-                let color = mix_light(
-                    self.palette[0],
-                    self.palette[1],
-                    (reflected * 0.5 + 0.5) * 0.65,
+                let color = self.local_color(
+                    mix_light(
+                        self.palette[0],
+                        self.palette[1],
+                        (reflected * 0.5 + 0.5) * 0.65,
+                    ),
+                    local,
+                    z,
                 );
                 let i = (y * WIDTH + x) * 3;
                 for (j, value) in [color.0, color.1, color.2].into_iter().enumerate() {
@@ -140,7 +246,7 @@ impl Painter {
                         xx + width / 12.0,
                         yy + 2.0,
                         c,
-                        (0.06 + 0.2 * (v * PI).sin().powi(3)) * (0.6 + energy * 0.4),
+                        (0.15 + 0.45 * (v * PI).sin().powi(3)) * (0.6 + energy * 0.4),
                     );
                 }
             }
@@ -189,8 +295,9 @@ impl Painter {
         let (sin, cos) = angle.sin_cos();
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                let dx = (x as f64 - 270.0) / (960.0 * zoom);
-                let dy = (y as f64 - 480.0) / (960.0 * zoom);
+                let local = self.field_at(x as f64, y as f64);
+                let dx = (x as f64 - 270.0 + local.dx) / (960.0 * zoom);
+                let dy = (y as f64 - 480.0 + local.dy) / (960.0 * zoom);
                 let energy = band_at(
                     &a,
                     x as f64 / WIDTH as f64 + y as f64 / HEIGHT as f64 * 0.37,
@@ -209,7 +316,9 @@ impl Painter {
                 let i = (y * WIDTH + x) * 3;
                 for (j, value) in sample.into_iter().enumerate() {
                     let base = if collage { [17.0, 16.0, 15.0][j] } else { 3.0 };
-                    self.pixels[i + j] = (base + value as f64 * strength + grain) as f32;
+                    self.pixels[i + j] =
+                        (base + value as f64 * strength * 0.65 + local.color[j] * 0.035 + grain)
+                            as f32;
                 }
             }
         }
