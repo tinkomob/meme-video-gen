@@ -382,10 +382,19 @@ async fn actual_ffmpeg_renders_twenty_second_video_with_audio() {
         .write_to(&mut cover, image::ImageFormat::Jpeg)
         .unwrap();
     mock.put("covers/abcdefghijk.jpg", cover.into_inner());
-    let generated = snippet::generate(&mock.svc().store, "silver", 2, "")
+    let generated = snippet::generate(&mock.svc().store, "random", -1, "abcdefghijk")
         .await
         .unwrap();
     assert_eq!(generated.song.author, "Артист");
+    assert_eq!(generated.song.id, "abcdefghijk");
+    assert!(meme_video_gen::visualizer::STYLES.contains(&generated.style.as_str()));
+    assert!((0..=2).contains(&generated.variant));
+    let svc = mock.svc();
+    let draft = svc.store_draft(&generated, 10, 20).await.unwrap();
+    let saved = svc.load_draft(&draft.id).await.unwrap();
+    assert_eq!(saved.song.id, generated.song.id);
+    assert_eq!(saved.style, generated.style);
+    assert_eq!(saved.variant, generated.variant);
     assert!(std::fs::metadata(generated.path()).unwrap().len() <= 20_000_000);
     let probe = audio::command(
         "ffprobe",

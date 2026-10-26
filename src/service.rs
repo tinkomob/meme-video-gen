@@ -65,8 +65,6 @@ impl Service {
         generated: &Generated,
         chat_id: i64,
         user_id: i64,
-        style: &str,
-        variant: i32,
     ) -> Result<Draft> {
         let id = hex::encode(rand::random::<[u8; 12]>());
         let d = Draft {
@@ -74,8 +72,8 @@ impl Service {
             chat_id,
             user_id,
             song: generated.song.clone(),
-            style: style.into(),
-            variant,
+            style: generated.style.clone(),
+            variant: generated.variant,
             selected: vec![],
             targets: BTreeMap::new(),
             created_at: Utc::now().to_rfc3339(),

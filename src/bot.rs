@@ -36,7 +36,7 @@ pub fn parse_callback(data: &str) -> Result<(&str, &str, Option<&str>)> {
     crate::model::draft_key(p[2], ".json")?;
     match p[1] {
         "telegram" | "youtube" | "send" | "all" | "visual" | "random" | "delete" | "back"
-        | "status" => ensure!(p.len() == 3, "unexpected callback argument"),
+        | "status" | "search" => ensure!(p.len() == 3, "unexpected callback argument"),
         "list" | "track" => {
             ensure!(p.len() == 4, "missing callback argument");
             if p[1] == "list" {
@@ -90,7 +90,7 @@ pub fn controls(d: &Draft) -> Value {
             b("🎲 Другая песня", "random"),
         ],
         vec![
-            b("📋 Выбрать песню", "random"),
+            b("🔍 Найти песню", "search"),
             b("🗑 Удалить черновик", "delete"),
         ],
     ])
@@ -98,10 +98,12 @@ pub fn controls(d: &Draft) -> Value {
 pub fn is_owner(d: &Draft, chat: i64, user: i64) -> bool {
     d.chat_id == chat && d.user_id == user
 }
+type PendingSearches = HashMap<(i64, i64), (Instant, Option<String>)>;
+
 #[derive(Clone)]
 struct Bot {
     svc: Service,
-    search: Arc<Mutex<HashMap<i64, Instant>>>,
+    search: Arc<Mutex<PendingSearches>>,
     actions: Arc<Mutex<HashSet<String>>>,
 }
 struct Action {
@@ -121,27 +123,34 @@ impl Bot {
         style: &str,
         variant: i32,
         song: &str,
+        status: Option<i64>,
     ) -> Result<()> {
         let Ok(_permit) = self.svc.generation.clone().try_acquire_owned() else {
-            self.svc
-                .telegram
-                .text(
-                    chat,
-                    "Сниппет уже генерируется. Дождитесь завершения.",
-                    None,
-                )
-                .await?;
+            let text = "Сниппет уже генерируется. Дождитесь завершения.";
+            if let Some(status) = status {
+                self.svc
+                    .telegram
+                    .call(
+                        "editMessageText",
+                        json!({"chat_id":chat,"message_id":status,"text":text}),
+                    )
+                    .await?;
+            } else {
+                self.svc.telegram.text(chat, text, None).await?;
+            }
             return Ok(());
         };
-        self.svc
-            .telegram
-            .text(chat, "Генерирую 20-секундный сниппет…", None)
-            .await?;
+        let status = match status {
+            Some(status) => status,
+            None => {
+                self.svc
+                    .telegram
+                    .text(chat, "Генерирую 20-секундный сниппет…", None)
+                    .await?
+            }
+        };
         let generated = self.svc.generate(style, variant, song).await?;
-        let draft = self
-            .svc
-            .store_draft(&generated, chat, user, style, variant)
-            .await?;
+        let draft = self.svc.store_draft(&generated, chat, user).await?;
         self.svc
             .telegram
             .video(
@@ -150,6 +159,10 @@ impl Bot {
                 &format!("{} — {}", draft.song.author, draft.song.title),
                 Some(controls(&draft)),
             )
+            .await?;
+        self.svc
+            .telegram
+            .call("deleteMessage", json!({"chat_id":chat,"message_id":status}))
             .await?;
         Ok(())
     }
@@ -286,13 +299,31 @@ impl Bot {
                 .await;
         }
         self.answer(cb_id, "").await?;
+        let status = self
+            .svc
+            .telegram
+            .text(
+                chat,
+                match action {
+                    "telegram" | "youtube" => "Обновляю выбор площадок…",
+                    "send" | "all" => "Отправляю…",
+                    "visual" => "Генерирую новый визуал…",
+                    "random" | "track" => "Генерирую сниппет с другой песней…",
+                    "search" | "list" => "Открываю поиск песни…",
+                    "delete" => "Удаляю черновик…",
+                    _ => "Обновляю статус…",
+                },
+                None,
+            )
+            .await?;
+        let result: Result<Option<String>> = async {
         match action {
             "telegram" | "youtube" => {
                 if d.targets
                     .get(action)
                     .is_some_and(|s| s == "sent" || s == "sending")
                 {
-                    return Ok(());
+                    return Ok(Some("Площадка уже отправлена или отправляется.".into()));
                 }
                 if d.selected.iter().any(|s| s == action) {
                     d.selected.retain(|s| s != action);
@@ -301,6 +332,7 @@ impl Bot {
                 }
                 self.svc.save_draft(&d).await?;
                 self.update_controls(chat, message, &d).await?;
+                return Ok(Some(format!("{} {}", platform_name(action), if d.selected.iter().any(|p| p == action) { "выбран." } else { "снят с выбора." })));
             }
             "send" | "all" => {
                 let platforms = if action == "all" {
@@ -309,13 +341,8 @@ impl Bot {
                     d.selected.clone()
                 };
                 if platforms.is_empty() {
-                    self.svc
-                        .telegram
-                        .text(chat, "Сначала выберите Instagram или YouTube.", None)
-                        .await?;
-                    return Ok(());
+                    return Ok(Some("Сначала выберите Instagram или YouTube.".into()));
                 }
-                let status = self.svc.telegram.text(chat, "Отправляю…", None).await?;
                 let results = self.svc.publish_draft(&mut d, &platforms).await;
                 let text = match results {
                     Ok(results) => {
@@ -334,10 +361,26 @@ impl Bot {
                     }
                     Err(e) => format!("❌ {e}"),
                 };
-                self.svc.telegram.call("editMessageText",json!({"chat_id":chat,"message_id":status,"text":self.svc.telegram.redact(&text)})).await?;
                 self.update_controls(chat, message, &d).await?;
+                return Ok(Some(text));
             }
-            "visual" | "random" | "list" => {
+            "search" | "list" => {
+                {
+                    let mut search = self.search.lock().unwrap();
+                    search.retain(|_, (t, _)| t.elapsed() < Duration::from_secs(300));
+                    search.insert((chat, user), (Instant::now(), Some(id.into())));
+                }
+                return Ok(Some("🔍 Введите название песни или исполнителя (в течение 5 минут):".into()));
+            }
+            "visual" => {
+                use rand::seq::IteratorRandom;
+                let style = crate::visualizer::STYLES.iter().copied()
+                    .filter(|style| *style != d.style)
+                    .choose(&mut rand::rng()).context("нет другого визуала")?;
+                self.generate(chat, user, style, -1, &d.song.id, Some(status)).await?;
+                return Ok(None);
+            }
+            "random" => {
                 let pool: Vec<_> = audio::songs(&self.svc.store)
                     .await?
                     .into_iter()
@@ -346,18 +389,14 @@ impl Bot {
                 ensure!(!pool.is_empty(), "в библиотеке нет другой подходящей песни");
                 use rand::Rng;
                 let index = rand::rng().random_range(0..pool.len());
-                let (style, variant) = if action == "visual" {
-                    ("random", -1)
-                } else {
-                    (d.style.as_str(), d.variant)
-                };
-                self.generate(chat, user, style, variant, &pool[index].id)
+                self.generate(chat, user, &d.style, d.variant, &pool[index].id, Some(status))
                     .await?;
+                return Ok(None);
             }
             "track" => {
-                self.update_controls(chat, message, &d).await?;
-                self.generate(chat, user, &d.style, d.variant, value.unwrap())
+                self.generate(chat, user, &d.style, d.variant, value.unwrap(), Some(status))
                     .await?;
+                return Ok(None);
             }
             "back" => self.update_controls(chat, message, &d).await?,
             "delete" => {
@@ -373,21 +412,29 @@ impl Bot {
                     .is_err()
                 {
                     self.svc.telegram.call("editMessageReplyMarkup",json!({"chat_id":chat,"message_id":message,"reply_markup":keyboard(vec![])})).await?;
-                    self.svc
-                        .telegram
-                        .text(
-                            chat,
-                            "Черновик удалён. Старое сообщение можно удалить вручную.",
-                            None,
-                        )
-                        .await?;
+                    return Ok(Some("Черновик удалён. Старое сообщение можно удалить вручную.".into()));
                 }
+                return Ok(Some("Черновик удалён.".into()));
             }
             "status" => {
-                self.svc.telegram.text(chat,"✅ — уже отправлено. ⏳ — отправка была начата; после сбоя проверьте результат на площадке. Автоповтора не будет.",None).await?;
+                return Ok(Some("✅ — уже отправлено. ⏳ — отправка была начата; после сбоя проверьте результат на площадке. Автоповтора не будет.".into()));
             }
             _ => unreachable!(),
         };
+        Ok(Some("Кнопки сниппета обновлены.".into()))
+        }.await;
+        let text = match result {
+            Ok(None) => return Ok(()),
+            Ok(Some(text)) => text,
+            Err(e) => format!("Не удалось выполнить действие: {e}"),
+        };
+        self.svc
+            .telegram
+            .call(
+                "editMessageText",
+                json!({"chat_id":chat,"message_id":status,"text":self.svc.telegram.redact(&text)}),
+            )
+            .await?;
         Ok(())
     }
     async fn handle(&self, update: Value) -> Result<()> {
@@ -407,8 +454,11 @@ impl Bot {
                 "songsearch" => {
                     {
                         let mut search = self.search.lock().unwrap();
-                        search.retain(|_, t| t.elapsed() < Duration::from_secs(300));
-                        search.insert(chat, Instant::now());
+                        search.retain(|_, (t, _)| t.elapsed() < Duration::from_secs(300));
+                        search.insert(
+                            (chat, cb["from"]["id"].as_i64().context("missing user")?),
+                            (Instant::now(), None),
+                        );
                     }
                     self.svc
                         .telegram
@@ -470,7 +520,7 @@ impl Bot {
                 "/snippet" => {
                     if user != 0 {
                         let (style, variant) = command_args(args)?;
-                        self.generate(chat, user, &style, variant, "").await?;
+                        self.generate(chat, user, &style, variant, "", None).await?;
                     }
                 }
                 "/song" => {
@@ -504,10 +554,54 @@ impl Bot {
                 .search
                 .lock()
                 .unwrap()
-                .remove(&chat)
-                .is_some_and(|t| t.elapsed() < Duration::from_secs(300));
-            if search {
-                self.song_list(chat, 0, Some(text)).await?;
+                .remove(&(chat, user))
+                .filter(|(t, _)| t.elapsed() < Duration::from_secs(300));
+            if let Some((_, draft)) = search {
+                if let Some(id) = draft {
+                    let status = self.svc.telegram.text(chat, "🔍 Ищу песню…", None).await?;
+                    let result: Result<Value> = async {
+                        let d = self.svc.load_draft(&id).await?;
+                        ensure!(
+                            is_owner(&d, chat, user),
+                            "поиск доступен только автору сниппета"
+                        );
+                        let query = text.trim().to_lowercase();
+                        ensure!(!query.is_empty(), "введите название песни или исполнителя");
+                        let songs = audio::songs(&self.svc.store).await?;
+                        let rows = songs
+                            .iter()
+                            .filter(|s| {
+                                eligible(s)
+                                    && valid_video_id(&s.id)
+                                    && (s.title.to_lowercase().contains(&query)
+                                        || s.author.to_lowercase().contains(&query))
+                            })
+                            .take(10)
+                            .map(|s| {
+                                vec![button(
+                                    &format!("{} — {}", s.author, s.title),
+                                    &format!("snip:track:{id}:{}", s.id),
+                                )]
+                            })
+                            .collect::<Vec<_>>();
+                        ensure!(
+                            !rows.is_empty(),
+                            "ничего не найдено; нажмите «Найти песню» и уточните запрос"
+                        );
+                        Ok(keyboard(rows))
+                    }
+                    .await;
+                    let (text, markup) = match result {
+                        Ok(markup) => (
+                            "Выберите песню для сниппета (до 10 результатов):".into(),
+                            markup,
+                        ),
+                        Err(e) => (format!("Не удалось найти песню: {e}"), keyboard(vec![])),
+                    };
+                    self.svc.telegram.call("editMessageText", json!({"chat_id":chat,"message_id":status,"text":self.svc.telegram.redact(&text),"reply_markup":markup})).await?;
+                } else {
+                    self.song_list(chat, 0, Some(text)).await?;
+                }
             }
         }
         Ok(())
@@ -643,7 +737,9 @@ mod tests {
     #[test]
     fn callbacks_and_ownership() {
         let id = "0123456789abcdef01234567";
-        for action in ["all", "send", "visual", "delete"] {
+        for action in [
+            "all", "send", "visual", "random", "search", "delete", "status", "back",
+        ] {
             assert!(parse_callback(&format!("snip:{action}:{id}")).is_ok())
         }
         for data in [
@@ -701,6 +797,12 @@ mod callback_flow_tests {
                 .unwrap()
                 .push((uri.path().to_owned(), value));
             return axum::Json(json!({"ok":true,"result":{"message_id":42}})).into_response();
+        }
+        if uri.path().ends_with("/songs.json") {
+            return axum::Json(json!({"items":[
+                {"id":"abcdefghijk","title":"Ночная песня","author":"Исполнитель","audio_key":"audio/test.m4a","duration_s":25},
+                {"id":"short______","title":"Ночная короткая","author":"Другой","audio_key":"audio/short.m4a","duration_s":5}
+            ]})).into_response();
         }
         if method == Method::PUT {
             *state.draft.lock().unwrap() = serde_json::from_slice(&body).unwrap();
@@ -769,6 +871,74 @@ mod callback_flow_tests {
                 .iter()
                 .any(|(p, _)| p.ends_with("editMessageReplyMarkup"))
         );
+        {
+            let calls = state.calls.lock().unwrap();
+            let sent = calls
+                .iter()
+                .position(|(p, v)| {
+                    p.ends_with("sendMessage") && v["text"] == "Обновляю выбор площадок…"
+                })
+                .unwrap();
+            let edited = calls
+                .iter()
+                .position(|(p, v)| {
+                    p.ends_with("editMessageText") && v["text"] == "Instagram выбран."
+                })
+                .unwrap();
+            assert!(sent < edited);
+            assert_eq!(calls[edited].1["message_id"], 42);
+        }
+        let mut search_update = update(10, 20);
+        search_update["callback_query"]["data"] = json!("snip:search:0123456789abcdef01234567");
+        bot.handle(search_update).await.unwrap();
+        assert_eq!(
+            bot.search
+                .lock()
+                .unwrap()
+                .get(&(10, 20))
+                .unwrap()
+                .1
+                .as_deref(),
+            Some("0123456789abcdef01234567")
+        );
+        bot.handle(json!({"message":{"chat":{"id":10},"from":{"id":99},"text":"another user"}}))
+            .await
+            .unwrap();
+        assert!(bot.search.lock().unwrap().contains_key(&(10, 20)));
+        assert!(
+            controls(&state.draft.lock().unwrap())["inline_keyboard"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .flat_map(|row| row.as_array().unwrap())
+                .any(|b| b["callback_data"] == "snip:search:0123456789abcdef01234567")
+        );
+        bot.handle(json!({"message":{"chat":{"id":10},"from":{"id":20},"text":"НОЧНАЯ"}}))
+            .await
+            .unwrap();
+        {
+            let calls = state.calls.lock().unwrap();
+            let (path, result) = calls.last().unwrap();
+            assert!(path.ends_with("editMessageText"));
+            assert_eq!(result["message_id"], 42);
+            let rows = result["reply_markup"]["inline_keyboard"]
+                .as_array()
+                .unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(
+                rows[0][0]["callback_data"],
+                "snip:track:0123456789abcdef01234567:abcdefghijk"
+            );
+        }
+        let mut empty_send = update(10, 20);
+        empty_send["callback_query"]["data"] = json!("snip:send:0123456789abcdef01234567");
+        state.draft.lock().unwrap().selected.clear();
+        bot.handle(empty_send).await.unwrap();
+        assert_eq!(
+            state.calls.lock().unwrap().last().unwrap().1["text"],
+            "Сначала выберите Instagram или YouTube."
+        );
+        state.draft.lock().unwrap().selected.push("telegram".into());
         bot.actions
             .lock()
             .unwrap()

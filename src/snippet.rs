@@ -17,6 +17,8 @@ static RENDERER: Semaphore = Semaphore::const_new(1);
 pub struct Generated {
     pub dir: tempfile::TempDir,
     pub song: Song,
+    pub style: String,
+    pub variant: i32,
 }
 impl Generated {
     pub fn path(&self) -> PathBuf {
@@ -119,6 +121,11 @@ pub async fn generate(
         style
     }
     .to_owned();
+    let variant = if variant < 0 {
+        rand::rng().random_range(0..3)
+    } else {
+        variant
+    };
     let title = song.title.split_whitespace().collect::<Vec<_>>().join(" ");
     let artist = song.author.split_whitespace().collect::<Vec<_>>().join(" ");
     let title_size = if title.chars().count() > 30 {
@@ -210,7 +217,12 @@ pub async fn generate(
         render(
             &audio, &cover, &output, &path, start, duration, title_size, painter, frames, &token,
         )?;
-        Ok::<_, anyhow::Error>(Generated { dir, song })
+        Ok::<_, anyhow::Error>(Generated {
+            dir,
+            song,
+            style,
+            variant,
+        })
     })
     .await?;
     guard.disarm();
