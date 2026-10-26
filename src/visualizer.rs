@@ -516,8 +516,8 @@ impl Painter {
                     let fold = (dx * 3.7 + dy * 2.1 + p.phase).sin() * (dy * 3.1 - time).cos();
                     let veil = (-dx * dx - dy * dy).exp()
                         * (0.3 + 0.7 * (fold * 2.0 + local.opening).sin().powi(2));
-                    // Thin orbit background ridges need coverage over the low-resolution pixel.
-                    let samples = if self.style == "orbit" { 4 } else { 1 };
+                    // Integrate thin ridges over each low-resolution pixel in every style.
+                    let samples = 4;
                     let mut caustic = 0.0;
                     for sy in 0..samples {
                         for sx in 0..samples {
@@ -625,7 +625,7 @@ impl Painter {
             }
         }
         self.atmosphere(seconds, pose);
-        if self.style == "orbit" {
+        {
             let glow = image::Rgb32FImage::from_raw(
                 (WIDTH / 4) as u32,
                 (HEIGHT / 4) as u32,
@@ -667,6 +667,41 @@ impl Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn solid_edges_and_cover_fragments_move_without_pixel_jumps() {
+        let cover = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(256, 256, |x, y| {
+            let value = if (x / 4 + y / 4) % 2 == 0 { 0 } else { 255 };
+            image::Rgb([value; 3])
+        }));
+        for style in ["chrome", "collage"] {
+            for variant in 0..3 {
+                let mut p = Painter::new(style, 42, variant);
+                p.set_cover(&cover);
+                for time in [0.0, 1.0, 3.0] {
+                    let mut frames = Vec::new();
+                    for t in [time, time + 0.002] {
+                        p.pixels.copy_from_slice(&p.base);
+                        if style == "chrome" {
+                            p.chrome(t, AudioFrame::default());
+                        } else {
+                            p.cover_scene(t, Pose::default(), AudioFrame::default());
+                        }
+                        frames.push(p.pixels.clone());
+                    }
+                    let jump = frames[0]
+                        .iter()
+                        .zip(&frames[1])
+                        .map(|(a, b)| (a - b).abs())
+                        .fold(0.0_f32, f32::max);
+                    assert!(
+                        jump > 0.0 && jump < 16.0,
+                        "pixel jump in {style}/{variant}: {jump}"
+                    );
+                }
+            }
+        }
+    }
+
     #[test]
     fn line_coverage_is_independent_of_segment_boundaries() {
         let mut p = Painter::new("orbit", 42, 0);

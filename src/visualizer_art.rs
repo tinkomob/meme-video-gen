@@ -199,10 +199,12 @@ impl Painter {
                     + 0.035 * (angle * 7.0 + self.phase).cos() * (t * 0.29).cos();
                 let energy = band_at(&a, angle / (2.0 * PI));
                 let r = nx.hypot(ny) / (edge + energy * 0.09);
-                if r >= 1.0 {
+                let coverage = ((1.0 - r) * size + 0.5).clamp(0.0, 1.0);
+                if coverage == 0.0 {
                     continue;
                 }
-                let z = (1.0 - r * r).sqrt();
+                // Shade the covered part of an edge pixel inside the surface.
+                let z = (1.0 - r.min(1.0 - 0.5 / size).powi(2)).sqrt();
                 let reflected = (ny * 4.0 + z * 3.0 + (nx * 3.0 + t * 0.3).sin() * 0.6).sin();
                 let stripe = (1.0 - reflected.abs()).powi(14);
                 let rim = (1.0 - z).powi(5);
@@ -218,7 +220,7 @@ impl Painter {
                 );
                 let i = (y * WIDTH + x) * 3;
                 for (j, value) in [color.0, color.1, color.2].into_iter().enumerate() {
-                    self.pixels[i + j] += (value * light + stripe * 100.0) as f32;
+                    self.pixels[i + j] += ((value * light + stripe * 100.0) * coverage) as f32;
                 }
             }
         }
@@ -304,12 +306,13 @@ impl Painter {
                 );
                 let u = 0.5 + cos * dx + sin * dy + pose.x / 2200.0 + energy * 0.012;
                 let v = 0.5 - sin * dx + cos * dy + pose.y / 2200.0;
-                let sample = soft
-                    .get_pixel(
-                        (u.clamp(0.0, 1.0) * 127.0) as u32,
-                        (v.clamp(0.0, 1.0) * 127.0) as u32,
-                    )
-                    .0;
+                let sample = image::imageops::sample_bilinear(
+                    soft,
+                    u.clamp(0.0, 1.0) as f32,
+                    v.clamp(0.0, 1.0) as f32,
+                )
+                .unwrap()
+                .0;
                 let vignette = (1.0 - 0.5 * (dx * dx + dy * dy)).max(0.0);
                 let strength = if collage { 0.055 } else { 0.24 } * vignette;
                 let grain = ((x * 17 + y * 31 + x * y % 23) % 7) as f64 * 0.12;
@@ -345,20 +348,29 @@ impl Painter {
                     let v = (-sin * dx + cos * dy) / height + 0.5;
                     let tear = 0.004 * (x as f64 * 0.31 + p.phase).sin();
                     let i = (y * WIDTH + x) * 3;
-                    if (0.0..1.0).contains(&u) && v >= tear && v < 1.0 + tear {
-                        let paper = !(0.025..0.975).contains(&v);
-                        let sample = image
-                            .get_pixel(
-                                ((0.15 + p.u * 0.2 + u * 0.55) * 255.0) as u32,
-                                ((0.15 + p.v * 0.4 + v.clamp(0.0, 1.0) * 0.22) * 255.0) as u32,
-                            )
-                            .0;
+                    let coverage =
+                        (u.min(1.0 - u) * width).min((v - tear).min(1.0 + tear - v) * height);
+                    let coverage = (coverage + 0.5).clamp(0.0, 1.0) as f32;
+                    let shadow =
+                        ((u - 0.02).min(1.02 - u) * width).min((v - 0.04).min(1.04 - v) * height);
+                    let shadow = (shadow + 0.5).clamp(0.0, 1.0) as f32;
+                    for channel in &mut self.pixels[i..i + 3] {
+                        *channel *= 1.0 - 0.35 * shadow;
+                    }
+                    if coverage > 0.0 {
+                        let paper =
+                            ((0.025 - v).max(v - 0.975) * height + 0.5).clamp(0.0, 1.0) as f32;
+                        let sample = image::imageops::sample_bilinear(
+                            image,
+                            (0.15 + p.u * 0.2 + u.clamp(0.0, 1.0) * 0.55) as f32,
+                            (0.15 + p.v * 0.4 + v.clamp(0.0, 1.0) * 0.22) as f32,
+                        )
+                        .unwrap()
+                        .0;
                         for (j, value) in sample.into_iter().enumerate() {
-                            self.pixels[i + j] = if paper { 92.0 } else { value as f32 * 0.42 };
-                        }
-                    } else if (0.02..1.02).contains(&u) && (0.04..1.04).contains(&v) {
-                        for channel in &mut self.pixels[i..i + 3] {
-                            *channel *= 0.65;
+                            let value = 92.0 * paper + value as f32 * 0.42 * (1.0 - paper);
+                            self.pixels[i + j] =
+                                self.pixels[i + j] * (1.0 - coverage) + value * coverage;
                         }
                     }
                 }
