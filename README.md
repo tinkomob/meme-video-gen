@@ -92,6 +92,10 @@ and rain shimmer on high-frequency attacks; wave receives travelling swells and
 foam, analog a travelling deflection, and cover a soft radial lighting pulse.
 Each frequency region retains its latest wave.
 
+Chrome uses two asymmetric, folded metal ribbons with restrained colour and broad
+studio reflections. Their placement leaves room for the cover; musical accents travel through
+the reflections instead of inflating a solid glowing shape.
+
 Before rendering, a clip-wide direction pass measures sustained energy and
 spectral changes, locates its strongest energetic phrase, and finds rises and
 pauses. Smooth envelopes gather the composition before a rise, open it around

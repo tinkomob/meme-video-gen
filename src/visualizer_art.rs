@@ -214,41 +214,56 @@ impl Painter {
     }
 
     pub(super) fn chrome(&mut self, t: f64, a: AudioFrame) {
-        let size = (185.0 + self.variant * 10.0) * self.spread;
-        let cy = 430.0 + 25.0 * (t * 0.25 + self.phase).sin();
+        let size = (180.0 + self.variant * 8.0) * self.spread;
+        let metal = mix_light(Color(205.0, 214.0, 225.0), self.palette[1], 0.08);
         for y in 0..HEIGHT {
+            let v = (y as f64 - 70.0) / (size * 3.0);
+            if !(0.0..1.0).contains(&v) {
+                continue;
+            }
+            let taper = (v * PI).sin().powf(0.65);
+            let bend = v * PI * (1.35 + self.variant * 0.12) + self.phase * 0.15 + t * 0.015;
+            let centers = [
+                270.0 - size * 0.9 + size * 0.3 * bend.sin(),
+                270.0 + size * 0.88 + size * 0.18 * (bend + 1.8).sin(),
+            ];
+            let widths = [
+                (22.0 + 14.0 * self.morph) * taper * self.spread,
+                (16.0 + 11.0 * self.morph) * taper * self.spread,
+            ];
             for x in 0..WIDTH {
                 let local = self.field_at(x as f64, y as f64);
-                let nx = (x as f64 - 270.0 + local.dx) / size;
-                let ny = (y as f64 - cy + local.dy) / (size * 1.25);
-                let angle = ny.atan2(nx);
-                let edge = 1.0
-                    + (0.06 + self.morph * 0.09)
-                        * (angle * (3.0 + self.variant) + self.phase).sin()
-                        * (t * 0.37).sin()
-                    + 0.035 * (angle * 7.0 + self.phase).cos() * (t * 0.29).cos();
-                let energy = band_at(&a, angle / (2.0 * PI));
-                let r = nx.hypot(ny) / (edge + energy * 0.09);
-                let coverage = ((1.0 - r) * size + 0.5).clamp(0.0, 1.0);
+                let xx = x as f64 + local.dx * 0.15;
+                let offsets = [
+                    (xx - centers[0]) / widths[0].max(0.5),
+                    (xx - centers[1]) / widths[1].max(0.5),
+                ];
+                let strip = usize::from(offsets[1].abs() < offsets[0].abs());
+                let q = offsets[strip].clamp(-1.0, 1.0);
+                let coverage = (widths[strip] - (xx - centers[strip]).abs() + 0.5).clamp(0.0, 1.0);
                 if coverage == 0.0 {
                     continue;
                 }
-                // Shade the covered part of an edge pixel inside the surface.
-                let z = (1.0 - r.min(1.0 - 0.5 / size).powi(2)).sqrt();
-                let reflected = (ny * 4.0 + z * 3.0 + (nx * 3.0 + t * 0.3).sin() * 0.6).sin();
-                let stripe = (1.0 - reflected.abs()).powi(14);
-                let glint = audio_wave(a, 1, (angle / PI + 1.0) * 0.8 + z * 0.5).abs();
-                let rim = (1.0 - z).powi(5);
-                let light = 0.09 + 0.35 * z + (0.55 + glint) * stripe + 0.5 * rim;
-                let color = self.local_color(
-                    mix_light(
-                        self.palette[0],
-                        self.palette[1],
-                        (reflected * 0.5 + 0.5) * 0.65,
-                    ),
-                    local,
-                    z,
-                );
+                // Fold normals reflect broad studio lights across a thin opaque metal sheet.
+                let twist = (bend + strip as f64 * 1.8).cos() * 0.7;
+                let mut nx = -(1.4 * (q * PI + twist).sin() + twist);
+                let mut ny = nx * (bend + strip as f64 * 1.8).cos() * 0.25
+                    + 0.15 * (v * PI * 2.0 + self.phase).sin();
+                let mut nz = 1.0;
+                let length = (nx * nx + ny * ny + nz * nz).sqrt().max(0.001);
+                nx /= length;
+                ny /= length;
+                nz /= length;
+                let rx = 2.0 * nx * nz;
+                let ry = 2.0 * ny * nz;
+                let rz = 2.0 * nz * nz - 1.0;
+                let key = (-((rx + 0.48) / 0.23).powi(2) - ((ry + 0.15) / 0.85).powi(2)).exp();
+                let fill = (-((rx - 0.65) / 0.32).powi(2) - ((ry - 0.35) / 0.6).powi(2)).exp();
+                let ceiling = (-(rx / 0.8).powi(2) - ((ry + 0.8) / 0.16).powi(2)).exp();
+                let glint = audio_wave(a, 1, v * 2.8 + strip as f64 * 0.2).abs();
+                let reflection = (key * (0.8 + glint * 0.35) + fill * 0.32 + ceiling * 0.45)
+                    * (0.35 + 0.65 * (rz * 0.5 + 0.5));
+                let light = 0.055 + reflection;
                 let i = (y * WIDTH + x) * 3;
                 if x.is_multiple_of(4) && y.is_multiple_of(4) {
                     let gi = ((y / 4) * (WIDTH / 4) + x / 4) * 3;
@@ -256,9 +271,9 @@ impl Painter {
                         *glow *= (1.0 - coverage) as f32;
                     }
                 }
-                for (j, value) in [color.0, color.1, color.2].into_iter().enumerate() {
+                for (j, value) in [metal.0, metal.1, metal.2].into_iter().enumerate() {
                     self.pixels[i + j] = self.pixels[i + j] * (1.0 - coverage) as f32
-                        + ((value * light + stripe * 100.0) * coverage) as f32;
+                        + ((value * light + reflection.powi(3) * 55.0) * coverage) as f32;
                 }
             }
         }

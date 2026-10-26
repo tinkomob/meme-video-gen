@@ -404,16 +404,44 @@ impl Painter {
         if neon == 0.0 && defocus == 0.0 {
             return;
         }
-        let (gx, gy) = ((x / 4.0) as i32, (y / 4.0) as i32);
+        let (gx, gy) = ((x / 4.0).floor() as i32, (y / 4.0).floor() as i32);
         let radius = if neon > 0.0 { 3 } else { 1 };
-        for dy in -radius..=radius {
-            for dx in -radius..=radius {
-                let (xx, yy) = (gx + dx, gy + dy);
+        let count = 2 * radius + 2;
+        let axis = |fraction: f64, support: f64| {
+            let mut weights: [f64; 8] = std::array::from_fn(|i| {
+                if i >= count {
+                    return 0.0;
+                }
+                let distance = (i as f64 - radius as f64 - fraction) / support;
+                (1.0 - distance * distance).max(0.0).powi(2)
+            });
+            let sum = weights.iter().sum::<f64>();
+            for weight in &mut weights {
+                *weight /= sum;
+            }
+            weights
+        };
+        let (fx, fy) = (x / 4.0 - gx as f64, y / 4.0 - gy as f64);
+        let (neon_x, neon_y) = (axis(fx, 3.5), axis(fy, 3.5));
+        let (soft_x, soft_y) = (axis(fx, 1.5), axis(fy, 1.5));
+        // Preserve the old kernels' total light while their edges fade continuously.
+        let neon_energy = neon * 0.11 * 8.820338725601882;
+        let soft_energy = defocus * 0.018 * (13.0 / 3.0);
+        for dy in 0..count {
+            for dx in 0..count {
+                let (xx, yy) = (
+                    gx + dx as i32 - radius as i32,
+                    gy + dy as i32 - radius as i32,
+                );
                 if xx < 0 || xx >= WIDTH as i32 / 4 || yy < 0 || yy >= HEIGHT as i32 / 4 {
                     continue;
                 }
-                let a =
-                    intensity * (neon * 0.11 + defocus * 0.018) / (1 + dx * dx + dy * dy) as f64;
+                let a = intensity
+                    * (neon_energy * neon_x[dx] * neon_y[dy]
+                        + soft_energy * soft_x[dx] * soft_y[dy]);
+                if a == 0.0 {
+                    continue;
+                }
                 let i = (yy as usize * (WIDTH / 4) + xx as usize) * 3;
                 for (j, v) in [c.0, c.1, c.2].iter().enumerate() {
                     self.glow[i + j] += (v * a) as f32;
@@ -729,6 +757,58 @@ impl Painter {
 mod tests {
     use super::*;
     #[test]
+    fn chrome_keeps_an_open_center_and_uses_neutral_reflections() {
+        for variant in 0..3 {
+            let mut p = Painter::new("chrome", 71, variant);
+            for time in [0.0, 4.0, 9.0] {
+                p.pixels.fill(0.0);
+                p.chrome(time, AudioFrame::default());
+                let center = (365 * WIDTH + 270) * 3;
+                assert_eq!(
+                    &p.pixels[center..center + 3],
+                    &[0.0; 3],
+                    "solid bubble returned"
+                );
+                let tip = &p.pixels[70 * WIDTH * 3..71 * WIDTH * 3];
+                assert!(
+                    tip.as_chunks::<3>()
+                        .0
+                        .iter()
+                        .filter(|rgb| rgb.iter().any(|v| *v > 0.0))
+                        .count()
+                        < 10,
+                    "zero-width tips draw a horizontal line"
+                );
+                let surface: Vec<_> = p
+                    .pixels
+                    .as_chunks::<3>()
+                    .0
+                    .iter()
+                    .filter(|rgb| rgb.iter().any(|v| *v > 1.0))
+                    .collect();
+                assert!(
+                    (10000..WIDTH * HEIGHT / 3).contains(&surface.len()),
+                    "missing or oversized metal surface: {}",
+                    surface.len()
+                );
+                assert!(
+                    surface.iter().any(|rgb| rgb.iter().any(|v| *v > 130.0)),
+                    "missing reflected key light"
+                );
+                assert!(
+                    surface.iter().any(|rgb| rgb.iter().all(|v| *v < 20.0)),
+                    "missing dark reflections"
+                );
+                for rgb in surface {
+                    let low = rgb.iter().copied().fold(f32::INFINITY, f32::min);
+                    let high = rgb.iter().copied().fold(0.0, f32::max);
+                    assert!(high - low < high * 0.3, "rainbow tint overwhelms metal");
+                }
+            }
+        }
+    }
+
+    #[test]
     fn solid_edges_and_cover_fragments_move_without_pixel_jumps() {
         let cover = image::DynamicImage::ImageRgb8(image::RgbImage::from_fn(256, 256, |x, y| {
             let value = if (x / 4 + y / 4) % 2 == 0 { 0 } else { 255 };
@@ -836,6 +916,77 @@ mod tests {
                 assert!((band_at(&start, position) - band_at(&before, position)).abs() < 1e-9);
             }
             previous = regions;
+        }
+    }
+
+    #[test]
+    fn highlight_is_continuous_across_grid_cells_and_neon_boundary() {
+        let mut p = Painter::new("silver", 4, 0);
+        p.view.focus = 0.25;
+        let mut sample = |x: f64, y: f64| {
+            p.glow.fill(0.0);
+            p.light_point(x, y, Color(255.0, 255.0, 255.0), 1.0);
+            p.glow.clone()
+        };
+        let before = sample(251.999, 200.0);
+        let after = sample(252.001, 200.0);
+        let difference = |a: &[f32], b: &[f32]| {
+            a.iter()
+                .zip(b)
+                .map(|(a, b)| (a - b).abs())
+                .fold(0.0_f32, f32::max)
+        };
+        assert!(
+            difference(&before, &after) < 0.01,
+            "highlight jumps at a glow-grid boundary"
+        );
+        let energy = |a: &[f32]| a.iter().sum::<f32>();
+        assert!((energy(&before) - energy(&after)).abs() < 0.01);
+
+        p.neon = true;
+        p.phase = 0.0;
+        p.neon_time = PI / (2.0 * 0.73);
+        let edge = 270.0 + 240.0 * (p.neon_time * 0.39).sin() - 170.0;
+        let y = 480.0 + 420.0 * (p.neon_time * 0.31).cos();
+        p.glow.fill(0.0);
+        p.light_point(edge - 0.001, y, Color(255.0, 255.0, 255.0), 1.0);
+        let outside = p.glow.clone();
+        p.glow.fill(0.0);
+        p.light_point(edge + 0.001, y, Color(255.0, 255.0, 255.0), 1.0);
+        assert!(
+            difference(&outside, &p.glow) < 0.01,
+            "defocused line breaks at the edge of the neon light"
+        );
+    }
+
+    #[test]
+    fn highlight_survives_repeated_neon_fade_cycles() {
+        let mut p = Painter::new("silver", 43, 0);
+        p.phase = 0.0;
+        p.view.focus = 0.25;
+        let threshold = 0.15_f64.asin();
+        for cycle in 0..3 {
+            for phase in [threshold, PI - threshold] {
+                let switch = (phase + cycle as f64 * 2.0 * PI) / 0.73;
+                let x = 270.0 + 240.0 * (switch * 0.39).sin();
+                let y = 480.0 + 420.0 * (switch * 0.31).cos();
+                let mut frames = Vec::new();
+                for time in [switch - 0.000001, switch + 0.000001] {
+                    p.neon_time = time;
+                    p.glow.fill(0.0);
+                    p.line(x, y - 40.0, x, y + 40.0, Color(255.0, 255.0, 255.0), 1.0);
+                    frames.push(p.glow.clone());
+                }
+                let jump = frames[0]
+                    .iter()
+                    .zip(&frames[1])
+                    .map(|(a, b)| (a - b).abs())
+                    .fold(0.0_f32, f32::max);
+                assert!(
+                    jump < 0.01,
+                    "line highlight breaks when neon switches at {switch}: {jump}"
+                );
+            }
         }
     }
 
