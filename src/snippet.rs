@@ -97,6 +97,24 @@ pub fn valid_cover(data: &[u8]) -> bool {
     reader
         .into_dimensions()
         .is_ok_and(|(w, h)| (300..=8192).contains(&w) && (170..=8192).contains(&h))
+        && image::load_from_memory_with_format(data, image::ImageFormat::Jpeg).is_ok()
+}
+async fn fetch_cover(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
+    use futures_util::StreamExt;
+    let response = client.get(url).send().await?.error_for_status()?;
+    ensure!(
+        !response.content_length().is_some_and(|size| size > 8 << 20),
+        "cover exceeds limit"
+    );
+    let mut data = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        ensure!(data.len() + chunk.len() <= 8 << 20, "cover exceeds limit");
+        data.extend_from_slice(&chunk);
+    }
+    ensure!(valid_cover(&data), "invalid cover");
+    Ok(data)
 }
 async fn cover(store: &Storage, id: &str, dir: &Path) -> Result<PathBuf> {
     ensure!(valid_video_id(id), "invalid YouTube video ID");
@@ -109,35 +127,21 @@ async fn cover(store: &Storage, id: &str, dir: &Path) -> Result<PathBuf> {
         return Ok(path);
     }
     let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(4))
+        .timeout(std::time::Duration::from_secs(10))
         .build()?;
     for host in [
         "https://i.ytimg.com",
         "https://img.youtube.com",
         "http://i.ytimg.com",
     ] {
-        for size in ["maxresdefault", "sddefault", "hqdefault"] {
-            let r = match client
-                .get(format!("{host}/vi/{id}/{size}.jpg"))
-                .send()
-                .await
-            {
-                Ok(r) => r,
-                Err(_) => break,
+        for size in ["maxresdefault", "sddefault", "hqdefault", "mqdefault"] {
+            let data = match fetch_cover(&client, &format!("{host}/vi/{id}/{size}.jpg")).await {
+                Ok(data) => data,
+                Err(e) => {
+                    tracing::warn!("cover {id}/{size} from {host}: {e}");
+                    continue;
+                }
             };
-            if !r.status().is_success() || r.content_length().is_some_and(|s| s > 8 << 20) {
-                continue;
-            }
-            use futures_util::StreamExt;
-            let mut data = Vec::new();
-            let mut stream = r.bytes_stream();
-            while let Some(chunk) = stream.next().await {
-                data.extend_from_slice(&chunk?);
-                ensure!(data.len() <= 8 << 20, "cover exceeds limit");
-            }
-            if !valid_cover(&data) {
-                continue;
-            }
             tokio::fs::write(&path, &data).await?;
             if let Err(e) = store.put(&key, data, "image/jpeg").await {
                 tracing::warn!("cover cache: {e}");
@@ -608,8 +612,52 @@ mod cover_tests {
     #[test]
     fn validates_cover_dimensions_format_and_size() {
         assert!(valid_cover(&jpeg(600, 600)));
+        assert!(valid_cover(&jpeg(320, 180)));
         assert!(!valid_cover(&jpeg(120, 90)));
+        let data = jpeg(600, 600);
+        let scan = data
+            .windows(2)
+            .position(|bytes| bytes == [0xff, 0xda])
+            .unwrap();
+        assert!(!valid_cover(&data[..scan]));
         assert!(!valid_cover(b"not an image"));
         assert!(!valid_cover(&vec![0; (8 << 20) + 1]));
+    }
+
+    #[tokio::test]
+    async fn fetch_cover_rejects_failed_and_invalid_responses() {
+        use axum::{Router, routing::get};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let router = Router::new()
+            .route("/valid", get(|| async { jpeg(320, 180) }))
+            .route("/placeholder", get(|| async { jpeg(120, 90) }))
+            .route("/oversized", get(|| async { vec![0_u8; (8 << 20) + 1] }))
+            .route(
+                "/truncated",
+                get(|| async {
+                    use tokio::io::AsyncWriteExt;
+                    let (mut writer, reader) = tokio::io::duplex(64);
+                    tokio::spawn(async move {
+                        writer.write_all(b"broken").await.unwrap();
+                    });
+                    (
+                        [("content-length", "1000")],
+                        axum::body::Body::from_stream(tokio_util::io::ReaderStream::new(reader)),
+                    )
+                }),
+            );
+        let server = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+        let client = reqwest::Client::new();
+        for path in ["missing", "placeholder", "oversized", "truncated"] {
+            assert!(
+                fetch_cover(&client, &format!("{base}/{path}"))
+                    .await
+                    .is_err(),
+                "{path}"
+            );
+        }
+        assert!(fetch_cover(&client, &format!("{base}/valid")).await.is_ok());
+        server.abort();
     }
 }
