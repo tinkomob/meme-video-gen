@@ -155,16 +155,16 @@ pub fn smooth_material_audio(painter: &Painter, mut frames: Vec<AudioFrame>) -> 
         let mut previous = AudioFrame::default();
         for frame in &mut frames {
             for (value, old) in frame.bands.iter_mut().zip(previous.bands) {
-                *value = old + (*value - old) * 0.12;
+                *value = old + (*value - old) * 0.06;
             }
-            frame.level = previous.level + (frame.level - previous.level) * 0.12;
+            frame.level = previous.level + (frame.level - previous.level) * 0.06;
             frame.bass = frame.bands[..16].iter().sum::<f64>() / 16.0;
             frame.treble = frame.bands[40..].iter().sum::<f64>() / 24.0;
-            frame.beat = previous.beat + (frame.beat - previous.beat) * 0.12;
+            frame.beat = previous.beat + (frame.beat - previous.beat) * 0.06;
             for region in 0..3 {
                 let target = frame.attacks[region] * (-frame.attack_age[region] * 6.0).exp();
                 frame.attacks[region] =
-                    previous.attacks[region] + (target - previous.attacks[region]) * 0.12;
+                    previous.attacks[region] + (target - previous.attacks[region]) * 0.06;
                 frame.attack_age[region] = 0.0;
             }
             previous = *frame;
@@ -1172,8 +1172,8 @@ mod tests {
         frames[1].attacks = [1.0; 3];
         frames[1].attack_age = [0.0; 3];
         let frames = smooth_material_audio(&painter, frames);
-        assert!((frames[1].bands[0] - 0.12).abs() < 1e-9);
-        assert!((frames[1].attacks[0] - 0.12).abs() < 1e-9);
+        assert!((frames[1].bands[0] - 0.06).abs() < 1e-9);
+        assert!((frames[1].attacks[0] - 0.06).abs() < 1e-9);
         assert!(frames[2].bands[0] > 0.0 && frames[2].bands[0] < frames[1].bands[0]);
         assert!(frames[2].attacks[0] > 0.0 && frames[2].attacks[0] < frames[1].attacks[0]);
     }
@@ -1426,7 +1426,7 @@ mod tests {
                 let quiet = p.frame(240, AudioFrame::default()).to_vec();
                 let mut attack = AudioFrame::default();
                 attack.attacks[region] = 1.0;
-                attack.attack_age[region] = 0.3;
+                attack.attack_age[region] = if materials::spatial(style) { 0.0 } else { 0.3 };
                 let active = p.frame(240, attack).to_vec();
                 let changed = quiet
                     .iter()

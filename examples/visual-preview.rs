@@ -61,6 +61,10 @@ fn main() -> Result<()> {
         "<!doctype html><meta charset=utf-8><title>75 visual variants</title><style>body{background:#171923;color:#eee;font:16px system-ui;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}img,video{width:100%}figure{margin:0}a{color:#ace}</style><h1>8 новых визуалов</h1><p>Реальный CPU-рендер, 540×960, 30 fps. Видео: 6 секунд с музыкой, без обложки и текста. Ниже все 75 вариантов с разными seed.</p><main>",
     );
     html = html.replace("6 секунд", &format!("{seconds} сек."));
+    if new_only {
+        html = html.replace("75 visual variants", "8 new visuals");
+        html = html.replace("Все 75 вариантов", "Восемь новых визуалов");
+    }
     for (index, style) in STYLES
         .iter()
         .enumerate()
@@ -122,7 +126,7 @@ fn main() -> Result<()> {
                 );
                 if stills {
                     html.push_str(&format!(
-                        "<figure><img src='{name}'><figcaption>{style}/1</figcaption></figure>"
+                        "<figure><img src='{name}'><figcaption>{style}/{variant}</figcaption></figure>"
                     ));
                     println!("Rendered still {style}; audio response {percent:.1}%");
                     continue;
@@ -174,7 +178,7 @@ fn main() -> Result<()> {
                 let status = ffmpeg.wait()?;
                 write_result?;
                 ensure!(status.success(), "encode {style}");
-                html.push_str(&format!("<figure><video controls preload=metadata poster='{name}' src='{style}.mp4'></video><figcaption>{style}/1</figcaption></figure>"));
+                html.push_str(&format!("<figure><video controls preload=metadata poster='{name}' src='{style}.mp4'></video><figcaption>{style}/{variant}</figcaption></figure>"));
                 println!(
                     "Rendered {style}; audio response {percent:.1}%; {:.3} s/frame",
                     started.elapsed().as_secs_f64() / (seconds * FPS) as f64

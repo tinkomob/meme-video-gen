@@ -102,13 +102,13 @@ impl Space {
     fn strand(&self, z: f64, index: usize) -> [f64; 2] {
         let phase = index as f64 * 1.256 + self.phase;
         [
-            (z * (0.55 + self.variant * 0.07) + phase).sin() * (0.8 + self.drive[0] * 0.2)
-                + (z * 4.1 + phase * 2.0).sin() * (0.07 + self.drive[1] * 0.08),
+            (z * (0.55 + self.variant * 0.07) + phase).sin() * (0.8 + self.drive[0] * 0.006)
+                + (z * 4.1 + phase * 2.0).sin() * (0.07 + self.drive[1] * 0.0024),
             (z * 0.79 + phase).cos() * 1.1 + (z * 5.3 - phase).sin() * 0.1,
         ]
     }
     fn distance(&self, [mut x, mut y, z]: [f64; 3]) -> f64 {
-        let [bass, mid, high] = self.drive;
+        let [bass, mid, high] = self.drive.map(|value| value * 0.03);
         let phase = self.phase + self.variant * 0.6;
         x += 0.065 * (z * 0.63 + y * 0.8 + phase).sin();
         y += 0.045 * (x * 1.1 - z * 0.4 + phase).cos();
@@ -213,45 +213,18 @@ impl Space {
             color = mix_light(color, self.palette[2], (fringe * 0.7).cos().max(0.0) * 0.7);
         }
         let light = unit([-0.5, 0.8, -0.55]);
-        let diffuse = (dot(normal, light) * 0.65 + 0.25).clamp(0.0, 1.0);
+        let diffuse = (dot(normal, light) * 0.5 + 0.5).clamp(0.0, 1.0);
         let facing = dot(normal, ray).abs();
         let rim = (1.0 - facing).powi(2);
-        let half = unit(std::array::from_fn(|i| light[i] - ray[i]));
-        let specular = dot(normal, half)
-            .max(0.0)
-            .powi(if self.kind == 0 { 12 } else { 8 });
-        let front = (z * 2.0 + x - y - self.time * 1.8).sin() * 0.5 + 0.5;
-        let accent = high * (0.2 + front.powi(4) * 0.8);
-        let detail = 1.0 / (1.0 + depth * depth * 0.035);
-        let mut intensity = 0.16 + diffuse * 0.55 + rim * 0.3 + accent * 0.35;
-        if self.kind == 0 {
-            let sheen = (0.5
-                + 0.5 * (flow * 1.3 + normal[0] * 2.0 + normal[1] - self.time * 0.4).sin())
-            .powi(8);
-            intensity = 0.055
-                + diffuse * 0.2
-                + specular * 0.3
-                + rim * 0.32
-                + sheen * rim * (0.1 + high * 0.3);
-        }
-        if self.kind == 1 {
-            let grain = (x * 14.0 + z * 11.0).sin().abs();
-            intensity *= 0.94 + grain * 0.06 * detail;
-            intensity += rim * (0.2 + high * 0.5);
-        }
-        if self.kind == 2 {
-            let lip = (z * 16.0 + y * 5.0).sin() * 0.5 + 0.5;
-            intensity *= 0.85 + (lip - 0.5) * 0.3 * detail;
-        }
-        let studio = if matches!(self.kind, 0 | 3 | 7) {
-            specular * (0.15 + accent * 0.35)
-        } else {
-            specular * 0.08
-        };
+        let front = (z * 0.8 + x - y - self.time * 0.35).sin() * 0.5 + 0.5;
+        let emission = 0.85 + bass * 0.22 + mid * 0.18 + high * front * 0.2;
+        let core = mix_light(color, Color(245.0, 238.0, 255.0), 0.28 + diffuse * 0.22);
+        let intensity = emission * (0.7 + diffuse * 0.32 + rim * 0.35);
+        let haze = 1.0 / (1.0 + depth * 0.025);
         Color(
-            color.0 * intensity + studio * self.palette[2].0 + rim * bass * 8.0,
-            color.1 * intensity + studio * self.palette[2].1,
-            color.2 * intensity + studio * self.palette[2].2,
+            core.0 * intensity * haze,
+            core.1 * intensity * haze,
+            core.2 * intensity * haze,
         )
     }
 
@@ -345,35 +318,38 @@ impl Space {
                 let q2 = (y * 1.4 - z * 0.9 + (x * 1.7 + z * 0.5).sin()).sin();
                 let q3 = (z * 0.8 + q1 * 0.9 - q2 * 0.8 + self.phase).sin();
                 let curl = q1 * q2;
-                let fold = q1 + q2 * (0.8 + mid * 0.3) + q3 * (0.4 + mid * 0.25) - 0.2;
+                let fold = q1 + q2 * (0.8 + mid * 0.009) + q3 * (0.4 + mid * 0.0075) - 0.2;
                 let vein =
                     (x * 13.0 + q1 * 4.0 + z * 7.0).sin() * (y * 11.0 + q2 * 3.0 - z * 4.0).cos();
                 let center = 0.5 * (z * 0.35 + self.phase).sin();
                 let envelope = (-((x - center).powi(2) * 0.32 + y * y * 0.13)).exp();
-                density = (-fold.abs() * (9.0 - mid * 2.0)).exp()
+                density = (-fold.abs() * (9.0 - mid * 0.06)).exp()
                     * envelope
-                    * (0.9 + bass * 0.9)
+                    * 0.95
                     * (1.0 - (-(x * x + y * y) / 0.25).exp());
                 color = mix_light(
                     self.palette[0],
                     self.palette[2],
                     0.5 + 0.5 * (z * 0.4 + curl).sin(),
                 );
-                let shade = 0.16
-                    + vein.max(0.0) * 0.28
-                    + q3.max(0.0) * 0.16
-                    + high * (0.1 + vein.max(0.0).powi(4) * 0.6);
-                color = mix_light(Color(4.0, 7.0, 12.0), color, shade);
+                let shade = 0.9 + vein.max(0.0) * 0.12 + q3.max(0.0) * 0.1;
+                color = mix_light(color, Color(245.0, 238.0, 255.0), 0.3);
+                let emission = shade * (1.0 + bass * 0.2 + mid * 0.16 + high * 0.18);
+                color = Color(color.0 * emission, color.1 * emission, color.2 * emission);
             } else {
                 let mut nearest = f64::INFINITY;
                 for strand in 0..5 {
                     let [cx, cy] = self.strand(z, strand);
                     nearest = nearest.min((x - cx).hypot(y - cy));
                 }
-                let width = 0.025 + depth * 0.004 + high * 0.018;
-                density = (width / (nearest + width)).powi(3) * (0.5 + high * 2.0 + mid * 0.5);
+                let width = 0.025 + depth * 0.004 + high * 0.00054;
+                density = (width / (nearest + width)).powi(3) * 0.9;
                 color = mix_light(self.palette[0], Color(230.0, 240.0, 255.0), 0.65);
-                color = Color(color.0 * 2.1, color.1 * 2.1, color.2 * 2.1);
+                color = Color(
+                    color.0 * (1.5 + bass * 0.2 + mid * 0.18 + high * 0.2),
+                    color.1 * (1.5 + bass * 0.2 + mid * 0.18 + high * 0.2),
+                    color.2 * (1.5 + bass * 0.2 + mid * 0.18 + high * 0.2),
+                );
             }
             density *= step * (if self.kind == 6 { 6.0 } else { 1.8 });
             let opacity = (1.0 - (-density).exp()).min(0.85);
@@ -410,25 +386,23 @@ impl Painter {
                 .iter()
                 .sum::<f64>()
                 / [16.0, 24.0, 24.0][region];
-            let response = self.response[region * 4..region * 4 + 4]
-                .iter()
-                .map(|r| r.light * 0.4 + r.pulse * 0.4)
-                .sum::<f64>()
-                / 4.0;
-            (energy * 0.7
-                + response
-                + a.attacks[region] * (-a.attack_age[region] * 6.0).exp() * 0.7)
-                .min(1.5)
+            (energy * 0.9 + a.attacks[region] * (-a.attack_age[region] * 6.0).exp() * 0.4).min(1.0)
         });
-        let travel = self.response.iter().map(|r| r.travel).sum::<f64>() / 12.0;
+        let palette = std::array::from_fn(|index| {
+            mix_light(
+                self.palette[index],
+                self.palette[(index + 1) % 3],
+                drive[index] * 0.65,
+            )
+        });
         let space = Space {
             kind,
             variant: self.variant,
             phase: self.phase,
-            time: t,
-            flow: t * 0.22 + travel * 0.65,
+            time: t * 0.65,
+            flow: t * 0.16,
             drive,
-            palette: self.palette,
+            palette,
         };
         let origin = space.origin();
         let divisor = if matches!(kind, 4 | 6) { 3 } else { 2 };
@@ -453,7 +427,19 @@ impl Painter {
                 self.base[i + 1] as f64,
                 self.base[i + 2] as f64,
             );
+            let wash = mix_light(palette[0], palette[1], (v + 0.5).clamp(0.0, 1.0));
+            let background = 0.04 + drive[0] * 0.1 + drive[1] * 0.1 + drive[2] * 0.08;
+            let bg = Color(
+                bg.0 + wash.0 * background,
+                bg.1 + wash.1 * background,
+                bg.2 + wash.2 * background,
+            );
             let (c, transmission) = space.ray(origin, direction, bg);
+            let c = Color(
+                c.0 + wash.0 * background * transmission,
+                c.1 + wash.1 * background * transmission,
+                c.2 + wash.2 * background * transmission,
+            );
             [
                 c.0 as f32 / RADIANCE,
                 c.1 as f32 / RADIANCE,
@@ -542,7 +528,7 @@ impl Painter {
                     let z = origin[2] + depth;
                     let [x, y] = space.strand(z, strand);
                     let point = project([x, y, z]);
-                    let intensity = (1.0 - depth / 25.0).powi(2) * (0.4 + drive[2] * 1.5);
+                    let intensity = (1.0 - depth / 25.0).powi(2) * (0.7 + drive[2] * 0.2);
                     let core = mix_light(self.palette[0], Color(225.0, 240.0, 255.0), 0.7);
                     if let Some((px, py)) = previous {
                         self.line(px, py, point.0, point.1, core, intensity);
@@ -584,7 +570,7 @@ impl Painter {
                     }
                 }
                 let peak = color.into_iter().fold(0.0_f32, f32::max);
-                let weight = (peak - 60.0).max(0.0) / (peak + 1.0) * 0.2;
+                let weight = (peak - 45.0).max(0.0) / (peak + 1.0) * 0.55;
                 highlights.put_pixel(
                     x as u32,
                     y as u32,
@@ -592,10 +578,10 @@ impl Painter {
                 );
             }
         }
-        let near = image::imageops::blur(&highlights, 1.2);
-        let wide = image::imageops::blur(&highlights, 3.2);
+        let near = image::imageops::blur(&highlights, 2.0);
+        let wide = image::imageops::blur(&highlights, 7.0);
         for ((target, a), b) in self.glow.iter_mut().zip(near.as_raw()).zip(wide.as_raw()) {
-            *target += (a * 0.7 + b * 0.3) * RADIANCE;
+            *target += (a * 0.55 + b * 0.45) * RADIANCE;
         }
     }
 }
@@ -636,6 +622,31 @@ mod tests {
         render_samples(&mut field, Some(&[true; 9 * 11]), sample);
         for (a, b) in field.as_raw().iter().zip(original.as_raw()) {
             assert!((a - b).abs() < 1e-6);
+        }
+    }
+
+    #[test]
+    fn music_changes_emission_with_only_small_surface_deformation() {
+        for kind in [0, 1, 2, 3, 5, 7] {
+            let mut space = Space {
+                kind,
+                variant: 0.0,
+                phase: 1.3,
+                time: 4.0,
+                flow: 1.0,
+                drive: [0.0; 3],
+                palette: [Color(80.0, 150.0, 230.0); 3],
+            };
+            let point = [0.9, 0.7, 1.4];
+            let distance = space.distance(point);
+            let quiet = space.pigment(point, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 2.0);
+            space.drive = [1.0; 3];
+            assert!(
+                (space.distance(point) - distance).abs() < 0.025,
+                "geometry kicks: {kind}"
+            );
+            let loud = space.pigment(point, [0.0, 1.0, 0.0], [0.0, 0.0, 1.0], 2.0);
+            assert!(loud.0 + loud.1 + loud.2 > quiet.0 + quiet.1 + quiet.2 + 30.0);
         }
     }
 

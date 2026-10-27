@@ -93,10 +93,11 @@ branches in depth, and `interference` passes through folded translucent membrane
 These are procedural approximations, without physical fluid or optical simulation.
 The eight new families trace camera rays through world coordinates rather than
 repeating screen-space copies. Camera travel continues through procedural geometry;
-surface normals, occlusion, distance haze and transmission establish depth. They use raw
-frequency energy and attacks alongside the precomputed voices, so short musical
-accents survive the slower motion envelopes. Bass deforms surfaces, midrange
-changes folds and branching, and highs sweep highlights and fine grains.
+surface normals, occlusion, distance haze and transmission establish depth. Camera
+speed stays independent of musical attacks. Smoothed frequency energy changes
+surface colour, emission and the background wash; geometry retains only a small
+three-percent audio response. Soft pale cores and two bloom radii give the
+surfaces an emissive neon appearance.
 Contours use four rotated subpixel samples where neighbouring rays disagree;
 smaller ray steps preserve thin surfaces. Rough coloured highlights, depth-filtered
 detail, mild optical diffusion and two bloom radii soften the geometric appearance.
