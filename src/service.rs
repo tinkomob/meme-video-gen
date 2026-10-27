@@ -176,11 +176,11 @@ impl Service {
         };
         ensure!(!platforms.is_empty(), "no snippet uploaders configured");
         let generated = self.generate("random", -1, "").await?;
-        let mut success = false;
+        let mut published = vec![];
         for p in platforms {
             match self.upload(p, &generated.path(), &generated.song).await {
                 Ok(()) => {
-                    success = true;
+                    published.push(p);
                     tracing::info!("snippet published to {p}");
                 }
                 Err(e) => tracing::error!(
@@ -189,8 +189,31 @@ impl Service {
                 ),
             }
         }
-        ensure!(success, "snippet not published");
+        ensure!(!published.is_empty(), "snippet not published");
+        self.notify_scheduled_publication(&generated.song, &published)
+            .await;
         Ok(())
+    }
+    async fn notify_scheduled_publication(&self, song: &Song, platforms: &[&str]) {
+        if self.cfg.owner_chat_id == 0 {
+            return;
+        }
+        let text = format!(
+            "Сниппет опубликован по расписанию: {} — {}\nПлощадки: {}",
+            song.author,
+            song.title,
+            platforms.join(", ")
+        );
+        if let Err(e) = self
+            .telegram
+            .text(self.cfg.owner_chat_id, &text, None)
+            .await
+        {
+            tracing::error!(
+                "scheduled snippet notification: {}",
+                self.telegram.redact(&e.to_string())
+            );
+        }
     }
     async fn load_plan(
         &self,
@@ -328,6 +351,7 @@ mod tests {
     #[derive(Default)]
     struct Memory {
         saved: Option<Vec<u8>>,
+        messages: Vec<serde_json::Value>,
         fail_reads: bool,
         fail_writes: bool,
     }
@@ -337,6 +361,13 @@ mod tests {
         body: Bytes,
     ) -> axum::response::Response {
         let mut memory = state.lock().unwrap();
+        if method == Method::POST {
+            memory.messages.push(serde_json::from_slice(&body).unwrap());
+            return axum::Json(serde_json::json!({
+                "ok": true, "result": {"message_id": 1}
+            }))
+            .into_response();
+        }
         if method == Method::GET {
             if memory.fail_reads {
                 return StatusCode::SERVICE_UNAVAILABLE.into_response();
@@ -400,7 +431,7 @@ mod tests {
         assert!(!plan.as_ref().unwrap().handled[0]);
         memory.lock().unwrap().fail_writes = false;
         assert!(svc.claim_slot(&mut plan, due).await.unwrap());
-        let restarted = Service::new(cfg).unwrap();
+        let restarted = Service::new(cfg.clone()).unwrap();
         let mut reloaded = None;
         assert!(!restarted.claim_slot(&mut reloaded, due).await.unwrap());
         assert!(reloaded.as_ref().unwrap().handled[0]);
@@ -417,6 +448,29 @@ mod tests {
         }
         memory.lock().unwrap().saved = Some(serde_json::to_vec(&future).unwrap());
         assert!(restarted.claim_slot(&mut None, now).await.is_err());
+        let mut notifier = Service::new(cfg).unwrap();
+        notifier.telegram = Telegram::with_base("unused".into(), &notifier.cfg.endpoint).unwrap();
+        let song = Song {
+            author: "Исполнитель".into(),
+            title: "Трек".into(),
+            ..Default::default()
+        };
+        notifier
+            .notify_scheduled_publication(&song, &["telegram"])
+            .await;
+        assert!(memory.lock().unwrap().messages.is_empty());
+        notifier.cfg.owner_chat_id = 123;
+        notifier
+            .notify_scheduled_publication(&song, &["telegram", "youtube"])
+            .await;
+        let messages = memory.lock().unwrap().messages.clone();
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0]["chat_id"], 123);
+        assert_eq!(messages[0]["disable_notification"], true);
+        assert_eq!(
+            messages[0]["text"],
+            "Сниппет опубликован по расписанию: Исполнитель — Трек\nПлощадки: telegram, youtube"
+        );
         server.abort();
     }
 }
