@@ -5,14 +5,16 @@ use crate::{
     visualizer::{self, Painter, STYLES},
 };
 use anyhow::{Context, Result, ensure};
-use rand::Rng;
+use rand::{Rng, seq::IteratorRandom};
 use std::{
     io::{Read, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
+    sync::Mutex,
 };
 use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
+static RECENT_VISUALS: Mutex<Vec<(String, i32)>> = Mutex::new(Vec::new());
 static RENDERER: Semaphore = Semaphore::const_new(1);
 pub struct Generated {
     pub dir: tempfile::TempDir,
@@ -37,6 +39,49 @@ pub fn validate(style: &str, variant: i32) -> Result<()> {
     );
     Ok(())
 }
+fn choose_visual(style: &str, variant: i32, recent: &mut Vec<(String, i32)>) -> (String, i32) {
+    let style = if style == "random" {
+        STYLES
+            .into_iter()
+            .filter(|style| !recent.iter().any(|(previous, _)| previous == style))
+            .choose(&mut rand::rng())
+            .unwrap()
+    } else {
+        style
+    };
+    let variant = if variant < 0 || (variant == 1 && matches!(style, "topography" | "ink")) {
+        let variants: Vec<_> = (0..3)
+            .filter(|v| !(*v == 1 && matches!(style, "topography" | "ink")))
+            .collect();
+        variants
+            .iter()
+            .copied()
+            .filter(|v| {
+                !recent
+                    .iter()
+                    .any(|(s, previous)| s == style && previous == v)
+            })
+            .choose(&mut rand::rng())
+            .unwrap_or_else(|| {
+                *variants
+                    .iter()
+                    .min_by_key(|v| {
+                        recent
+                            .iter()
+                            .rposition(|(s, previous)| s == style && previous == *v)
+                    })
+                    .unwrap()
+            })
+    } else {
+        variant
+    };
+    recent.push((style.to_owned(), variant));
+    if recent.len() > 3 {
+        recent.remove(0);
+    }
+    (style.to_owned(), variant)
+}
+
 pub fn escape_path(p: &Path) -> String {
     p.to_string_lossy()
         .replace('\\', "\\\\")
@@ -119,22 +164,7 @@ pub async fn generate(
         "snippet requires at least 20 seconds of audio"
     );
     let start = rand::rng().random::<f64>() * (duration * 0.75 - 20.0).max(0.0);
-    let style = if style == "random" {
-        STYLES[rand::rng().random_range(0..STYLES.len())]
-    } else {
-        style
-    }
-    .to_owned();
-    let variant = if variant < 0 || (variant == 1 && matches!(style.as_str(), "topography" | "ink"))
-    {
-        if matches!(style.as_str(), "topography" | "ink") {
-            [0, 2][rand::rng().random_range(0..2)]
-        } else {
-            rand::rng().random_range(0..3)
-        }
-    } else {
-        variant
-    };
+    let (style, variant) = choose_visual(style, variant, &mut RECENT_VISUALS.lock().unwrap());
     let title = song.title.split_whitespace().collect::<Vec<_>>().join(" ");
     let artist = song.author.split_whitespace().collect::<Vec<_>>().join(" ");
     let title_size = if title.chars().count() > 30 {
@@ -426,6 +456,44 @@ pub async fn save_new(source: &Path, dest: &Path) -> Result<()> {
 #[cfg(test)]
 mod cover_tests {
     use super::*;
+
+    #[test]
+    fn random_visuals_skip_the_last_three_styles() {
+        let mut recent = Vec::new();
+        for _ in 0..1000 {
+            let previous = recent.clone();
+            let (style, variant) = choose_visual("random", -1, &mut recent);
+            assert!(!previous.iter().any(|(s, _)| s == &style));
+            assert!(validate(&style, variant).is_ok());
+            assert!(recent.len() <= 3);
+        }
+    }
+
+    #[test]
+    fn fixed_styles_use_the_least_recent_available_variant() {
+        for style in STYLES {
+            let mut recent = Vec::new();
+            let count = if matches!(style, "topography" | "ink") {
+                2
+            } else {
+                3
+            };
+            for _ in 0..30 {
+                let previous = recent.clone();
+                let (selected, variant) = choose_visual(style, -1, &mut recent);
+                assert_eq!(selected, style);
+                assert!(validate(&selected, variant).is_ok());
+                assert!(
+                    !previous
+                        .iter()
+                        .rev()
+                        .take(count - 1)
+                        .any(|(_, v)| *v == variant)
+                );
+            }
+            assert_eq!(choose_visual(style, 2, &mut recent), (style.to_owned(), 2));
+        }
+    }
 
     #[test]
     fn collage_is_unavailable() {
