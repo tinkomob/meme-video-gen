@@ -415,7 +415,7 @@ impl Painter {
                 let grain = ((x * 17 + y * 31 + x * y % 23) % 7) as f64 * 0.12;
                 let i = (y * WIDTH + x) * 3;
                 for (j, value) in sample.into_iter().enumerate() {
-                    let base = if collage { [17.0, 16.0, 15.0][j] } else { 3.0 };
+                    let base = self.base[i + j] as f64;
                     self.pixels[i + j] =
                         (base + value as f64 * strength * 0.65 + local.color[j] * 0.035 + grain)
                             as f32;

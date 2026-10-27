@@ -1,6 +1,6 @@
 # Song video generator
 
-Rust Telegram bot that generates 20-second music snippets with 51 audio-reactive
+Rust Telegram bot that generates 20-second music snippets with 75 audio-reactive
 visual designs, publishes twice a day, and streams a Friends episode player.
 
 ## Requirements and build
@@ -59,15 +59,14 @@ The output must not already exist. Both the song-snippet CLI and the service use
 the same renderer. Audio must be at least 20 seconds long. Generation is limited
 to one renderer at a time; temporary files are cleaned up after use.
 
-Eighteen families each have three geometry/palette variants (0, 1, 2): `silver`,
+Twenty-five families each have three geometry/palette variants (0, 1, 2): `silver`,
 `violet`, `amber`, `aurora`, `prism`, `galaxy`, `tunnel`, `orbit`, `wave`, `rain`,
-`chrome`, `silk`, `analog`, `cover`, `nebula`, `liquid`, `bloom`.
-`random` selects a family and variant. Motion uses 64 logarithmic audio bands,
-three depth planes, particles, bloom, and irregular, independently randomized
-camera keyframes.
+`chrome`, `silk`, `analog`, `cover`, `nebula`, `liquid`, `bloom`, `ferro`, `cymatics`, `topography`, `glass`, `ink`, `kinetic`, `lightning`, `interference`.
+`random` selects a family and variant. Motion uses 64 logarithmic audio bands;
+the original scenes use layered particles and the new scenes use procedural 3D space.
 Validated YouTube JPEG covers are cached in S3; a waveform is the fallback.
 
-The player keeps a fixed cover, title and artist layout. All 51 variants share a
+The player keeps a fixed cover, title and artist layout. All 75 variants share a
 spatial flow field driven by twelve independent frequency voices. Each voice has
 its own attack, release and delay; responses are precomputed from the audio so
 seeking and repeated frames remain deterministic. Music advances local flow clocks
@@ -83,6 +82,33 @@ have moving, fading local highlights. Background veils, refracted light and
 particles occupy different depth planes. `nebula`, `liquid` and `bloom` integrate
 procedural density through depth with internal folds, surface lighting and
 occlusion; liquid bodies have independent motion and audio responses.
+
+Backgrounds use coordinated coloured gradients with three brightness levels;
+the title, artist and progress area has a soft dark scrim for readability.
+`ferro` traverses a continuous reflective height field, `cymatics` explores nodal
+surfaces, `topography` winds through a stratified cavern, and `glass` looks through
+crystal shells. `ink` integrates curled density through space, `kinetic` moves
+through rounded sculptural arches, `lightning` follows continuous filaments with
+branches in depth, and `interference` passes through folded translucent membranes.
+These are procedural approximations, without physical fluid or optical simulation.
+The eight new families trace camera rays through world coordinates rather than
+repeating screen-space copies. Camera travel continues through procedural geometry;
+surface normals, occlusion, distance haze and transmission establish depth. They use raw
+frequency energy and attacks alongside the precomputed voices, so short musical
+accents survive the slower motion envelopes. Bass deforms surfaces, midrange
+changes folds and branching, and highs sweep highlights and fine grains.
+Contours use four rotated subpixel samples where neighbouring rays disagree;
+smaller ray steps preserve thin surfaces. Rough coloured highlights, depth-filtered
+detail, mild optical diffusion and two bloom radii soften the geometric appearance.
+Linear light retains headroom through resizing before the shared exposure pass.
+Ray samples are split across up to four CPU workers and remain deterministic.
+To render a local review (75 stills and eight six-second videos) without S3 or
+publication, use `cargo run --release --example visual-preview -- OUTPUT AUDIO COVER`.
+Append `--stills` to review composition before encoding videos.
+Use `--seconds 3` for shorter motion reviews (1–20 seconds; default 6).
+The output directory must be new; the audio must contain at least six seconds.
+The review compares the new scenes with the same seeded render in silence and
+saves the changed-pixel measurements in `audio-response.json`.
 
 All families use separate low-, mid- and high-frequency attacks measured before
 spectrum compression. Bass launches liquid surface waves and light fronts through

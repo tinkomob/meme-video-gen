@@ -9,6 +9,10 @@ pub(super) fn palette(style: &str, variant: usize) -> [Color; 3] {
         "silk" => "aurora",
         "analog" => "rain",
         "cover" => "prism",
+        "ferro" | "topography" | "kinetic" => "amber",
+        "cymatics" | "glass" | "lightning" => "tunnel",
+        "ink" => "violet",
+        "interference" => "aurora",
         other => other,
     };
     match style {

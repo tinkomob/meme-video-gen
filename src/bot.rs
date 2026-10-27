@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/snippet [стиль] [0|1|2] — 20-секундный сниппет\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: два случайных времени в день (Томск), интервал 10–14 часов.\n/setsnippet [номер время] — посмотреть или изменить расписание\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
+const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/snippet [стиль] [0|1|2] — 20-секундный сниппет\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom, ferro, cymatics, topography, glass, ink, kinetic, lightning, interference\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: два случайных времени в день (Томск), интервал 10–14 часов.\n/setsnippet [номер время] — посмотреть или изменить расписание\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
 pub fn command_args(args: &str) -> Result<(String, i32)> {
     let parts: Vec<_> = args.split_whitespace().collect();
     ensure!(parts.len() <= 2, "использование: /snippet [стиль] [0|1|2]");
@@ -731,7 +731,10 @@ mod tests {
         assert_eq!(command_args("").unwrap(), ("random".into(), -1));
         for style in crate::visualizer::STYLES {
             for v in 0..3 {
-                assert!(command_args(&format!("{style} {v}")).is_ok())
+                assert_eq!(
+                    command_args(&format!("{style} {v}")).is_ok(),
+                    !(v == 1 && matches!(style, "topography" | "ink"))
+                )
             }
         }
         for args in ["silver -1", "silver 3", "random x", "bad", "rain 1 extra"] {

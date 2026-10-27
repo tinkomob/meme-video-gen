@@ -4,9 +4,32 @@ pub const WIDTH: usize = 540;
 pub const HEIGHT: usize = 960;
 pub const FPS: usize = 30;
 pub const BANDS: usize = 64;
-pub const STYLES: [&str; 17] = [
-    "silver", "violet", "amber", "aurora", "prism", "galaxy", "tunnel", "orbit", "wave", "rain",
-    "chrome", "silk", "analog", "cover", "nebula", "liquid", "bloom",
+pub const STYLES: [&str; 25] = [
+    "silver",
+    "violet",
+    "amber",
+    "aurora",
+    "prism",
+    "galaxy",
+    "tunnel",
+    "orbit",
+    "wave",
+    "rain",
+    "chrome",
+    "silk",
+    "analog",
+    "cover",
+    "nebula",
+    "liquid",
+    "bloom",
+    "ferro",
+    "cymatics",
+    "topography",
+    "glass",
+    "ink",
+    "kinetic",
+    "lightning",
+    "interference",
 ];
 #[derive(Clone, Copy, Debug)]
 pub struct AudioFrame {
@@ -124,6 +147,28 @@ pub fn analyze(samples: &[f64]) -> Vec<AudioFrame> {
         frame.event = event;
         frame.event_age = since_event as f64 / FPS as f64;
         previous = *frame;
+    }
+    frames
+}
+pub fn smooth_material_audio(painter: &Painter, mut frames: Vec<AudioFrame>) -> Vec<AudioFrame> {
+    if materials::spatial(&painter.style) {
+        let mut previous = AudioFrame::default();
+        for frame in &mut frames {
+            for (value, old) in frame.bands.iter_mut().zip(previous.bands) {
+                *value = old + (*value - old) * 0.12;
+            }
+            frame.level = previous.level + (frame.level - previous.level) * 0.12;
+            frame.bass = frame.bands[..16].iter().sum::<f64>() / 16.0;
+            frame.treble = frame.bands[40..].iter().sum::<f64>() / 24.0;
+            frame.beat = previous.beat + (frame.beat - previous.beat) * 0.12;
+            for region in 0..3 {
+                let target = frame.attacks[region] * (-frame.attack_age[region] * 6.0).exp();
+                frame.attacks[region] =
+                    previous.attacks[region] + (target - previous.attacks[region]) * 0.12;
+                frame.attack_age[region] = 0.0;
+            }
+            previous = *frame;
+        }
     }
     frames
 }
@@ -272,6 +317,8 @@ mod rhythm;
 use palettes::palette;
 #[path = "visualizer_art.rs"]
 mod art;
+#[path = "visualizer_materials.rs"]
+mod materials;
 #[path = "visualizer_motion.rs"]
 mod motion;
 #[path = "visualizer_scenes.rs"]
@@ -319,6 +366,8 @@ impl Painter {
             field: vec![motion::Field::default(); 19 * 33],
         };
         let hue = r.random::<f64>();
+        let background = mix_light(motion::hue_color(hue), p.palette[1], 0.18);
+        let background_light = [0.16, 0.29, 0.43][r.random_range(0..3)];
         for i in 0..3 {
             p.palette[i] = mix_light(
                 p.palette[i],
@@ -330,11 +379,22 @@ impl Painter {
             for x in 0..WIDTH {
                 let d = ((x as f64 - 270.0) / 430.0).hypot((y as f64 - 480.0) / 700.0);
                 let v = (1.0 - d).max(0.0);
-                let c = mix_light(Color(2.0, 3.0, 5.0), p.palette[0], 0.012 + 0.025 * v);
+                let sweep = (x as f64 / WIDTH as f64 * 0.6 + y as f64 / HEIGHT as f64 * 0.4)
+                    .clamp(0.0, 1.0);
+                let pigment = mix_light(background, p.palette[1], sweep * 0.22);
+                let c = mix_light(
+                    Color(8.0, 9.0, 12.0),
+                    pigment,
+                    background_light * (0.65 + 0.35 * v),
+                );
                 let i = (y * WIDTH + x) * 3;
-                let text_y = 620.0;
-                let (dx, dy) = ((x as f64 - 270.0) / 240.0, (y as f64 - text_y) / 85.0);
-                p.shade[i / 3] = (1.0 - 0.55 * (-dx.powi(4) - dy.powi(4)).exp()) as f32;
+                let (dx, dy) = ((x as f64 - 270.0) / 250.0, (y as f64 - 615.0) / 100.0);
+                let falloff = if materials::spatial(style) {
+                    -dx * dx - dy * dy
+                } else {
+                    -dx.powi(4) - dy.powi(4)
+                };
+                p.shade[i / 3] = (1.0 - 0.82 * falloff.exp()) as f32;
                 p.base[i] = c.0 as f32;
                 p.base[i + 1] = c.1 as f32;
                 p.base[i + 2] = c.2 as f32;
@@ -651,6 +711,7 @@ impl Painter {
         self.view.focus = 1.0;
     }
     pub fn frame(&mut self, f: usize, mut a: AudioFrame) -> &[u8] {
+        let material = materials::spatial(&self.style);
         a.event = a.event.wrapping_add(self.phase.to_bits());
         self.pixels.copy_from_slice(&self.base);
         self.glow.fill(0.0);
@@ -659,9 +720,12 @@ impl Painter {
         self.neon_time = seconds;
         self.update_field(f, a);
         let pose = self.musical_pose(f, pose);
+        let material_audio = a;
         a = self.shape_audio(a);
         if matches!(self.style.as_str(), "collage" | "cover") {
             self.cover_scene(seconds, pose, a);
+        } else if material {
+            self.material(seconds * self.speed, pose, material_audio);
         } else {
             if matches!(self.style.as_str(), "nebula" | "liquid" | "bloom") {
                 self.depth_particles(seconds, pose, a, 0.0..0.65);
@@ -686,7 +750,9 @@ impl Painter {
                 self.accents(seconds, a);
             }
         }
-        self.atmosphere(seconds, pose);
+        if !material {
+            self.atmosphere(seconds, pose);
+        }
         {
             let glow = image::Rgb32FImage::from_raw(
                 (WIDTH / 4) as u32,
@@ -712,11 +778,17 @@ impl Painter {
                         + self.glow[gi + right + c] * fx * (1.0 - fy)
                         + self.glow[gi + below + c] * (1.0 - fx) * fy
                         + self.glow[gi + below + right + c] * fx * fy;
-                    ((self.pixels[i + c] + halo) * self.shade[i / 3]).max(0.0)
+                    ((self.pixels[i + c] + halo) * if material { 1.0 } else { self.shade[i / 3] })
+                        .max(0.0)
                 });
                 // One exposure for all channels preserves pigment hues in bright light.
                 let peak = light.into_iter().fold(0.0_f32, f32::max);
-                let exposure = 1.8 / (1.0 + peak / 320.0);
+                let scrim = if material {
+                    (1.0 - self.shade[i / 3]) / 30.0
+                } else {
+                    0.0
+                };
+                let exposure = 1.8 / (1.0 + peak / 320.0 + peak * scrim);
                 for (c, value) in light.into_iter().enumerate() {
                     let mut value = value * exposure;
                     if self.style == "analog" {
@@ -1093,6 +1165,20 @@ mod tests {
         assert!(f[30].bands.iter().any(|v| *v > 0.7));
     }
     #[test]
+    fn material_audio_rises_and_falls_gradually() {
+        let painter = Painter::new("glass", 42, 0);
+        let mut frames = vec![AudioFrame::default(); 20];
+        frames[1].bands = [1.0; BANDS];
+        frames[1].attacks = [1.0; 3];
+        frames[1].attack_age = [0.0; 3];
+        let frames = smooth_material_audio(&painter, frames);
+        assert!((frames[1].bands[0] - 0.12).abs() < 1e-9);
+        assert!((frames[1].attacks[0] - 0.12).abs() < 1e-9);
+        assert!(frames[2].bands[0] > 0.0 && frames[2].bands[0] < frames[1].bands[0]);
+        assert!(frames[2].attacks[0] > 0.0 && frames[2].attacks[0] < frames[1].attacks[0]);
+    }
+
+    #[test]
     fn every_style_and_variant_renders_and_evolves() {
         for style in STYLES {
             for v in 0..3 {
@@ -1145,6 +1231,52 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    #[test]
+    fn backgrounds_have_colour_brightness_range_and_readable_metadata() {
+        let mut backgrounds = std::collections::HashSet::new();
+        let mut lightest = 0.0_f32;
+        let mut darkest = f32::INFINITY;
+        for seed in 0..24 {
+            let p = Painter::new("silver", seed, 0);
+            let i = (100 * WIDTH + 270) * 3;
+            let rgb = &p.base[i..i + 3];
+            let low = rgb.iter().copied().fold(f32::INFINITY, f32::min);
+            let high = rgb.iter().copied().fold(0.0_f32, f32::max);
+            assert!(high - low > 5.0, "achromatic background for seed {seed}");
+            assert!(high > 20.0, "near-black background for seed {seed}");
+            backgrounds.insert([rgb[0] as u8, rgb[1] as u8, rgb[2] as u8]);
+            let luminance = rgb.iter().sum::<f32>() / 3.0;
+            lightest = lightest.max(luminance);
+            darkest = darkest.min(luminance);
+            for y in [565, 605, 642, 660] {
+                assert!(p.shade[y * WIDTH + 270] < 0.26, "metadata scrim too weak");
+            }
+        }
+        assert!(backgrounds.len() > 16);
+        assert!(lightest - darkest > 20.0);
+    }
+
+    #[test]
+    fn new_material_variants_have_distinct_geometry() {
+        for style in &STYLES[17..] {
+            let mut previous = Vec::new();
+            for variant in 0..3 {
+                let mut p = Painter::new(style, 71, variant);
+                let frame = p.frame(90, AudioFrame::default());
+                let changed = frame
+                    .iter()
+                    .zip(&previous)
+                    .filter(|(a, b)| a.abs_diff(**b) > 3)
+                    .count();
+                assert!(
+                    previous.is_empty() || changed > 100,
+                    "identical variants: {style}/{variant}"
+                );
+                previous = frame.to_vec();
             }
         }
     }
@@ -1279,6 +1411,14 @@ mod tests {
             ("nebula", 0),
             ("liquid", 0),
             ("bloom", 1),
+            ("ferro", 0),
+            ("cymatics", 1),
+            ("topography", 0),
+            ("glass", 2),
+            ("ink", 1),
+            ("kinetic", 0),
+            ("lightning", 2),
+            ("interference", 1),
         ] {
             for variant in 0..3 {
                 let mut p = Painter::new(style, 71, variant);

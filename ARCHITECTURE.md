@@ -12,7 +12,7 @@ The application is implemented entirely in Rust. `Cargo.lock` pins dependencies.
 - `src/snippet.rs` selects the excerpt, validates/caches covers, serializes
   rendering, streams raw frames to FFmpeg, overlays metadata, and manages temps.
 - `src/visualizer.rs` and `visualizer_*.rs` implement 64-band audio analysis,
-  separate frequency attacks, deterministic motion and 17 visual families × three
+  separate frequency attacks, deterministic motion and 25 visual families × three
   variants. All families have material-specific transients. A precomputed
   direction pass tracks energy, pauses, spectral turns and the strongest phrase
   to drive composition with audio lookahead. Volumes and chrome occlude distant

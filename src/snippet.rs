@@ -31,6 +31,10 @@ pub fn validate(style: &str, variant: i32) -> Result<()> {
         "unknown snippet style"
     );
     ensure!((-1..=2).contains(&variant), "variant must be -1, 0, 1 or 2");
+    ensure!(
+        !(variant == 1 && matches!(style, "topography" | "ink")),
+        "this style variant is unavailable"
+    );
     Ok(())
 }
 pub fn escape_path(p: &Path) -> String {
@@ -121,8 +125,13 @@ pub async fn generate(
         style
     }
     .to_owned();
-    let variant = if variant < 0 {
-        rand::rng().random_range(0..3)
+    let variant = if variant < 0 || (variant == 1 && matches!(style.as_str(), "topography" | "ink"))
+    {
+        if matches!(style.as_str(), "topography" | "ink") {
+            [0, 2][rand::rng().random_range(0..2)]
+        } else {
+            rand::rng().random_range(0..3)
+        }
     } else {
         variant
     };
@@ -280,6 +289,7 @@ fn render(
     frames: Vec<visualizer::AudioFrame>,
     cancel: &CancellationToken,
 ) -> Result<()> {
+    let frames = visualizer::smooth_material_audio(&painter, frames);
     painter.prepare_audio(&frames);
     let graph = filter(&painter.accent(), dir, start, duration, size);
     let mut child = Child(
@@ -420,6 +430,10 @@ mod cover_tests {
     #[test]
     fn collage_is_unavailable() {
         assert!(validate("collage", 0).is_err());
+        assert!(validate("topography", 1).is_err());
+        assert!(validate("ink", 1).is_err());
+        assert!(validate("topography", 2).is_ok());
+        assert!(validate("ink", 0).is_ok());
     }
 
     #[test]
