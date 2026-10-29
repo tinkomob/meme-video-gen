@@ -32,7 +32,7 @@ async fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let store = Storage::new(Config::load()?)?;
-    let generated = tokio::select! {r=tokio::time::timeout(Duration::from_secs(600),snippet::generate(&store,&args.style,args.variant,&args.song))=>r??,_=tokio::signal::ctrl_c()=>anyhow::bail!("cancelled")};
+    let generated = tokio::select! {r=tokio::time::timeout(Duration::from_secs(30 * 60),snippet::generate(&store,&args.style,args.variant,&args.song))=>r??,_=tokio::signal::ctrl_c()=>anyhow::bail!("cancelled")};
     snippet::save_new(&generated.path(), &args.output).await?;
     println!(
         "Created {}\nSong: {} — {}\nS3 audio: {}",

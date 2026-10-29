@@ -10,6 +10,7 @@ path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
+bytemuck = { version = "1", features = ["derive"] }
 axum = "0.8"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
@@ -31,6 +32,8 @@ tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt", "io"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+pollster = "0.4"
+wgpu = { version = "30", default-features = false, features = ["std", "vulkan", "wgsl"] }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

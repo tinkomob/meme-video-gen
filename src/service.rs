@@ -43,7 +43,7 @@ impl Service {
     }
     pub async fn generate(&self, style: &str, variant: i32, id: &str) -> Result<Generated> {
         tokio::time::timeout(
-            Duration::from_secs(600),
+            Duration::from_secs(30 * 60),
             snippet::generate(&self.store, style, variant, id),
         )
         .await?
@@ -296,7 +296,7 @@ impl Service {
                 .await?
         };
         if due {
-            tokio::time::timeout(Duration::from_secs(900), self.scheduled_publish()).await??;
+            tokio::time::timeout(Duration::from_secs(35 * 60), self.scheduled_publish()).await??;
         }
         Ok(())
     }

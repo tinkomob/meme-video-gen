@@ -29,7 +29,7 @@ impl Generated {
 }
 pub fn validate(style: &str, variant: i32) -> Result<()> {
     ensure!(
-        style == "random" || STYLES.contains(&style),
+        style == "random" || style == "gpu-liquid" || STYLES.contains(&style),
         "unknown snippet style"
     );
     ensure!((-1..=2).contains(&variant), "variant must be -1, 0, 1 or 2");
@@ -245,6 +245,7 @@ pub async fn generate(
     let path = dir.path().to_owned();
     let output = path.join("snippet.mp4");
     let permit = _permit;
+    let use_gpu_liquid = style == "gpu-liquid";
     // The worker owns its temp directory and render permit until FFmpeg has stopped.
     let result = tokio::task::spawn_blocking(move || {
         let _permit = permit;
@@ -258,7 +259,17 @@ pub async fn generate(
         let mut painter = Painter::new(&style, rand::random(), variant);
         painter.set_cover(&image::open(&cover).context("decode snippet cover")?);
         render(
-            &audio, &cover, &output, &path, start, duration, title_size, painter, frames, &token,
+            &audio,
+            &cover,
+            &output,
+            &path,
+            start,
+            duration,
+            title_size,
+            painter,
+            frames,
+            use_gpu_liquid,
+            &token,
         )?;
         Ok::<_, anyhow::Error>(Generated {
             dir,
@@ -321,11 +332,15 @@ fn render(
     size: usize,
     mut painter: Painter,
     frames: Vec<visualizer::AudioFrame>,
+    use_gpu_liquid: bool,
     cancel: &CancellationToken,
 ) -> Result<()> {
     let frames = visualizer::smooth_material_audio(&painter, frames);
     painter.prepare_audio(&frames);
     let graph = filter(&painter.accent(), dir, start, duration, size);
+    let gpu_liquid = use_gpu_liquid
+        .then(crate::gpu_liquid::Liquid::new)
+        .transpose()?;
     let mut child = Child(
         Command::new("ffmpeg")
             .args([
@@ -416,7 +431,18 @@ fn render(
             write_error = Some(anyhow::anyhow!("render cancelled"));
             break;
         }
-        if let Err(e) = pipe.write_all(painter.frame(f, a)) {
+        let frame = if let Some(gpu) = &gpu_liquid {
+            match gpu.frame(f, a) {
+                Ok(frame) => frame,
+                Err(e) => {
+                    write_error = Some(e);
+                    break;
+                }
+            }
+        } else {
+            painter.frame(f, a).to_vec()
+        };
+        if let Err(e) = pipe.write_all(&frame) {
             write_error = Some(e.into());
             break;
         }
@@ -502,6 +528,7 @@ mod cover_tests {
     #[test]
     fn collage_is_unavailable() {
         assert!(validate("collage", 0).is_err());
+        assert!(validate("gpu-liquid", 0).is_ok());
         assert!(validate("topography", 1).is_err());
         assert!(validate("ink", 1).is_err());
         assert!(validate("topography", 2).is_ok());

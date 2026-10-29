@@ -696,7 +696,7 @@ pub async fn run(svc: Service, cancel: CancellationToken) -> Result<()> {
                     .as_i64()
                     .or(update["callback_query"]["message"]["chat"]["id"].as_i64());
                 let result =
-                    tokio::time::timeout(Duration::from_secs(900), bot.handle(update)).await;
+                    tokio::time::timeout(Duration::from_secs(35 * 60), bot.handle(update)).await;
                 let error = match result {
                     Ok(Ok(())) => return,
                     Ok(Err(e)) => e.to_string(),

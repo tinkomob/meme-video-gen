@@ -2,6 +2,7 @@ pub mod audio;
 pub mod bot;
 pub mod config;
 pub mod friends;
+pub mod gpu_liquid;
 pub mod model;
 pub mod schedule;
 pub mod service;
