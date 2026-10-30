@@ -47,6 +47,32 @@ pub fn choose_song(songs: Vec<Song>, id: &str) -> Result<Song> {
     Ok(pool[rand::rng().random_range(0..pool.len())].clone())
 }
 pub async fn ensure_songs(store: &Storage) -> Result<()> {
+    let indexing = index_songs(store).await;
+    let dir = tempfile::tempdir()?;
+    let index = store
+        .read::<SongsIndex>("songs.json")
+        .await?
+        .unwrap_or_default();
+    let mut missing = Vec::new();
+    for song in &index.items {
+        if let Err(error) = crate::snippet::cover(store, &song.id, dir.path()).await {
+            tracing::error!(song_id = %song.id, "library cover unavailable: {error}");
+            missing.push(song.id.as_str());
+        }
+    }
+    tracing::info!(
+        total = index.items.len(),
+        missing = missing.len(),
+        "library cover audit complete"
+    );
+    ensure!(
+        missing.is_empty(),
+        "songs without covers: {}",
+        missing.join(", ")
+    );
+    indexing
+}
+async fn index_songs(store: &Storage) -> Result<()> {
     let mut index = store
         .read::<SongsIndex>("songs.json")
         .await?

@@ -318,12 +318,6 @@ impl Service {
     }
     pub async fn run_indexer(&self, cancel: CancellationToken) {
         loop {
-            let now = Utc::now();
-            let delay = 3600 - (now.minute() * 60 + now.second()) as u64;
-            tokio::select! {
-                _ = cancel.cancelled() => break,
-                _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
-            }
             tokio::select! {
                 _ = cancel.cancelled() => break,
                 result = audio::ensure_songs(&self.store) => {
@@ -331,6 +325,12 @@ impl Service {
                         tracing::error!("song indexing: {e}");
                     }
                 }
+            }
+            let now = Utc::now();
+            let delay = 3600 - (now.minute() * 60 + now.second()) as u64;
+            tokio::select! {
+                _ = cancel.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_secs(delay)) => {}
             }
         }
     }

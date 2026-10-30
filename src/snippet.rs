@@ -116,7 +116,7 @@ async fn fetch_cover(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     ensure!(valid_cover(&data), "invalid cover");
     Ok(data)
 }
-async fn cover(store: &Storage, id: &str, dir: &Path) -> Result<PathBuf> {
+pub(crate) async fn cover(store: &Storage, id: &str, dir: &Path) -> Result<PathBuf> {
     ensure!(valid_video_id(id), "invalid YouTube video ID");
     let path = dir.join("cover.jpg");
     let key = format!("covers/{id}.jpg");
@@ -143,9 +143,10 @@ async fn cover(store: &Storage, id: &str, dir: &Path) -> Result<PathBuf> {
                 }
             };
             tokio::fs::write(&path, &data).await?;
-            if let Err(e) = store.put(&key, data, "image/jpeg").await {
-                tracing::warn!("cover cache: {e}");
-            }
+            store
+                .put(&key, data, "image/jpeg")
+                .await
+                .context("persist YouTube cover")?;
             return Ok(path);
         }
     }
@@ -158,9 +159,21 @@ pub async fn generate(
     song_id: &str,
 ) -> Result<Generated> {
     validate(style, variant)?;
-    let mut song = audio::choose_song(audio::songs(store).await?, song_id)?;
-    song.author = clean_author(&song.author);
+    let mut songs = audio::songs(store).await?;
+    let mut song = audio::choose_song(songs.clone(), song_id)?;
     let dir = tempfile::tempdir()?;
+    let cover = loop {
+        match cover(store, &song.id, dir.path()).await {
+            Ok(path) => break path,
+            Err(e) => {
+                tracing::warn!(song_id = %song.id, "cover unavailable, selecting another song: {e}");
+                songs.retain(|candidate| candidate.id != song.id);
+                song = audio::choose_song(songs.clone(), "")
+                    .context("no eligible songs with an available cover")?;
+            }
+        }
+    };
+    song.author = clean_author(&song.author);
     let audio = audio::download(store, &song, dir.path()).await?;
     let duration = audio::probe(&audio).await?;
     ensure!(
@@ -190,32 +203,6 @@ pub async fn generate(
         tokio::fs::write(dir.path().join(name), value).await?;
     }
     let _permit = RENDERER.acquire().await?;
-    let cover = match cover(store, &song.id, dir.path()).await {
-        Ok(p) => p,
-        Err(e) => {
-            tracing::warn!("cover unavailable, using waveform: {e}");
-            let p = dir.path().join("wave-cover.png");
-            audio::command(
-                "ffmpeg",
-                &[
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-nostdin",
-                    "-y",
-                    "-i",
-                    &audio.to_string_lossy(),
-                    "-filter_complex",
-                    "aformat=channel_layouts=mono,showwavespic=s=600x600:colors=white,format=rgb24",
-                    "-frames:v",
-                    "1",
-                    &p.to_string_lossy(),
-                ],
-            )
-            .await?;
-            p
-        }
-    };
     let pcm = audio::command(
         "ffmpeg",
         &[
