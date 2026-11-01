@@ -197,9 +197,15 @@ async fn credentials(store: &Storage, name: &str) -> Result<(String, Value)> {
     }
     anyhow::bail!("{name} not found in S3")
 }
-pub async fn youtube_available(store: &Storage) -> Result<()> {
+fn youtube_token_name(song: &Song) -> Result<&'static str> {
+    Ok(match crate::model::publication_artist(&song.author)? {
+        "eenfinit" => "token-eenfinit.json",
+        _ => "token.json",
+    })
+}
+pub async fn youtube_available(store: &Storage, song: &Song) -> Result<()> {
     credentials(store, "client_secrets.json").await?;
-    credentials(store, "token.json").await?;
+    credentials(store, youtube_token_name(song)?).await?;
     Ok(())
 }
 pub async fn youtube(store: &Storage, path: &Path, song: &Song) -> Result<()> {
@@ -209,7 +215,7 @@ pub async fn youtube(store: &Storage, path: &Path, song: &Song) -> Result<()> {
         .build()?;
     let (_, cfg) = credentials(store, "client_secrets.json").await?;
     let cfg = OAuthClient::parse(cfg)?;
-    let (key, value) = credentials(store, "token.json").await?;
+    let (key, value) = credentials(store, youtube_token_name(song)?).await?;
     let mut token: OAuthToken = serde_json::from_value(value)?;
     if token.needs_refresh() {
         ensure!(

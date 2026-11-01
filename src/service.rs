@@ -96,11 +96,19 @@ impl Service {
         self.store.delete(&draft_key(id, ".mp4")?).await?;
         self.store.delete(&draft_key(id, ".json")?).await
     }
+    fn snippet_chat(&self, song: &Song) -> Result<i64> {
+        let artist = crate::model::publication_artist(&song.author)?;
+        let chat = match artist {
+            "eenfinit" => self.cfg.eenfinit_tg_channel_id,
+            _ => self.cfg.deebill_tg_channel_id,
+        };
+        ensure!(chat != 0, "Telegram channel for {artist} is not configured");
+        Ok(chat)
+    }
     async fn upload(&self, platform: &str, path: &std::path::Path, song: &Song) -> Result<()> {
         match platform {
             "telegram" => {
-                let chat = self.posts_chat().await?;
-                ensure!(chat != 0, "POSTS_CHAT_ID is not configured");
+                let chat = self.snippet_chat(song)?;
                 self.telegram
                     .video(
                         chat,
@@ -167,15 +175,15 @@ impl Service {
     }
     pub async fn scheduled_publish(&self) -> Result<()> {
         let mut platforms = vec![];
-        if self.posts_chat().await? != 0 {
+        let generated = self.generate("random", -1, "").await?;
+        if self.snippet_chat(&generated.song).is_ok() {
             platforms.push("telegram");
         }
-        match upload::youtube_available(&self.store).await {
+        match upload::youtube_available(&self.store, &generated.song).await {
             Ok(()) => platforms.push("youtube"),
             Err(e) => tracing::warn!("YouTube uploader unavailable: {e}"),
         };
         ensure!(!platforms.is_empty(), "no snippet uploaders configured");
-        let generated = self.generate("random", -1, "").await?;
         let mut published = vec![];
         for p in platforms {
             match self.upload(p, &generated.path(), &generated.song).await {
@@ -401,6 +409,8 @@ mod tests {
             access_key: "a".into(),
             secret_key: "s".into(),
             posts_chat_id: 0,
+            eenfinit_tg_channel_id: 0,
+            deebill_tg_channel_id: 0,
             owner_chat_id: 0,
             silent: true,
         };

@@ -845,6 +845,8 @@ mod callback_flow_tests {
             access_key: "a".into(),
             secret_key: "s".into(),
             posts_chat_id: 0,
+            eenfinit_tg_channel_id: 0,
+            deebill_tg_channel_id: 0,
             owner_chat_id: 0,
             silent: true,
         };

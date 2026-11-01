@@ -66,3 +66,32 @@ pub fn clean_author(s: &str) -> String {
 pub fn eligible(s: &Song) -> bool {
     !s.audio_key.is_empty() && (s.duration_s == 0.0 || s.duration_s >= 20.0)
 }
+
+/// Select publication credentials without routing unknown artists to another channel.
+pub fn publication_artist(author: &str) -> anyhow::Result<&'static str> {
+    match clean_author(author)
+        .split_whitespace()
+        .collect::<String>()
+        .to_lowercase()
+        .as_str()
+    {
+        "eenfinit" => Ok("eenfinit"),
+        "deebill" => Ok("deebill"),
+        _ => anyhow::bail!("No publication channel configured for artist: {author}"),
+    }
+}
+
+#[cfg(test)]
+mod publication_tests {
+    #[test]
+    fn artist_routing() {
+        for (name, artist) in [
+            ("EENFINIT", "eenfinit"),
+            ("dee bill", "deebill"),
+            ("DeeBill - Topic", "deebill"),
+        ] {
+            assert_eq!(super::publication_artist(name).unwrap(), artist);
+        }
+        assert!(super::publication_artist("Other").is_err());
+    }
+}

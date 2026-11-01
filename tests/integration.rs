@@ -53,6 +53,8 @@ impl Mock {
             access_key: "test-access".into(),
             secret_key: "test-secret".into(),
             posts_chat_id: -100,
+            eenfinit_tg_channel_id: 0,
+            deebill_tg_channel_id: 0,
             owner_chat_id: 0,
             silent: true,
         };

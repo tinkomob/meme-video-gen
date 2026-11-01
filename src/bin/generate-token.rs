@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     file.write_all(&serde_json::to_vec_pretty(&token)?)?;
     file.sync_all()?;
     println!(
-        "Token saved to {}. Upload it to S3 at tokens/token.json.",
+        "Token saved to {}. Upload it to S3 under tokens/ using the same filename.",
         args.token.display()
     );
     Ok(())

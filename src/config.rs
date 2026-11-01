@@ -9,6 +9,8 @@ pub struct Config {
     pub access_key: String,
     pub secret_key: String,
     pub posts_chat_id: i64,
+    pub eenfinit_tg_channel_id: i64,
+    pub deebill_tg_channel_id: i64,
     pub owner_chat_id: i64,
     pub silent: bool,
 }
@@ -31,6 +33,8 @@ impl Config {
             access_key: get(&["S3_ACCESS_KEY", "S3_ACCESS_KEY_ID"]),
             secret_key: get(&["S3_SECRET_ACCESS_KEY", "S3_SECRET_ACCESS_KEY_ID"]),
             posts_chat_id: get(&["POSTS_CHAT_ID", "POSTS_CHATID"]).parse().unwrap_or(0),
+            eenfinit_tg_channel_id: get(&["EENFINIT_TG_CHANNEL_ID"]).parse().unwrap_or(0),
+            deebill_tg_channel_id: get(&["DEEBILL_TG_CHANNEL_ID"]).parse().unwrap_or(0),
             owner_chat_id: get(&["OWNER_CHAT_ID"]).parse().unwrap_or(0),
             silent: !matches!(get(&["SILENT"]).as_str(), "false" | "0"),
         };

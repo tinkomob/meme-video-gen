@@ -148,9 +148,25 @@ including midnight. Legacy three-slot schedules migrate without repeating
 processed slots. Missed times are skipped and claims are saved before publishing.
 Scheduled uploads are silent and send no separate Telegram status messages.
 
-The UI's **Instagram** destination retains the existing behavior: it sends to the
-Telegram posts channel configured by `POSTS_CHAT_ID` (or the legacy `POSTS_CHATID`
-alias), falling back to S3 `config.json`. YouTube uses its actual upload API.
+The **Instagram** destination sends EENFINIT to `EENFINIT_TG_CHANNEL_ID`
+and dee bill to `DEEBILL_TG_CHANNEL_ID`. Add the bot as an administrator with
+posting permission in both channels. Unknown artists or missing IDs fail safely.
+YouTube uses the existing `token.json` for dee bill and `token-eenfinit.json`
+for EENFINIT, with the same `client_secrets.json`.
+
+### Connect the second YouTube channel
+
+1. Keep the existing dee bill token unchanged. Download the existing OAuth
+   client configuration as local `client_secrets.json`.
+2. Run `cargo run --release --bin generate-token -- --credentials client_secrets.json --token token-eenfinit.json`.
+3. Open the printed URL, authorize the account/channel for EENFINIT and paste
+   the code from the redirect URL's `code` parameter into the terminal.
+   The redirect URI must match the OAuth client configuration.
+4. Upload the private file to `tokens/token-eenfinit.json` in the bot's S3 bucket.
+   Credential lookup checks root, `tokens/`, then `bot-uploads/`; avoid duplicates.
+5. Set both Telegram channel IDs in `.env`, restart the bot and verify the
+   authorized YouTube channel before publishing.
+
 Manual publication sends the saved video, and `sending`/`sent` destination states
 prevent automatic retries after a crash. Check the destination manually if an
 upload remains `sending`; the outcome may be uncertain.
