@@ -405,7 +405,7 @@ impl Painter {
             palette,
         };
         let origin = space.origin();
-        let divisor = if matches!(kind, 4 | 6) { 3 } else { 2 };
+        let divisor = 1;
         let (w, h) = (WIDTH / divisor, HEIGHT / divisor);
         let mut field = image::Rgba32FImage::new(w as u32, h as u32);
         let roll = (t * 0.09 + self.phase).sin() * 0.12;

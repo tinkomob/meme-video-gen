@@ -2,8 +2,8 @@ use anyhow::{Context, Result, ensure};
 use bytemuck::{Pod, Zeroable};
 use std::sync::mpsc;
 
-const WIDTH: u32 = 540;
-const HEIGHT: u32 = 960;
+pub const WIDTH: u32 = 1080;
+pub const HEIGHT: u32 = 1920;
 
 #[repr(C)]
 #[derive(Clone, Copy, Pod, Zeroable)]
@@ -158,7 +158,7 @@ impl Liquid {
             .get_mapped_range()
             .context("access mapped GPU frame")?;
         let mut rgb = Vec::with_capacity((WIDTH * HEIGHT * 3) as usize);
-        for pixel in mapped.chunks_exact(4) {
+        for pixel in mapped.as_chunks::<4>().0 {
             rgb.extend_from_slice(&pixel[..3]);
         }
         drop(mapped);
@@ -177,7 +177,13 @@ mod tests {
         let calm = crate::visualizer::AudioFrame::default();
         let frame = gpu.frame(30, calm).unwrap();
         assert_eq!(frame.len(), (WIDTH * HEIGHT * 3) as usize);
-        assert!(frame.chunks_exact(3).any(|p| p[1] > p[0] && p[2] > p[0]));
+        assert!(
+            frame
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .any(|p| p[1] > p[0] && p[2] > p[0])
+        );
         let beat = crate::visualizer::AudioFrame { beat: 1.0, ..calm };
         assert_ne!(frame, gpu.frame(30, beat).unwrap());
     }

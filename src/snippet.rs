@@ -116,12 +116,22 @@ async fn fetch_cover(client: &reqwest::Client, url: &str) -> Result<Vec<u8>> {
     ensure!(valid_cover(&data), "invalid cover");
     Ok(data)
 }
+fn sharp_cover(data: &[u8]) -> bool {
+    valid_cover(data)
+        && image::load_from_memory(data).is_ok_and(|im| im.width().min(im.height()) >= 520)
+}
 pub(crate) async fn cover(store: &Storage, id: &str, dir: &Path) -> Result<PathBuf> {
     ensure!(valid_video_id(id), "invalid YouTube video ID");
     let path = dir.join("cover.jpg");
     let key = format!("covers/{id}.jpg");
-    if let Ok(Some(bytes)) = store.get(&key).await
-        && valid_cover(&bytes)
+    let cached = store
+        .get(&key)
+        .await
+        .ok()
+        .flatten()
+        .filter(|bytes| valid_cover(bytes));
+    if let Some(bytes) = &cached
+        && sharp_cover(bytes)
     {
         tokio::fs::write(&path, bytes).await?;
         return Ok(path);
@@ -149,6 +159,10 @@ pub(crate) async fn cover(store: &Storage, id: &str, dir: &Path) -> Result<PathB
                 .context("persist YouTube cover")?;
             return Ok(path);
         }
+    }
+    if let Some(bytes) = cached {
+        tokio::fs::write(&path, bytes).await?;
+        return Ok(path);
     }
     anyhow::bail!("no valid cover")
 }
@@ -315,7 +329,7 @@ fn filter(accent: &str, dir: &Path, start: f64, duration: f64, title_size: usize
     let elapsed = escape_path(&dir.join("elapsed.txt"));
     let total = escape_path(&dir.join("duration.txt"));
     format!(
-        "[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,{FADE}[audio];[2:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=520:520:force_original_aspect_ratio=increase,crop=520:520,setsar=1,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(max(abs(X-W/2)-(W/2-14),0),max(abs(Y-H/2)-(H/2-14),0)),14),255,0)'[cover];[bg][cover]overlay=x=280:y=560:eof_action=repeat,drawtext={serif}textfile='{title}':expansion=none:fontsize={title_size}:fontcolor=white:shadowcolor=black@0.7:shadowx=1:shadowy=2:x=(w-tw)/2:y=1130,drawtext={sans}textfile='{artist}':expansion=none:fontsize=28:fontcolor=0xb7b7c5:x=(w-tw)/2:y=1210,drawtext={sans}textfile='{elapsed}':fontsize=22:fontcolor=0xd0d0d8:x=210:y=1320,drawtext={sans}textfile='{total}':expansion=none:fontsize=22:fontcolor=0xd0d0d8:x=870-tw:y=1320[metadata];color=c=0x454550:s=660x4:r=30:d=20[track];color=c={accent}:s=660x4:r=30:d=20[fill];[track][fill]overlay=x='-660+660*min(({start:.6}+t)/{duration:.6},1)':y=0:eval=frame[progress];[metadata][progress]overlay=x=210:y=1285:shortest=1,drawtext={sans}text='●':fontsize=25:fontcolor=white:x='210+660*min(({start:.6}+t)/{duration:.6},1)-text_w/2':y=1287-text_h/2,format=yuv420p[video]"
+        "[0:v]scale=1080:1920:flags=lanczos,setsar=1[bg];[1:a]aformat=sample_rates=48000:channel_layouts=stereo,asetpts=PTS-STARTPTS,{FADE}[audio];[2:v]trim=end_frame=1,setpts=PTS-STARTPTS,scale=520:520:flags=lanczos:force_original_aspect_ratio=increase,crop=520:520,setsar=1,format=rgba,geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='if(lte(hypot(max(abs(X-W/2)-(W/2-14),0),max(abs(Y-H/2)-(H/2-14),0)),14),255,0)'[cover];[bg][cover]overlay=x=280:y=560:eof_action=repeat,drawtext={serif}textfile='{title}':expansion=none:fontsize={title_size}:fontcolor=white:shadowcolor=black@0.7:shadowx=1:shadowy=2:x=(w-tw)/2:y=1130,drawtext={sans}textfile='{artist}':expansion=none:fontsize=28:fontcolor=0xb7b7c5:x=(w-tw)/2:y=1210,drawtext={sans}textfile='{elapsed}':fontsize=22:fontcolor=0xd0d0d8:x=210:y=1320,drawtext={sans}textfile='{total}':expansion=none:fontsize=22:fontcolor=0xd0d0d8:x=870-tw:y=1320[metadata];color=c=0x454550:s=660x4:r=30:d=20[track];color=c={accent}:s=660x4:r=30:d=20[fill];[track][fill]overlay=x='-660+660*min(({start:.6}+t)/{duration:.6},1)':y=0:eval=frame[progress];[metadata][progress]overlay=x=210:y=1285:shortest=1,drawtext={sans}text='●':fontsize=25:fontcolor=white:x='210+660*min(({start:.6}+t)/{duration:.6},1)-text_w/2':y=1287-text_h/2,format=yuv420p[video]"
     )
 }
 struct Child(std::process::Child);
@@ -364,7 +378,11 @@ fn render(
                 "-pixel_format",
                 "rgb24",
                 "-video_size",
-                "540x960",
+                &if use_gpu_liquid {
+                    format!("{}x{}", crate::gpu_liquid::WIDTH, crate::gpu_liquid::HEIGHT)
+                } else {
+                    format!("{}x{}", visualizer::WIDTH, visualizer::HEIGHT)
+                },
                 "-framerate",
                 "30",
                 "-i",
@@ -398,7 +416,7 @@ fn render(
                 "-preset",
                 "fast",
                 "-crf",
-                "20",
+                "18",
                 "-maxrate",
                 "7M",
                 "-bufsize",
@@ -642,6 +660,9 @@ mod cover_tests {
     }
     #[test]
     fn validates_cover_dimensions_format_and_size() {
+        assert!(sharp_cover(&jpeg(1280, 720)));
+        assert!(!sharp_cover(&jpeg(480, 360)));
+        assert!(!sharp_cover(b"invalid"));
         assert!(valid_cover(&jpeg(600, 600)));
         assert!(valid_cover(&jpeg(320, 180)));
         assert!(!valid_cover(&jpeg(120, 90)));
