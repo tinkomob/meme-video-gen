@@ -762,24 +762,33 @@ impl Painter {
         let zoom = 0.9 + 0.015 * (time * 0.7).sin();
         let dx = WIDTH as f64 * 0.025 * time.sin();
         let dy = HEIGHT as f64 * 0.025 * (time * 0.8).cos();
-        for y in 0..HEIGHT {
+        let columns: Vec<_> = (0..WIDTH)
+            .map(|x| {
+                let sx = (WIDTH as f64 * 0.5 + (x as f64 - WIDTH as f64 * 0.5) * zoom + dx)
+                    .clamp(0.0, (WIDTH - 1) as f64);
+                let x0 = sx as usize;
+                (x0 * 3, (x0 + 1).min(WIDTH - 1) * 3, (sx - x0 as f64) as f32)
+            })
+            .collect();
+        for (y, row) in self
+            .pixels
+            .as_chunks_mut::<{ WIDTH * 3 }>()
+            .0
+            .iter_mut()
+            .enumerate()
+        {
             let sy = (HEIGHT as f64 * 0.5 + (y as f64 - HEIGHT as f64 * 0.5) * zoom + dy)
                 .clamp(0.0, (HEIGHT - 1) as f64);
             let y0 = sy as usize;
             let y1 = (y0 + 1).min(HEIGHT - 1);
             let fy = (sy - y0 as f64) as f32;
-            for x in 0..WIDTH {
-                let sx = (WIDTH as f64 * 0.5 + (x as f64 - WIDTH as f64 * 0.5) * zoom + dx)
-                    .clamp(0.0, (WIDTH - 1) as f64);
-                let x0 = sx as usize;
-                let x1 = (x0 + 1).min(WIDTH - 1);
-                let fx = (sx - x0 as f64) as f32;
+            let top_row = &self.base[y0 * WIDTH * 3..(y0 + 1) * WIDTH * 3];
+            let bottom_row = &self.base[y1 * WIDTH * 3..(y1 + 1) * WIDTH * 3];
+            for (pixel, &(x0, x1, fx)) in row.as_chunks_mut::<3>().0.iter_mut().zip(&columns) {
                 for c in 0..3 {
-                    let top = self.base[(y0 * WIDTH + x0) * 3 + c] * (1.0 - fx)
-                        + self.base[(y0 * WIDTH + x1) * 3 + c] * fx;
-                    let bottom = self.base[(y1 * WIDTH + x0) * 3 + c] * (1.0 - fx)
-                        + self.base[(y1 * WIDTH + x1) * 3 + c] * fx;
-                    self.pixels[(y * WIDTH + x) * 3 + c] = top * (1.0 - fy) + bottom * fy;
+                    let top = top_row[x0 + c] * (1.0 - fx) + top_row[x1 + c] * fx;
+                    let bottom = bottom_row[x0 + c] * (1.0 - fx) + bottom_row[x1 + c] * fx;
+                    pixel[c] = top * (1.0 - fy) + bottom * fy;
                 }
             }
         }
@@ -1308,18 +1317,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    #[ignore]
-    fn background_render_timing() {
-        let mut p = Painter::new("silver", 42, 0);
-        let start = std::time::Instant::now();
-        for f in 0..120 {
-            p.paint_background(std::hint::black_box(f as f64 / FPS as f64));
-            std::hint::black_box(&p.pixels);
-        }
-        eprintln!("background 120 frames: {:?}", start.elapsed());
     }
 
     #[test]

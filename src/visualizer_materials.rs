@@ -59,7 +59,7 @@ fn render_samples(
     let (width, height) = (field.width() as usize, field.height() as usize);
     let workers = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
-        .min(4);
+        .min(8);
     let rows = height.div_ceil(workers);
     std::thread::scope(|scope| {
         for (block, chunk) in field.as_mut().chunks_mut(width * 4 * rows).enumerate() {
