@@ -54,7 +54,7 @@ impl Mock {
             secret_key: "test-secret".into(),
             posts_chat_id: -100,
             eenfinit_tg_channel_id: 0,
-            deebill_tg_channel_id: 0,
+            deebill_tg_channel_id: -100,
             owner_chat_id: 0,
             silent: true,
         };
@@ -158,7 +158,7 @@ fn draft() -> Draft {
         user_id: 2,
         song: Song {
             title: "Song <&>".into(),
-            author: "Artist".into(),
+            author: "dee bill".into(),
             ..Default::default()
         },
         style: "silver".into(),

@@ -45,7 +45,7 @@ cargo test --locked --test live -- --ignored --nocapture
 
 - `/start`, `/help`, `/chatid` — introduction, supported commands, and chat ID.
 - `/song [query]` — browse, search, or download a track.
-- `/snippet [style] [variant]` — silently generate a preview with author-only
+- `/se [style] [variant]` / `/sd [style] [variant]` — silently generate a preview with author-only
   controls for publication, regeneration, song changes, and deletion.
 
 ```powershell
@@ -185,3 +185,5 @@ docker compose up --build -d
 
 The runtime includes FFmpeg, current yt-dlp/EJS, Deno, fonts and CA certificates, runs as a non-root
 user, and exposes port 8080. Compose binds that port to localhost.
+
+Artist commands: `/se [style] [0|1|2]` generates EENFINIT, `/sd [style] [0|1|2]` generates dee bill. `/setsnippets` displays both schedules. Each artist has two independent random daily slots in Tomsk, 10–14 hours apart. The existing `snippet_schedule.json` is retained for dee bill; EENFINIT uses `snippet_schedule_eenfinit.json` with the same Plan schema.

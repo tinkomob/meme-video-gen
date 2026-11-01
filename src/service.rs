@@ -20,6 +20,8 @@ pub struct Service {
     pub posts: Arc<Mutex<i64>>,
     pub generation: Arc<tokio::sync::Semaphore>,
     schedule: Arc<Mutex<Option<Plan>>>,
+    eenfinit_schedule: Arc<Mutex<Option<Plan>>>,
+    schedule_artist: &'static str,
 }
 impl Service {
     pub fn new(cfg: Config) -> Result<Self> {
@@ -30,7 +32,35 @@ impl Service {
             cfg,
             generation: Arc::new(tokio::sync::Semaphore::new(1)),
             schedule: Default::default(),
+            eenfinit_schedule: Default::default(),
+            schedule_artist: "deebill",
         })
+    }
+    fn for_artist(&self, artist: &'static str) -> Self {
+        let mut service = self.clone();
+        service.schedule_artist = artist;
+        if artist == "eenfinit" {
+            service.schedule = self.eenfinit_schedule.clone();
+        }
+        service
+    }
+    fn schedule_key(&self) -> &'static str {
+        if self.schedule_artist == "eenfinit" {
+            "snippet_schedule_eenfinit.json"
+        } else {
+            "snippet_schedule.json"
+        }
+    }
+    pub async fn artist_schedules(&self, args: &str) -> Result<String> {
+        ensure!(args.trim().is_empty(), "использование: /setsnippets");
+        let mut sections = Vec::new();
+        for artist in ["eenfinit", "deebill"] {
+            sections.push(format!(
+                "{artist}\n{}",
+                self.for_artist(artist).snippet_schedule("").await?
+            ));
+        }
+        Ok(sections.join("\n\n"))
     }
     pub async fn posts_chat(&self) -> Result<i64> {
         let mut posts = self.posts.lock().await;
@@ -175,7 +205,7 @@ impl Service {
     }
     pub async fn scheduled_publish(&self) -> Result<()> {
         let mut platforms = vec![];
-        let generated = self.generate("random", -1, "").await?;
+        let generated = self.generate("random", -1, self.schedule_artist).await?;
         if self.snippet_chat(&generated.song).is_ok() {
             platforms.push("telegram");
         }
@@ -233,7 +263,7 @@ impl Service {
             .as_ref()
             .is_none_or(|p| p.date != today || p.slots.len() != 2)
         {
-            let saved = self.store.read::<Plan>("snippet_schedule.json").await?;
+            let saved = self.store.read::<Plan>(self.schedule_key()).await?;
             if let Some(ref p) = saved {
                 p.validate()?;
                 ensure!(p.date <= today, "snippet schedule dated in the future");
@@ -242,12 +272,12 @@ impl Service {
                 Some(p) if p.date == today && p.slots.len() == 2 => p,
                 Some(p) if p.date == today => {
                     let next = Plan::migrate(now, &p, &mut rand::rng())?;
-                    self.store.write("snippet_schedule.json", &next).await?;
+                    self.store.write(self.schedule_key(), &next).await?;
                     next
                 }
                 previous => {
                     let next = Plan::new(now, previous.as_ref(), &mut rand::rng())?;
-                    self.store.write("snippet_schedule.json", &next).await?;
+                    self.store.write(self.schedule_key(), &next).await?;
                     next
                 }
             };
@@ -264,7 +294,7 @@ impl Service {
         let mut next = plan.as_ref().unwrap().clone();
         let (changed, due) = next.claim(now);
         if changed {
-            self.store.write("snippet_schedule.json", &next).await?;
+            self.store.write(self.schedule_key(), &next).await?;
             *plan = Some(next);
         }
         Ok(due)
@@ -276,7 +306,7 @@ impl Service {
         let mut next = plan.as_ref().unwrap().clone();
         if !args.trim().is_empty() {
             next.reschedule(args, now)?;
-            self.store.write("snippet_schedule.json", &next).await?;
+            self.store.write(self.schedule_key(), &next).await?;
             *plan = Some(next.clone());
         }
         let mut lines = vec![format!("Расписание сниппетов на {} (Томск):", next.date)];
@@ -294,17 +324,27 @@ impl Service {
                 }
             ));
         }
-        lines.push("/setsnippet <номер> <HH:MM | +30m | -1h | YYYY-MM-DD HH:MM>\nДва слота в день, интервал 10–14 часов. Изменения действуют на сегодня.".into());
+        lines.push("Два случайных слота в день для каждого артиста, интервал 10–14 часов.".into());
         Ok(lines.join("\n"))
     }
     async fn schedule_tick(&self) -> Result<()> {
-        let due = {
-            let mut plan = self.schedule.lock().await;
-            self.claim_slot(&mut plan, Utc::now().with_timezone(&tomsk()))
-                .await?
-        };
-        if due {
-            tokio::time::timeout(Duration::from_secs(35 * 60), self.scheduled_publish()).await??;
+        let now = Utc::now().with_timezone(&tomsk());
+        let mut due_artists = Vec::new();
+        for artist in ["eenfinit", "deebill"] {
+            let service = self.for_artist(artist);
+            let mut plan = service.schedule.lock().await;
+            if service.claim_slot(&mut plan, now).await? {
+                due_artists.push(artist);
+            }
+        }
+        for artist in due_artists {
+            let service = self.for_artist(artist);
+            if let Err(e) =
+                tokio::time::timeout(Duration::from_secs(35 * 60), service.scheduled_publish())
+                    .await?
+            {
+                tracing::error!("{artist} publication: {e}");
+            }
         }
         Ok(())
     }
@@ -415,6 +455,11 @@ mod tests {
             silent: true,
         };
         let svc = Service::new(cfg.clone()).unwrap();
+        let eenfinit = svc.for_artist("eenfinit");
+        assert_eq!(eenfinit.schedule_key(), "snippet_schedule_eenfinit.json");
+        assert_eq!(svc.schedule_key(), "snippet_schedule.json");
+        assert!(!Arc::ptr_eq(&eenfinit.schedule, &svc.schedule));
+        assert!(Arc::ptr_eq(&eenfinit.schedule, &svc.eenfinit_schedule));
         let now = DateTime::parse_from_rfc3339("2026-10-25T00:00:00+07:00").unwrap();
         let mut plan = None;
         memory.lock().unwrap().fail_reads = true;

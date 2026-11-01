@@ -12,10 +12,13 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/snippet [стиль] [0|1|2] — 20-секундный сниппет\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom, ferro, cymatics, topography, glass, ink, kinetic, lightning, interference\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: два случайных времени в день (Томск), интервал 10–14 часов.\n/setsnippet [номер время] — посмотреть или изменить расписание\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
+const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/se [стиль] [0|1|2] — сниппет EENFINIT\n/sd [стиль] [0|1|2] — сниппет dee bill\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom, ferro, cymatics, topography, glass, ink, kinetic, lightning, interference\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: по два случайных времени в день для каждого артиста (Томск), интервал 10–14 часов.\n/setsnippets — посмотреть расписания обоих артистов\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
 pub fn command_args(args: &str) -> Result<(String, i32)> {
     let parts: Vec<_> = args.split_whitespace().collect();
-    ensure!(parts.len() <= 2, "использование: /snippet [стиль] [0|1|2]");
+    ensure!(
+        parts.len() <= 2,
+        "использование: /se [стиль] — EENFINIT; /sd [стиль] — dee bill [0|1|2]"
+    );
     let style = parts.first().unwrap_or(&"random").to_lowercase();
     let variant = if parts.len() == 2 {
         let v: i32 = parts[1].parse().context("вариант: 0, 1 или 2")?;
@@ -384,7 +387,7 @@ impl Bot {
                 let pool: Vec<_> = audio::songs(&self.svc.store)
                     .await?
                     .into_iter()
-                    .filter(|s| s.id != d.song.id && eligible(s) && valid_video_id(&s.id))
+                    .filter(|s| s.id != d.song.id && eligible(s) && valid_video_id(&s.id) && crate::model::publication_artist(&s.author).ok() == crate::model::publication_artist(&d.song.author).ok())
                     .collect();
                 ensure!(!pool.is_empty(), "в библиотеке нет другой подходящей песни");
                 use rand::Rng;
@@ -517,14 +520,26 @@ impl Bot {
                         .text(chat, &format!("Ваш Chat ID: {chat}"), None)
                         .await?;
                 }
-                "/snippet" => {
+                "/se" | "/sd" => {
                     if user != 0 {
                         let (style, variant) = command_args(args)?;
-                        self.generate(chat, user, &style, variant, "", None).await?;
+                        self.generate(
+                            chat,
+                            user,
+                            &style,
+                            variant,
+                            if command == "/se" {
+                                "eenfinit"
+                            } else {
+                                "deebill"
+                            },
+                            None,
+                        )
+                        .await?;
                     }
                 }
-                "/setsnippet" => {
-                    let text = self.svc.snippet_schedule(args).await?;
+                "/setsnippets" => {
+                    let text = self.svc.artist_schedules(args).await?;
                     self.svc.telegram.text(chat, &text, None).await?;
                 }
                 "/song" => {
@@ -642,7 +657,7 @@ pub async fn run(svc: Service, cancel: CancellationToken) -> Result<()> {
         tracing::error!("continuing without Telegram after five attempts");
         return Ok(());
     }
-    let commands = json!({"commands":[{"command":"start","description":"Запустить бота"},{"command":"help","description":"Список команд"},{"command":"snippet","description":"Создать музыкальный сниппет"},{"command":"setsnippet","description":"Посмотреть или изменить расписание"},{"command":"song","description":"Найти и скачать песню"},{"command":"chatid","description":"Показать ID чата"}]});
+    let commands = json!({"commands":[{"command":"start","description":"Запустить бота"},{"command":"help","description":"Список команд"},{"command":"se","description":"Сниппет EENFINIT"},{"command":"sd","description":"Сниппет dee bill"},{"command":"setsnippets","description":"Расписания обоих артистов"},{"command":"song","description":"Найти и скачать песню"},{"command":"chatid","description":"Показать ID чата"}]});
     if let Err(e) = bot.svc.telegram.call("setMyCommands", commands).await {
         tracing::warn!("command menu: {e}");
     }
@@ -961,7 +976,7 @@ mod callback_flow_tests {
                 .contains("уже выполняется")
         );
         let _permit = bot.svc.generation.clone().try_acquire_owned().unwrap();
-        bot.handle(json!({"message":{"chat":{"id":10},"from":{"id":20},"text":"/snippet"}}))
+        bot.handle(json!({"message":{"chat":{"id":10},"from":{"id":20},"text":"/se"}}))
             .await
             .unwrap();
         let calls = state.calls.lock().unwrap();

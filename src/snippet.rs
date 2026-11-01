@@ -160,7 +160,24 @@ pub async fn generate(
 ) -> Result<Generated> {
     validate(style, variant)?;
     let mut songs = audio::songs(store).await?;
-    let mut song = audio::choose_song(songs.clone(), song_id)?;
+    let artist = if matches!(song_id, "eenfinit" | "deebill") {
+        Some(song_id.to_owned())
+    } else {
+        songs
+            .iter()
+            .find(|s| s.id == song_id)
+            .and_then(|s| crate::model::publication_artist(&s.author).ok())
+            .map(str::to_owned)
+    };
+    if let Some(artist) = &artist {
+        songs.retain(|s| crate::model::publication_artist(&s.author).ok() == Some(artist.as_str()));
+    }
+    let selection = if matches!(song_id, "eenfinit" | "deebill") {
+        ""
+    } else {
+        song_id
+    };
+    let mut song = audio::choose_song(songs.clone(), selection)?;
     let dir = tempfile::tempdir()?;
     let cover = loop {
         match cover(store, &song.id, dir.path()).await {
