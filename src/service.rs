@@ -73,7 +73,7 @@ impl Service {
     }
     pub async fn generate(&self, style: &str, variant: i32, id: &str) -> Result<Generated> {
         tokio::time::timeout(
-            Duration::from_secs(30 * 60),
+            Duration::from_secs(90 * 60),
             snippet::generate(&self.store, style, variant, id),
         )
         .await?
@@ -340,7 +340,7 @@ impl Service {
         for artist in due_artists {
             let service = self.for_artist(artist);
             if let Err(e) =
-                tokio::time::timeout(Duration::from_secs(35 * 60), service.scheduled_publish())
+                tokio::time::timeout(Duration::from_secs(95 * 60), service.scheduled_publish())
                     .await?
             {
                 tracing::error!("{artist} publication: {e}");

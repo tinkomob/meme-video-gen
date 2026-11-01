@@ -1311,6 +1311,18 @@ mod tests {
     }
 
     #[test]
+    #[ignore]
+    fn background_render_timing() {
+        let mut p = Painter::new("silver", 42, 0);
+        let start = std::time::Instant::now();
+        for f in 0..120 {
+            p.paint_background(std::hint::black_box(f as f64 / FPS as f64));
+            std::hint::black_box(&p.pixels);
+        }
+        eprintln!("background 120 frames: {:?}", start.elapsed());
+    }
+
+    #[test]
     fn backgrounds_move_slowly_and_replay_without_mutating_the_source() {
         for seed in 0..7 {
             let mut p = Painter::new("silver", seed, 0);
