@@ -375,17 +375,64 @@ impl Painter {
                 0.55,
             );
         }
+        let backdrop = seed % 7;
+        let angle = r.random::<f64>() * 2.0 * PI;
+        let center = (r.random_range(0.1..0.9), r.random_range(0.1..0.9));
+        let scale = r.random_range(0.8..1.8);
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
-                let d = ((x as f64 - 270.0) / 430.0).hypot((y as f64 - 480.0) / 700.0);
-                let v = (1.0 - d).max(0.0);
-                let sweep = (x as f64 / WIDTH as f64 * 0.6 + y as f64 / HEIGHT as f64 * 0.4)
-                    .clamp(0.0, 1.0);
-                let pigment = mix_light(background, p.palette[1], sweep * 0.22);
+                let u = x as f64 / WIDTH as f64;
+                let v = y as f64 / HEIGHT as f64;
+                let along = (u - center.0) * angle.cos() + (v - center.1) * angle.sin();
+                let across = -(u - center.0) * angle.sin() + (v - center.1) * angle.cos();
+                let mut noise = (x as u64 * 374761393 + y as u64 * 668265263) ^ seed;
+                noise = (noise ^ (noise >> 13)).wrapping_mul(1274126177);
+                let grain = ((noise ^ (noise >> 16)) & 255) as f64 / 255.0;
+                let field = match backdrop {
+                    0 => 0.36,
+                    1 => (1.0 - (along * 2.8 * scale).abs()).max(0.0).powi(2),
+                    2 => ((-((along * 3.5).powi(2) + (across * 2.8).powi(2))).exp()
+                        + 0.8 * (-((along + 0.45).powi(2) + (across - 0.4).powi(2)) * 22.0).exp())
+                    .min(1.0),
+                    3 => {
+                        let warp = along * 11.0 * scale + (across * 9.0).sin() * 2.0;
+                        (0.5 + 0.3 * warp.sin() + 0.2 * (across * 19.0 + warp.sin() * 2.0).cos())
+                            .powi(2)
+                    }
+                    4 => 0.7 + (grain - 0.5) * 0.24 + 0.035 * (v * 900.0).sin(),
+                    5 => {
+                        if across > 0.12 {
+                            0.85
+                        } else if along > -0.15 {
+                            0.12
+                        } else {
+                            0.5
+                        }
+                    }
+                    _ => {
+                        (-across.powi(2) * 120.0 * scale).exp()
+                            * (0.65 + 0.35 * (along * 5.0).cos())
+                    }
+                }
+                .clamp(0.0, 1.0);
+                let pigment = if backdrop == 4 {
+                    mix_light(Color(124.0, 104.0, 77.0), Color(235.0, 218.0, 177.0), field)
+                } else {
+                    let secondary = motion::hue_color(hue + 0.38);
+                    mix_light(
+                        background,
+                        secondary,
+                        (across * 1.8 + 0.5).clamp(0.0, 1.0) * field,
+                    )
+                };
                 let c = mix_light(
                     Color(8.0, 9.0, 12.0),
                     pigment,
-                    background_light * (0.65 + 0.35 * v),
+                    if backdrop == 4 {
+                        0.75 + field * 0.2
+                    } else {
+                        background_light * (0.8 + 2.1 * field)
+                    },
                 );
                 let i = (y * WIDTH + x) * 3;
                 let (dx, dy) = ((x as f64 - 270.0) / 250.0, (y as f64 - 615.0) / 100.0);
@@ -710,12 +757,40 @@ impl Painter {
         }
         self.view.focus = 1.0;
     }
+    fn paint_background(&mut self, seconds: f64) {
+        let time = seconds * 0.09 * self.speed + self.phase;
+        let zoom = 0.9 + 0.015 * (time * 0.7).sin();
+        let dx = WIDTH as f64 * 0.025 * time.sin();
+        let dy = HEIGHT as f64 * 0.025 * (time * 0.8).cos();
+        for y in 0..HEIGHT {
+            let sy = (HEIGHT as f64 * 0.5 + (y as f64 - HEIGHT as f64 * 0.5) * zoom + dy)
+                .clamp(0.0, (HEIGHT - 1) as f64);
+            let y0 = sy as usize;
+            let y1 = (y0 + 1).min(HEIGHT - 1);
+            let fy = (sy - y0 as f64) as f32;
+            for x in 0..WIDTH {
+                let sx = (WIDTH as f64 * 0.5 + (x as f64 - WIDTH as f64 * 0.5) * zoom + dx)
+                    .clamp(0.0, (WIDTH - 1) as f64);
+                let x0 = sx as usize;
+                let x1 = (x0 + 1).min(WIDTH - 1);
+                let fx = (sx - x0 as f64) as f32;
+                for c in 0..3 {
+                    let top = self.base[(y0 * WIDTH + x0) * 3 + c] * (1.0 - fx)
+                        + self.base[(y0 * WIDTH + x1) * 3 + c] * fx;
+                    let bottom = self.base[(y1 * WIDTH + x0) * 3 + c] * (1.0 - fx)
+                        + self.base[(y1 * WIDTH + x1) * 3 + c] * fx;
+                    self.pixels[(y * WIDTH + x) * 3 + c] = top * (1.0 - fy) + bottom * fy;
+                }
+            }
+        }
+    }
+
     pub fn frame(&mut self, f: usize, mut a: AudioFrame) -> &[u8] {
         let material = materials::spatial(&self.style);
         a.event = a.event.wrapping_add(self.phase.to_bits());
-        self.pixels.copy_from_slice(&self.base);
-        self.glow.fill(0.0);
         let seconds = f as f64 / FPS as f64;
+        self.paint_background(seconds);
+        self.glow.fill(0.0);
         let pose = self.evolution(seconds);
         self.neon_time = seconds;
         self.update_field(f, a);
@@ -1233,6 +1308,57 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn backgrounds_move_slowly_and_replay_without_mutating_the_source() {
+        for seed in 0..7 {
+            let mut p = Painter::new("silver", seed, 0);
+            let base = p.base.clone();
+            p.paint_background(0.0);
+            let first = p.pixels.clone();
+            p.paint_background(1.0 / FPS as f64);
+            let step = first
+                .iter()
+                .zip(&p.pixels)
+                .map(|(a, b)| (a - b).abs())
+                .sum::<f32>()
+                / first.len() as f32;
+            assert!(step < 1.0, "background moves too fast: {seed}/{step}");
+            p.paint_background(10.0);
+            assert_ne!(first, p.pixels);
+            p.paint_background(0.0);
+            assert_eq!(first, p.pixels);
+            assert_eq!(base, p.base);
+        }
+    }
+
+    #[test]
+    fn backdrop_geometry_is_seeded_and_varied() {
+        let mut shapes = std::collections::HashSet::new();
+        for seed in 0..7 {
+            let p = Painter::new("silver", seed, 0);
+            assert_eq!(p.base, Painter::new("silver", seed, 0).base);
+            let values: Vec<f32> = (0..5)
+                .flat_map(|y| (0..5).map(move |x| (x, y)))
+                .map(|(x, y)| p.base[((y * (HEIGHT - 1) / 4) * WIDTH + x * (WIDTH - 1) / 4) * 3])
+                .collect();
+            let low = values.iter().copied().fold(f32::INFINITY, f32::min);
+            let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+            if seed != 0 {
+                assert!(
+                    high - low > 12.0,
+                    "background has no visible structure: {seed}"
+                );
+            }
+            shapes.insert(
+                values
+                    .iter()
+                    .map(|v| ((v - low) / (high - low).max(0.001) * 10.0) as u8)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(shapes.len(), 7);
     }
 
     #[test]

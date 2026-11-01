@@ -423,9 +423,9 @@ impl Painter {
             let iy = ((py * divisor as f64) as usize).min(HEIGHT - 1);
             let i = (iy * WIDTH + ix) * 3;
             let bg = Color(
-                self.base[i] as f64,
-                self.base[i + 1] as f64,
-                self.base[i + 2] as f64,
+                self.pixels[i] as f64,
+                self.pixels[i + 1] as f64,
+                self.pixels[i + 2] as f64,
             );
             let wash = mix_light(palette[0], palette[1], (v + 0.5).clamp(0.0, 1.0));
             let background = 0.04 + drive[0] * 0.1 + drive[1] * 0.1 + drive[2] * 0.08;
