@@ -20,6 +20,9 @@ services:
       nofile:
         soft: 65535
         hard: 65535
+    # Set to 0.9 * available logical CPUs (e.g. 5.4 on a six-core host).
+    # Shared by the bot, visualizer workers and FFmpeg; no core affinity restriction.
+    cpus: "${SNIPPET_CPU_LIMIT:?Set SNIPPET_CPU_LIMIT to 90 percent of available CPUs}"
     pids_limit: 512
     init: true
 

@@ -1,6 +1,6 @@
 # Song video generator
 
-Rust Telegram bot that generates 20-second music snippets with 75 audio-reactive
+Rust Telegram bot that generates 20-second music snippets with 102 audio-reactive
 visual designs, publishes twice a day, and streams a Friends episode player.
 
 ## Requirements and build
@@ -33,6 +33,11 @@ The integration suite uses a local mock S3/Telegram server and runs FFmpeg to
 verify a complete 20-second, 1080×1920, 30 fps H.264/AAC video. FFmpeg/FFprobe must
 be on PATH. It also checks byte-range streaming, persisted publication states,
 failed storage writes, and compatibility with the old Go JSON data.
+The hardware-only GPU rendering test is ignored by default on CPU hosts. Run it
+explicitly on a GPU host with
+`cargo test --lib gpu_liquid::tests::gpu_frame_has_expected_rgb_shape_and_visible_color -- --ignored --exact`.
+`gpu-liquid` is not part of random selection; all mystery families are, with
+fresh random seeds selecting their dark or light color looks independently.
 
 A separate **read-only** live check loads `.env`, reads the existing S3 library,
 downloads one song, and streams a 1 KiB Friends video range. It never publishes:
@@ -59,15 +64,18 @@ The output must not already exist. Both the song-snippet CLI and the service use
 the same renderer. Audio must be at least 20 seconds long. Generation is limited
 to one renderer at a time; temporary files are cleaned up after use.
 
-Twenty-five families each have three geometry/palette variants (0, 1, 2): `silver`,
+Thirty-four families each have three geometry/palette variants (0, 1, 2): `silver`,
 `violet`, `amber`, `aurora`, `prism`, `galaxy`, `tunnel`, `orbit`, `wave`, `rain`,
-`chrome`, `silk`, `analog`, `cover`, `nebula`, `liquid`, `bloom`, `ferro`, `cymatics`, `topography`, `glass`, `ink`, `kinetic`, `lightning`, `interference`.
+`chrome`, `silk`, `analog`, `cover`, `nebula`, `liquid`, `bloom`, `ferro`, `cymatics`, `topography`, `glass`, `ink`, `kinetic`, `lightning`, `interference`, `filament`, `neural`, `chaos`, `veil`, `parallax`, `residue`,
+`silver-mystery`, `wave-mystery`, `silk-mystery`.
+Variant 1 of `topography` and `ink` remains unavailable through snippet commands.
 `random` selects a family and variant. Motion uses 64 logarithmic audio bands;
-the original scenes use layered particles and the new scenes use procedural 3D space.
+the original scenes use layered particles, material scenes use procedural 3D space,
+and the monochrome ink families use bundled flow curves.
 Validated YouTube JPEG covers are cached in S3; a waveform is the fallback.
 
-The player keeps a fixed cover, title and artist layout. All 75 variants share a
-spatial flow field driven by twelve independent frequency voices. Each voice has
+The player keeps a fixed cover, title and artist layout. The renderers share
+precomputed responses driven by twelve independent frequency voices. Each voice has
 its own attack, release and delay; responses are precomputed from the audio so
 seeking and repeated frames remain deterministic. Music advances local flow clocks
 and slowly opens geometry. Accents are calibrated per frequency voice from the clip itself, preserving small
@@ -91,7 +99,7 @@ crystal shells. `ink` integrates curled density through space, `kinetic` moves
 through rounded sculptural arches, `lightning` follows continuous filaments with
 branches in depth, and `interference` passes through folded translucent membranes.
 These are procedural approximations, without physical fluid or optical simulation.
-The eight new families trace camera rays through world coordinates rather than
+The eight ray-marched families (`ferro` through `interference`) trace camera rays through world coordinates rather than
 repeating screen-space copies. Camera travel continues through procedural geometry;
 surface normals, occlusion, distance haze and transmission establish depth. Camera
 speed stays independent of musical attacks. Smoothed frequency energy changes
@@ -103,11 +111,49 @@ smaller ray steps preserve thin surfaces. Rough coloured highlights, depth-filte
 detail, mild optical diffusion and two bloom radii soften the geometric appearance.
 Linear light retains headroom through resizing before the shared exposure pass.
 Ray samples are split across up to four CPU workers and remain deterministic.
-To render a local review (75 stills and eight six-second videos) without S3 or
+`filament`, `neural`, and `chaos` instead draw deterministic bundles of fine ink
+curves: flowing filaments, branching dendrites, and folded precessing orbits.
+Their three variants change geometry and light/dark presentation without neon;
+18 independent branch responses follow separate low/mid/high spectral windows.
+Fast transient impulses excite damped springs, whipping and folding individual
+branches with travelling ripples and high-frequency flutter, rather than merely
+rotating or scaling the drawing. Motion is precomputed causally for exact seeking.
+
+The abstract mystery families avoid symbols and recognizable subjects: `veil`
+reveals incomplete translucent folds, `parallax` hides light behind offset planes,
+and `residue` leaves eroded impressions. Three geometric variants per family use
+slow independent musical responses and restrained pigment rather than beat flashes.
+`silver-mystery`, `wave-mystery`, and `silk-mystery` are additive editions of existing
+scenes: moving reveal fields, displaced traces, and desaturation partially conceal
+the original geometry. The original style names and variants remain unchanged.
+All six added families participate in random selection and accept variants 0–2.
+For example, `/se veil 0` or `/se silk-mystery 2`.
+Each mystery family also has six seed-selected color looks, independent of its
+three geometry variants: midnight blue, plum/rose, jade, ivory/blue-gray,
+pale blue/lavender, and sand/ochre. The last three use dark translucent pigment
+on genuinely light backgrounds, not an exposure boost of the night scene.
+The metadata area retains its dark scrim for white text. Seed modulo six selects
+the look without consuming or changing the legacy random geometry stream.
+Review all six families/looks locally with
+`cargo run --example mystery-colors -- OUTPUT.png` (rows follow the six names above;
+columns are the six color looks). No credentials or publishing are involved.
+
+To render a local review (102 stills and seventeen six-second videos) without S3 or
 publication, use `cargo run --release --example visual-preview -- OUTPUT AUDIO COVER`.
 Append `--stills` to review composition before encoding videos.
 Use `--seconds 3` for shorter motion reviews (1–20 seconds; default 6).
-The output directory must be new; the audio must contain at least six seconds.
+The output directory must be new; the audio must contain at least the requested duration.
+Repeat `--style` to review only selected families, including all three variants:
+
+```powershell
+cargo run --release --example visual-preview -- OUTPUT AUDIO COVER --style filament --style neural --style chaos --seconds 3
+```
+
+Add `--no-cover` to skip loading the cover and review raw scene composition without
+reserving player space (the positional COVER argument is still required but ignored).
+Filtered videos use distinct `STYLE-VARIANT.mp4` names. `--stills` skips encoding;
+`--new-only` instead reviews variant 0 of each family added since `ferro` and cannot
+be combined with `--style`. Contact sheets and gallery counts follow the selection.
 The review compares the new scenes with the same seeded render in silence and
 saves the changed-pixel measurements in `audio-response.json`.
 

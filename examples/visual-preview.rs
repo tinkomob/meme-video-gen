@@ -17,6 +17,12 @@ struct Args {
     stills: bool,
     #[arg(long)]
     new_only: bool,
+    /// Review the raw scene without reserving cover/player space.
+    #[arg(long)]
+    no_cover: bool,
+    /// Render all three variants of each selected family; repeat to select more.
+    #[arg(long = "style", conflicts_with = "new_only")]
+    styles: Vec<String>,
     #[arg(long,default_value_t=6,value_parser=clap::value_parser!(u32).range(1..=20))]
     seconds: u32,
 }
@@ -24,10 +30,36 @@ struct Args {
 fn main() -> Result<()> {
     let args = Args::parse();
     let (output, audio, stills, new_only) = (args.output, args.audio, args.stills, args.new_only);
+    let filtered = !args.styles.is_empty();
+    for style in &args.styles {
+        ensure!(
+            STYLES.contains(&style.as_str()),
+            "unknown preview style: {style}"
+        );
+    }
+    let selected: Vec<_> = STYLES
+        .iter()
+        .enumerate()
+        .filter(|(index, style)| {
+            (!new_only || *index >= 17)
+                && (!filtered || args.styles.iter().any(|selected| selected == **style))
+        })
+        .collect();
+    let variants = if new_only { 1 } else { 3 };
+    let still_count = selected.len() * variants;
+    let review_count = selected
+        .iter()
+        .filter(|(index, _)| filtered || *index >= 17)
+        .count()
+        * if filtered { 3 } else { 1 };
     let seconds = args.seconds as usize;
     let poster = (seconds * FPS / 2).min(90);
     let duration = seconds.to_string();
-    let cover = image::open(&args.cover).context("open preview cover")?;
+    let cover = if args.no_cover {
+        None
+    } else {
+        Some(image::open(&args.cover).context("open preview cover")?)
+    };
     ensure!(!output.exists(), "preview directory already exists");
     let pcm = Command::new("ffmpeg")
         .args(["-v", "error", "-nostdin", "-i"])
@@ -54,26 +86,31 @@ fn main() -> Result<()> {
     );
     let frames = visualizer::analyze(&samples);
     std::fs::create_dir_all(&output)?;
-    let mut sheet = image::RgbImage::new(5 * 108, 15 * 192);
-    let mut concepts = image::RgbImage::new(4 * 270, 2 * 480);
+    let mut sheet = image::RgbImage::new(5 * 108, still_count.div_ceil(5) as u32 * 192);
+    let mut concepts = image::RgbImage::new(4 * 270, review_count.max(1).div_ceil(4) as u32 * 480);
+    let mut review_tile = 0;
     let mut audio_response = Vec::new();
     let mut html = String::from(
         "<!doctype html><meta charset=utf-8><title>75 visual variants</title><style>body{background:#171923;color:#eee;font:16px system-ui;margin:24px}main{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px}img,video{width:100%}figure{margin:0}a{color:#ace}</style><h1>8 новых визуалов</h1><p>Реальный CPU-рендер, 540×960, 30 fps. Видео: 6 секунд с музыкой, без обложки и текста. Ниже все 75 вариантов с разными seed.</p><main>",
     );
-    html = html.replace("6 секунд", &format!("{seconds} сек."));
-    if new_only {
-        html = html.replace("75 visual variants", "8 new visuals");
-        html = html.replace("Все 75 вариантов", "Восемь новых визуалов");
-    }
-    for (index, style) in STYLES
-        .iter()
-        .enumerate()
-        .filter(|(index, _)| !new_only || *index >= 17)
-    {
+    html = html
+        .replace("6 секунд", &format!("{seconds} сек."))
+        .replace(
+            "75 visual variants",
+            &format!("{still_count} visual variants"),
+        )
+        .replace(
+            "8 новых визуалов",
+            &format!("{review_count} визуалов для обзора"),
+        )
+        .replace("75 вариантов", &format!("{still_count} вариантов"));
+    for (selected_index, &(index, style)) in selected.iter().enumerate() {
         for variant in (0..3).filter(|variant| !new_only || *variant == 0) {
-            let mut painter =
-                Painter::new(style, 710 + index as u64 * 19 + variant as u64 * 7, variant);
-            painter.set_cover(&cover);
+            let seed = 710 + index as u64 * 19 + variant as u64 * 7;
+            let mut painter = Painter::new(style, seed, variant);
+            if let Some(cover) = &cover {
+                painter.set_cover(cover);
+            }
             let frames = visualizer::smooth_material_audio(&painter, frames.clone());
             painter.prepare_audio(&frames);
             let frame = image::RgbImage::from_raw(
@@ -86,16 +123,23 @@ fn main() -> Result<()> {
             frame.save(output.join(&name))?;
             let thumb =
                 image::imageops::resize(&frame, 108, 192, image::imageops::FilterType::Triangle);
-            let tile = index * 3 + variant as usize;
+            let tile = selected_index * variants + variant as usize;
             image::imageops::replace(
                 &mut sheet,
                 &thumb,
                 (tile % 5 * 108) as i64,
                 (tile / 5 * 192) as i64,
             );
-            if index >= 17 && variant == if new_only { 0 } else { 1 } {
-                let mut silent = Painter::new(style, 710 + index as u64 * 19 + 7, variant);
-                silent.set_cover(&cover);
+            if filtered || (index >= 17 && variant == if new_only { 0 } else { 1 }) {
+                let video_name = if filtered {
+                    format!("{style}-{variant}.mp4")
+                } else {
+                    format!("{style}.mp4")
+                };
+                let mut silent = Painter::new(style, seed, variant);
+                if let Some(cover) = &cover {
+                    silent.set_cover(cover);
+                }
                 silent.prepare_audio(&vec![visualizer::AudioFrame::default(); frames.len()]);
                 let control = silent.frame(poster, visualizer::AudioFrame::default());
                 let changed = frame
@@ -121,9 +165,10 @@ fn main() -> Result<()> {
                 image::imageops::replace(
                     &mut concepts,
                     &thumb,
-                    ((index - 17) % 4 * 270) as i64,
-                    ((index - 17) / 4 * 480) as i64,
+                    (review_tile % 4 * 270) as i64,
+                    (review_tile / 4 * 480) as i64,
                 );
+                review_tile += 1;
                 if stills {
                     html.push_str(&format!(
                         "<figure><img src='{name}'><figcaption>{style}/{variant}</figcaption></figure>"
@@ -159,7 +204,7 @@ fn main() -> Result<()> {
                         "-movflags",
                         "+faststart",
                     ])
-                    .arg(output.join(format!("{style}.mp4")))
+                    .arg(output.join(&video_name))
                     .stdin(Stdio::piped())
                     .stderr(Stdio::inherit())
                     .stdout(Stdio::null())
@@ -178,7 +223,7 @@ fn main() -> Result<()> {
                 let status = ffmpeg.wait()?;
                 write_result?;
                 ensure!(status.success(), "encode {style}");
-                html.push_str(&format!("<figure><video controls preload=metadata poster='{name}' src='{style}.mp4'></video><figcaption>{style}/{variant}</figcaption></figure>"));
+                html.push_str(&format!("<figure><video controls preload=metadata poster='{name}' src='{video_name}'></video><figcaption>{style}/{variant}</figcaption></figure>"));
                 println!(
                     "Rendered {style}; audio response {percent:.1}%; {:.3} s/frame",
                     started.elapsed().as_secs_f64() / (seconds * FPS) as f64
@@ -186,28 +231,17 @@ fn main() -> Result<()> {
             }
         }
     }
-    html.push_str("</main><h1>Все 75 вариантов</h1><main>");
-    for style in STYLES.iter().filter(|style| {
-        !new_only
-            || matches!(
-                **style,
-                "ferro"
-                    | "cymatics"
-                    | "topography"
-                    | "glass"
-                    | "ink"
-                    | "kinetic"
-                    | "lightning"
-                    | "interference"
-            )
-    }) {
+    html.push_str(&format!(
+        "</main><h1>Все {still_count} вариантов</h1><main>"
+    ));
+    for &(_, style) in &selected {
         for variant in (0..3).filter(|variant| !new_only || *variant == 0) {
             html.push_str(&format!("<figure><a href='{style}-{variant}.jpg'><img loading=lazy src='{style}-{variant}.jpg'></a><figcaption>{style}/{variant}</figcaption></figure>"));
         }
     }
     html.push_str("</main>");
-    sheet.save(output.join("all-75.jpg"))?;
-    concepts.save(output.join("new-8.jpg"))?;
+    sheet.save(output.join(format!("all-{still_count}.jpg")))?;
+    concepts.save(output.join(format!("new-{review_count}.jpg")))?;
     std::fs::write(output.join("index.html"), html)?;
     std::fs::write(
         output.join("audio-response.json"),
@@ -215,4 +249,39 @@ fn main() -> Result<()> {
     )?;
     println!("Created {}", std::path::absolute(output)?.display());
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn style_filter_is_repeatable_and_conflicts_with_new_only() {
+        let args = Args::try_parse_from([
+            "visual-preview",
+            "output",
+            "audio",
+            "cover",
+            "--style",
+            "filament",
+            "--style",
+            "neural",
+            "--style",
+            "chaos",
+        ])
+        .unwrap();
+        assert_eq!(args.styles, ["filament", "neural", "chaos"]);
+        assert!(
+            Args::try_parse_from([
+                "visual-preview",
+                "output",
+                "audio",
+                "cover",
+                "--style",
+                "filament",
+                "--new-only",
+            ])
+            .is_err()
+        );
+    }
 }

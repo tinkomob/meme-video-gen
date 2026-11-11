@@ -172,6 +172,7 @@ mod tests {
     use super::*;
 
     #[test]
+    #[ignore = "requires a hardware GPU; run explicitly on a GPU host"]
     fn gpu_frame_has_expected_rgb_shape_and_visible_color() {
         let gpu = Liquid::new().expect("test requires a hardware GPU");
         let calm = crate::visualizer::AudioFrame::default();

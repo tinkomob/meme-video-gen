@@ -59,7 +59,7 @@ fn render_samples(
     let (width, height) = (field.width() as usize, field.height() as usize);
     let workers = std::thread::available_parallelism()
         .map_or(1, |n| n.get())
-        .min(8);
+        .min(height.max(1));
     let rows = height.div_ceil(workers);
     std::thread::scope(|scope| {
         for (block, chunk) in field.as_mut().chunks_mut(width * 4 * rows).enumerate() {
@@ -744,7 +744,7 @@ mod tests {
 
     #[test]
     fn every_new_material_visibly_reacts_to_each_frequency_region() {
-        for style in &STYLES[17..] {
+        for style in STYLES.iter().filter(|style| spatial(style)) {
             for variant in 0..3 {
                 let mut p = Painter::new(style, 71, variant);
                 let quiet = AudioFrame {

@@ -153,7 +153,18 @@ impl Painter {
                         (u * 0.6 + v * 0.4 + z * 0.3).abs(),
                     )
                     .abs();
-                    let accent = local.light * (0.25 + 0.75 * light_front) + glint * 0.7;
+                    // Nebula is an optically thin six-slice cloud: opening is too
+                    // slow to carry short notes, and transient-only lighting leaves
+                    // most of its sparse ridges visually unchanged. Retained local
+                    // energy excites the travelling internal light front as well,
+                    // without inflating density or flashing the whole background.
+                    let excitation = if self.style == "nebula" {
+                        local.energy * (0.25 + 0.75 * light_front) * 0.9
+                    } else {
+                        0.0
+                    };
+                    let accent =
+                        local.light * (0.25 + 0.75 * light_front) + glint * 0.7 + excitation;
                     let highlight = diffuse.powi(14) * 0.45 + reflection * (0.5 + accent);
                     let backlight = rim * (0.5 + 0.5 * (z + flow_time * 0.2).sin());
                     let shadow = mix_light(self.palette[1], color, 0.3);
@@ -479,6 +490,46 @@ impl Painter {
 // Restart only after the tail has left the frame, including the depth-layer overscan.
 fn silk_head(t: f64, phase: f64) -> f64 {
     -0.35 + (t * 0.22 + phase).rem_euclid(3.0)
+}
+
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+
+    #[test]
+    fn short_notes_keep_volume_emission_visible_after_release() {
+        for style in ["nebula", "liquid", "bloom"] {
+            let mut p = Painter::new(style, 71, 1);
+            let mut frames = vec![AudioFrame::default(); 180];
+            p.prepare_audio(&frames);
+            let quiet = p.frame(106, frames[106]).to_vec();
+            for frame in &mut frames[100..106] {
+                frame.bands.fill(0.8);
+            }
+            p.prepare_audio(&frames);
+            let loud = p.frame(106, frames[106]).to_vec();
+            let mean = quiet
+                .iter()
+                .zip(&loud)
+                .map(|(a, b)| a.abs_diff(*b) as f64)
+                .sum::<f64>()
+                / quiet.len() as f64;
+            let visible = quiet
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .zip(loud.as_chunks::<3>().0)
+                .filter(|(a, b)| a.iter().zip(*b).any(|(a, b)| a.abs_diff(*b) > 12))
+                .count();
+            assert!(mean > 3.0, "weak short-note response: {style}: {mean}");
+            assert!(
+                visible > WIDTH * HEIGHT / 10,
+                "sparse short-note response: {style}: {visible}"
+            );
+            p.frame(30, frames[30]);
+            assert_eq!(loud, p.frame(106, frames[106]), "non-seekable {style}");
+        }
+    }
 }
 
 #[cfg(test)]

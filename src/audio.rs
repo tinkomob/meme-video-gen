@@ -32,7 +32,7 @@ pub async fn songs(store: &Storage) -> Result<Vec<Song>> {
     ensure!(!idx.items.is_empty(), "no songs found");
     Ok(idx.items)
 }
-pub fn choose_song(songs: Vec<Song>, id: &str) -> Result<Song> {
+pub fn choose_song(songs: Vec<Song>, id: &str, recent: &[String]) -> Result<Song> {
     if !id.is_empty() {
         return songs
             .into_iter()
@@ -44,7 +44,24 @@ pub fn choose_song(songs: Vec<Song>, id: &str) -> Result<Song> {
         !pool.is_empty(),
         "no songs long enough for a 20-second snippet"
     );
-    Ok(pool[rand::rng().random_range(0..pool.len())].clone())
+    let fresh: Vec<_> = pool
+        .iter()
+        .filter(|song| !recent.contains(&song.id))
+        .collect();
+    let song = if fresh.is_empty() {
+        // Library smaller than the no-repeat window: use its least recently used song.
+        pool.iter()
+            .min_by_key(|song| {
+                recent
+                    .iter()
+                    .position(|id| id == &song.id)
+                    .unwrap_or(usize::MAX)
+            })
+            .unwrap()
+    } else {
+        fresh[rand::rng().random_range(0..fresh.len())]
+    };
+    Ok(song.clone())
 }
 pub async fn ensure_songs(store: &Storage) -> Result<()> {
     let indexing = index_songs(store).await;
@@ -253,13 +270,32 @@ mod tests {
                         },
                         good.clone()
                     ],
-                    ""
+                    "",
+                    &[]
                 )
                 .unwrap()
                 .id,
                 "good"
             );
         }
-        assert!(choose_song(vec![], "").is_err());
+        assert!(choose_song(vec![], "", &[]).is_err());
+    }
+    #[test]
+    fn selection_avoids_recent_songs() {
+        let song = |id: &str| Song {
+            id: id.into(),
+            audio_key: "a".into(),
+            duration_s: 20.0,
+            ..Song::default()
+        };
+        let fresh = vec![song("a"), song("b")];
+        let recent = vec!["a".to_string()];
+        for _ in 0..20 {
+            assert_eq!(choose_song(fresh.clone(), "", &recent).unwrap().id, "b");
+        }
+        let recent = vec!["a".to_string(), "b".to_string()];
+        for _ in 0..20 {
+            assert_eq!(choose_song(fresh.clone(), "", &recent).unwrap().id, "a");
+        }
     }
 }

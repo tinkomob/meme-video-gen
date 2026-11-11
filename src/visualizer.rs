@@ -4,7 +4,7 @@ pub const WIDTH: usize = 540;
 pub const HEIGHT: usize = 960;
 pub const FPS: usize = 30;
 pub const BANDS: usize = 64;
-pub const STYLES: [&str; 25] = [
+pub const STYLES: [&str; 35] = [
     "silver",
     "violet",
     "amber",
@@ -30,6 +30,16 @@ pub const STYLES: [&str; 25] = [
     "kinetic",
     "lightning",
     "interference",
+    "filament",
+    "neural",
+    "chaos",
+    "veil",
+    "parallax",
+    "residue",
+    "silver-mystery",
+    "wave-mystery",
+    "silk-mystery",
+    "cube-cave",
 ];
 #[derive(Clone, Copy, Debug)]
 pub struct AudioFrame {
@@ -225,8 +235,49 @@ impl View {
         )
     }
 }
+#[cfg(test)]
+thread_local! {
+    static SERIAL_ROWS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+// Split only disjoint output rows, never frames: motion fields are temporal.
+// Worker count is bounded by available CPUs and output rows. All workers
+// join before returning, so cancellation and encoder backpressure stay frame-bound.
+fn parallel_rows<T: Send>(
+    pixels: &mut [T],
+    stride: usize,
+    render: impl Fn(usize, &mut [T]) + Sync,
+) {
+    static WORKERS: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let workers =
+        *WORKERS.get_or_init(|| std::thread::available_parallelism().map_or(1, usize::from));
+    #[cfg(test)]
+    let workers = if SERIAL_ROWS.get() { 1 } else { workers };
+    let rows = pixels.len() / stride;
+    let rows_per_worker = rows.div_ceil(workers).max(1);
+    std::thread::scope(|scope| {
+        let render = &render;
+        for (chunk, pixels) in pixels.chunks_mut(rows_per_worker * stride).enumerate() {
+            let start = chunk * rows_per_worker;
+            if workers == 1 {
+                for (y, row) in pixels.chunks_mut(stride).enumerate() {
+                    render(start + y, row);
+                }
+            } else {
+                scope.spawn(move || {
+                    for (y, row) in pixels.chunks_mut(stride).enumerate() {
+                        render(start + y, row);
+                    }
+                });
+            }
+        }
+    });
+}
+
 pub struct Painter {
     style: String,
+    obscured: bool,
+    mystery_look: usize,
     variant: f64,
     palette: [Color; 3],
     speed: f64,
@@ -245,6 +296,8 @@ pub struct Painter {
     neon: bool,
     neon_time: f64,
     responses: Vec<[motion::Response; 12]>,
+    ink_motion: Vec<[filaments::BranchMotion; 18]>,
+    cave_audio: Vec<AudioFrame>,
     rhythm: Vec<rhythm::Rhythm>,
     response: [motion::Response; 12],
     field: Vec<motion::Field>,
@@ -310,6 +363,8 @@ fn floor(v: f64) -> f64 {
 fn r#mod(v: f64, d: f64) -> f64 {
     v % d
 }
+#[path = "visualizer_backdrops.rs"]
+mod backdrops;
 #[path = "visualizer_palettes.rs"]
 mod palettes;
 #[path = "visualizer_rhythm.rs"]
@@ -317,14 +372,28 @@ mod rhythm;
 use palettes::palette;
 #[path = "visualizer_art.rs"]
 mod art;
+#[path = "visualizer_cave.rs"]
+mod cave;
+#[path = "visualizer_filaments.rs"]
+mod filaments;
 #[path = "visualizer_materials.rs"]
 mod materials;
 #[path = "visualizer_motion.rs"]
 mod motion;
+#[path = "visualizer_mystery.rs"]
+mod mystery;
+#[path = "visualizer_obscured.rs"]
+mod obscured;
 #[path = "visualizer_scenes.rs"]
 mod scenes;
 impl Painter {
     pub fn new(style: &str, seed: u64, variant: i32) -> Self {
+        let (style, obscured) = match style {
+            "silver-mystery" => ("silver", true),
+            "wave-mystery" => ("wave", true),
+            "silk-mystery" => ("silk", true),
+            other => (other, false),
+        };
         let mut r = rand::rngs::StdRng::seed_from_u64(seed);
         let variant = if variant < 0 {
             r.random_range(0..3)
@@ -333,9 +402,14 @@ impl Painter {
         };
         let mut p = Self {
             style: style.into(),
+            obscured,
+            // Independent of geometry; does not consume the legacy RNG stream.
+            mystery_look: (seed % 6) as usize,
             variant: variant as f64,
             palette: palette(
-                STYLES[r.random_range(0..STYLES.len())],
+                // Keep the existing seeded palette distribution stable when
+                // monochrome families are appended to the style registry.
+                STYLES[r.random_range(0..25)],
                 r.random_range(0..3),
             ),
             speed: 0.75 + r.random::<f64>() * 0.5,
@@ -361,6 +435,8 @@ impl Painter {
             neon: !seed.is_multiple_of(4),
             neon_time: 0.0,
             responses: Vec::new(),
+            ink_motion: Vec::new(),
+            cave_audio: Vec::new(),
             rhythm: Vec::new(),
             response: [motion::Response::default(); 12],
             field: vec![motion::Field::default(); 19 * 33],
@@ -375,10 +451,17 @@ impl Painter {
                 0.55,
             );
         }
-        let backdrop = seed % 7;
+        // Fourteen original light/dark looks and six distinct night scenes.
+        // Each complete look occupies one equally likely slot.
+        let look = seed % 20;
+        let backdrop = if look < 14 { look % 7 } else { look - 7 };
         let angle = r.random::<f64>() * 2.0 * PI;
         let center = (r.random_range(0.1..0.9), r.random_range(0.1..0.9));
         let scale = r.random_range(0.8..1.8);
+        // New night scenes are intrinsically dark, not dimmed light backdrops.
+        let dark_background = look >= 7;
+        let background_exposure = if dark_background { 0.28 } else { 1.0 };
+        let night = backdrops::Night::new(&mut r);
         for y in 0..HEIGHT {
             for x in 0..WIDTH {
                 let u = x as f64 / WIDTH as f64;
@@ -409,10 +492,53 @@ impl Painter {
                             0.5
                         }
                     }
-                    _ => {
+                    6 => {
                         (-across.powi(2) * 120.0 * scale).exp()
                             * (0.65 + 0.35 * (along * 5.0).cos())
                     }
+                    // Eclipse: a soft rim, with an almost empty interior.
+                    7 => {
+                        let radius = (along.powi(2) + (across * 0.72).powi(2)).sqrt();
+                        (-(radius - 0.32).powi(2) * 2200.0).exp()
+                            * (0.35 + 0.65 * (along * 2.0 + 0.5).clamp(0.0, 1.0))
+                    }
+                    // Only three incomplete orbital arcs, fading into darkness.
+                    8 => {
+                        let radius = (along.powi(2) + (across * 0.65).powi(2)).sqrt();
+                        [0.22, 0.37, 0.52]
+                            .iter()
+                            .map(|r| (-(radius - r).powi(2) * 18000.0).exp())
+                            .sum::<f64>()
+                            * (-((along + 0.15) * 2.2).powi(2)).exp()
+                            * (across * 3.0 + 0.45).clamp(0.0, 1.0)
+                    }
+                    // Broad dune crests rather than a busy repeating wave field.
+                    9 => {
+                        let crest = across + 0.12 * (along * 4.0 * scale).sin();
+                        (-crest.powi(2) * 900.0).exp() * 0.65
+                            + (-(crest + 0.19).powi(2) * 600.0).exp() * 0.3
+                    }
+                    // A distant horizon with a very restrained atmospheric halo.
+                    10 => {
+                        let horizon = v - 0.42 - 0.035 * (u * 4.0).sin();
+                        (-horizon.powi(2) * 12000.0).exp() * 0.65
+                            + (-horizon.powi(2) * 180.0).exp() * 0.2
+                    }
+                    // Quiet obsidian facets: light catches edges, not whole planes.
+                    11 => {
+                        let edge = across.abs() - 0.18 - along * 0.22;
+                        (-edge.powi(2) * 6500.0).exp() * (-along.powi(2) * 7.0).exp() * 0.7
+                    }
+                    // Near-field lights sit in front of the deeper particle layer.
+                    _ => (0..5)
+                        .map(|point| {
+                            let phase = seed as f64 * 0.17 + point as f64 * 2.399;
+                            let px = 0.5 + 0.38 * phase.sin();
+                            let py = 0.5 + 0.4 * (phase * 1.7).cos();
+                            let distance = (u - px).powi(2) + ((v - py) * 1.7).powi(2);
+                            (-distance * 18000.0).exp() * 0.8 + (-distance * 650.0).exp() * 0.15
+                        })
+                        .sum::<f64>(),
                 }
                 .clamp(0.0, 1.0);
                 let pigment = if backdrop == 4 {
@@ -425,15 +551,27 @@ impl Painter {
                         (across * 1.8 + 0.5).clamp(0.0, 1.0) * field,
                     )
                 };
-                let c = mix_light(
-                    Color(8.0, 9.0, 12.0),
-                    pigment,
-                    if backdrop == 4 {
-                        0.75 + field * 0.2
-                    } else {
-                        background_light * (0.8 + 2.1 * field)
-                    },
-                );
+                let c = if backdrop >= 7 {
+                    night.color(
+                        backdrop,
+                        (u, v),
+                        (along, across),
+                        pigment,
+                        motion::hue_color(hue + 0.38),
+                        field,
+                    )
+                } else {
+                    mix_light(
+                        Color(8.0, 9.0, 12.0),
+                        pigment,
+                        background_exposure
+                            * if backdrop == 4 {
+                                0.75 + field * 0.2
+                            } else {
+                                background_light * (0.8 + 2.1 * field)
+                            },
+                    )
+                };
                 let i = (y * WIDTH + x) * 3;
                 let (dx, dy) = ((x as f64 - 270.0) / 250.0, (y as f64 - 615.0) / 100.0);
                 let falloff = if materials::spatial(style) {
@@ -447,9 +585,34 @@ impl Painter {
                 p.base[i + 2] = c.2 as f32;
             }
         }
+        if backdrop >= 7 {
+            // Once per backdrop, before animation or foreground compositing.
+            // Optical low-pass removes stair steps; diffusion adds a mellow veil.
+            let source = image::Rgb32FImage::from_raw(
+                WIDTH as u32,
+                HEIGHT as u32,
+                std::mem::take(&mut p.base),
+            )
+            .expect("background dimensions match");
+            let smooth = image::imageops::blur(&source, 0.65);
+            let near = image::imageops::blur(&source, 4.0);
+            let far = image::imageops::blur(&source, 16.0);
+            p.base = smooth
+                .as_raw()
+                .iter()
+                .zip(near.as_raw())
+                .zip(far.as_raw())
+                .map(|((sharp, soft), haze)| {
+                    (sharp * 0.82 + soft * 0.13 + haze * 0.05).clamp(0.0, 255.0)
+                })
+                .collect();
+        }
         p
     }
     pub fn accent(&self) -> String {
+        if filaments::matches(&self.style) || mystery::matches(&self.style) || self.obscured {
+            return "0xe0e0e0".to_owned();
+        }
         format!(
             "0x{:02x}{:02x}{:02x}",
             self.palette[0].0 as u8, self.palette[0].1 as u8, self.palette[0].2 as u8
@@ -654,14 +817,15 @@ impl Painter {
         self.view = View::default();
     }
     fn atmosphere(&mut self, _seconds: f64, pose: Pose) {
-        let (w, h) = (WIDTH / 4, HEIGHT / 4);
+        let w = WIDTH / 4;
+        let mut glow = std::mem::take(&mut self.glow);
         for cloud in 0..4 {
             let p = self.particles[cloud + 8];
             let r = self.response[cloud + 8];
             let time = r.travel * (0.22 + p.u * 0.15);
             let cx = 30.0 + p.u * 75.0 + 15.0 * (time + p.phase).sin();
             let cy = 20.0 + cloud as f64 * 65.0 + 18.0 * (time * 0.71 - p.phase).sin();
-            for y in 0..h {
+            parallel_rows(&mut glow, w * 3, |y, row| {
                 for x in 0..w {
                     let local = self.field_at(x as f64 * 4.0, y as f64 * 4.0);
                     let dx = (x as f64 - cx + local.dx * 0.08) / (34.0 + p.depth * 22.0);
@@ -691,13 +855,14 @@ impl Painter {
                             * (0.7 + caustic * 1.6)
                     };
                     let c = self.local_color(self.palette[cloud % 3], local, p.depth);
-                    let i = (y * w + x) * 3;
+                    let i = x * 3;
                     for (j, v) in [c.0, c.1, c.2].iter().enumerate() {
-                        self.glow[i + j] += (v * light) as f32;
+                        row[i + j] += (v * light) as f32;
                     }
                 }
-            }
+            });
         }
+        self.glow = glow;
     }
     fn depth_particles(
         &mut self,
@@ -770,20 +935,15 @@ impl Painter {
                 (x0 * 3, (x0 + 1).min(WIDTH - 1) * 3, (sx - x0 as f64) as f32)
             })
             .collect();
-        for (y, row) in self
-            .pixels
-            .as_chunks_mut::<{ WIDTH * 3 }>()
-            .0
-            .iter_mut()
-            .enumerate()
-        {
+        let base = &self.base;
+        parallel_rows(&mut self.pixels, WIDTH * 3, |y, row| {
             let sy = (HEIGHT as f64 * 0.5 + (y as f64 - HEIGHT as f64 * 0.5) * zoom + dy)
                 .clamp(0.0, (HEIGHT - 1) as f64);
             let y0 = sy as usize;
             let y1 = (y0 + 1).min(HEIGHT - 1);
             let fy = (sy - y0 as f64) as f32;
-            let top_row = &self.base[y0 * WIDTH * 3..(y0 + 1) * WIDTH * 3];
-            let bottom_row = &self.base[y1 * WIDTH * 3..(y1 + 1) * WIDTH * 3];
+            let top_row = &base[y0 * WIDTH * 3..(y0 + 1) * WIDTH * 3];
+            let bottom_row = &base[y1 * WIDTH * 3..(y1 + 1) * WIDTH * 3];
             for (pixel, &(x0, x1, fx)) in row.as_chunks_mut::<3>().0.iter_mut().zip(&columns) {
                 for c in 0..3 {
                     let top = top_row[x0 + c] * (1.0 - fx) + top_row[x1 + c] * fx;
@@ -791,10 +951,19 @@ impl Painter {
                     pixel[c] = top * (1.0 - fy) + bottom * fy;
                 }
             }
-        }
+        });
     }
 
     pub fn frame(&mut self, f: usize, mut a: AudioFrame) -> &[u8] {
+        if self.style == "cube-cave" {
+            return self.cave_frame(f, a);
+        }
+        if mystery::matches(&self.style) {
+            return self.mystery_frame(f, a);
+        }
+        if filaments::matches(&self.style) {
+            return self.filament_frame(f, a);
+        }
         let material = materials::spatial(&self.style);
         a.event = a.event.wrapping_add(self.phase.to_bits());
         let seconds = f as f64 / FPS as f64;
@@ -846,7 +1015,11 @@ impl Painter {
             .unwrap();
             self.glow = image::imageops::blur(&glow, 0.7).into_raw();
         }
-        for y in 0..HEIGHT {
+        let pixels = &self.pixels;
+        let glow = &self.glow;
+        let shade = &self.shade;
+        let analog = self.style == "analog";
+        parallel_rows(&mut self.rgb, WIDTH * 3, |y, row| {
             for x in 0..WIDTH {
                 let i = (y * WIDTH + x) * 3;
                 let gi = ((y / 4) * (WIDTH / 4) + x / 4) * 3;
@@ -858,30 +1031,32 @@ impl Painter {
                 };
                 let (fx, fy) = ((x % 4) as f32 * 0.25, (y % 4) as f32 * 0.25);
                 let light: [f32; 3] = std::array::from_fn(|c| {
-                    let halo = self.glow[gi + c] * (1.0 - fx) * (1.0 - fy)
-                        + self.glow[gi + right + c] * fx * (1.0 - fy)
-                        + self.glow[gi + below + c] * (1.0 - fx) * fy
-                        + self.glow[gi + below + right + c] * fx * fy;
-                    ((self.pixels[i + c] + halo) * if material { 1.0 } else { self.shade[i / 3] })
-                        .max(0.0)
+                    let halo = glow[gi + c] * (1.0 - fx) * (1.0 - fy)
+                        + glow[gi + right + c] * fx * (1.0 - fy)
+                        + glow[gi + below + c] * (1.0 - fx) * fy
+                        + glow[gi + below + right + c] * fx * fy;
+                    ((pixels[i + c] + halo) * if material { 1.0 } else { shade[i / 3] }).max(0.0)
                 });
                 // One exposure for all channels preserves pigment hues in bright light.
                 let peak = light.into_iter().fold(0.0_f32, f32::max);
                 let scrim = if material {
-                    (1.0 - self.shade[i / 3]) / 30.0
+                    (1.0 - shade[i / 3]) / 30.0
                 } else {
                     0.0
                 };
                 let exposure = 1.8 / (1.0 + peak / 320.0 + peak * scrim);
                 for (c, value) in light.into_iter().enumerate() {
                     let mut value = value * exposure;
-                    if self.style == "analog" {
+                    if analog {
                         let noise = ((x * 17 + y * 31 + f * 13) % 11) as f32 * 0.22;
                         value = value * (if y % 3 == 0 { 0.72 } else { 1.0 }) + noise;
                     }
-                    self.rgb[i + c] = value.clamp(0.0, 255.0) as u8;
+                    row[x * 3 + c] = value.clamp(0.0, 255.0) as u8;
                 }
             }
+        });
+        if self.obscured {
+            self.obscure_frame(seconds);
         }
         &self.rgb
     }
@@ -889,6 +1064,38 @@ impl Painter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parallel_frames_match_serial_pixels() {
+        for style in ["silver", "analog", "cover", "nebula", "ferro"] {
+            let mut serial = Painter::new(style, 14, 0);
+            let mut parallel = Painter::new(style, 14, 0);
+            for f in [0, 1, 33] {
+                SERIAL_ROWS.set(true);
+                let expected = serial.frame(f, AudioFrame::default()).to_vec();
+                SERIAL_ROWS.set(false);
+                assert_eq!(
+                    parallel.frame(f, AudioFrame::default()),
+                    expected,
+                    "{style}/{f}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn parallel_rows_matches_serial_for_uneven_partitions() {
+        for rows in [1, 3, 17, HEIGHT] {
+            let mut actual = vec![0_u32; rows * 9];
+            parallel_rows(&mut actual, 9, |y, row| {
+                for (x, value) in row.iter_mut().enumerate() {
+                    *value = (y * 9 + x) as u32;
+                }
+            });
+            assert_eq!(actual, (0..(rows * 9) as u32).collect::<Vec<_>>());
+        }
+    }
+
     #[test]
     fn chrome_keeps_an_open_center_and_uses_neutral_reflections() {
         for variant in 0..3 {
@@ -1356,7 +1563,7 @@ mod tests {
             let high = values.iter().copied().fold(f32::NEG_INFINITY, f32::max);
             if seed != 0 {
                 assert!(
-                    high - low > 12.0,
+                    high - low > 3.0,
                     "background has no visible structure: {seed}"
                 );
             }
@@ -1375,14 +1582,14 @@ mod tests {
         let mut backgrounds = std::collections::HashSet::new();
         let mut lightest = 0.0_f32;
         let mut darkest = f32::INFINITY;
-        for seed in 0..24 {
+        for seed in (0..40).filter(|seed| seed % 20 < 14) {
             let p = Painter::new("silver", seed, 0);
             let i = (100 * WIDTH + 270) * 3;
             let rgb = &p.base[i..i + 3];
             let low = rgb.iter().copied().fold(f32::INFINITY, f32::min);
             let high = rgb.iter().copied().fold(0.0_f32, f32::max);
-            assert!(high - low > 5.0, "achromatic background for seed {seed}");
-            assert!(high > 20.0, "near-black background for seed {seed}");
+            assert!(high - low > 1.0, "achromatic background for seed {seed}");
+            assert!(high > 10.0, "near-black background for seed {seed}");
             backgrounds.insert([rgb[0] as u8, rgb[1] as u8, rgb[2] as u8]);
             let luminance = rgb.iter().sum::<f32>() / 3.0;
             lightest = lightest.max(luminance);
@@ -1393,6 +1600,65 @@ mod tests {
         }
         assert!(backgrounds.len() > 16);
         assert!(lightest - darkest > 20.0);
+    }
+
+    #[test]
+    fn every_backdrop_has_dark_and_light_versions() {
+        let mut dark = [0; 7];
+        let mut light = [0; 7];
+        for seed in (0..200).filter(|seed| seed % 20 < 14) {
+            let p = Painter::new("silver", seed, 0);
+            let brightness = p.base.iter().sum::<f32>() / p.base.len() as f32;
+            let backdrop = (seed % 20 % 7) as usize;
+            if brightness < 60.0 {
+                dark[backdrop] += 1;
+            } else {
+                light[backdrop] += 1;
+            }
+            assert!(p.base.iter().all(|v| v.is_finite() && *v >= 0.0));
+        }
+        for backdrop in 0..7 {
+            assert!(dark[backdrop] > 0, "missing dark backdrop {backdrop}");
+            assert!(light[backdrop] > 0, "missing light backdrop {backdrop}");
+        }
+    }
+
+    #[test]
+    fn night_backdrops_are_sparse_dark_and_reproducible() {
+        let mut signatures = std::collections::HashSet::new();
+        for seed in 14..20 {
+            let p = Painter::new("silver", seed, 0);
+            assert_eq!(p.base, Painter::new("silver", seed, 0).base);
+            let mean = p.base.iter().sum::<f32>() / p.base.len() as f32;
+            assert!(mean < 40.0, "night scene too bright: {seed}/{mean}");
+            let lit = p
+                .base
+                .as_chunks::<3>()
+                .0
+                .iter()
+                .filter(|rgb| rgb.iter().copied().fold(0.0_f32, f32::max) > 40.0)
+                .count();
+            assert!(lit < WIDTH * HEIGHT / 2, "night scene too busy: {seed}");
+            let darkest = p.base.iter().copied().fold(f32::INFINITY, f32::min);
+            let brightest = p.base.iter().copied().fold(0.0_f32, f32::max);
+            assert!(
+                brightest - darkest > 25.0,
+                "night scene lacks depth: {seed}"
+            );
+            assert!(
+                p.base
+                    .iter()
+                    .all(|v| v.is_finite() && (0.0..=255.0).contains(v))
+            );
+            signatures.insert(
+                p.base
+                    .iter()
+                    .step_by(97)
+                    .map(|v| *v as u8)
+                    .collect::<Vec<_>>(),
+            );
+        }
+        assert_eq!(signatures.len(), 6);
     }
 
     #[test]
@@ -1554,6 +1820,9 @@ mod tests {
             ("kinetic", 0),
             ("lightning", 2),
             ("interference", 1),
+            ("filament", 0),
+            ("neural", 1),
+            ("chaos", 2),
         ] {
             for variant in 0..3 {
                 let mut p = Painter::new(style, 71, variant);

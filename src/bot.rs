@@ -12,7 +12,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio_util::sync::CancellationToken;
-const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/se [стиль] [0|1|2] — сниппет EENFINIT\n/sd [стиль] [0|1|2] — сниппет dee bill\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom, ferro, cymatics, topography, glass, ink, kinetic, lightning, interference\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: по два случайных времени в день для каждого артиста (Томск), интервал 10–14 часов.\n/setsnippets — посмотреть расписания обоих артистов\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
+const HELP: &str = "Команды:\n/start — приветствие\n/help — помощь\n/se [стиль] [0|1|2] — сниппет EENFINIT\n/sd [стиль] [0|1|2] — сниппет dee bill\nСтили: silver, violet, amber, aurora, prism, galaxy, tunnel, orbit, wave, rain, chrome, silk, analog, cover, nebula, liquid, bloom, ferro, cymatics, topography, glass, ink, kinetic, lightning, interference, filament, neural, chaos, veil, parallax, residue, silver-mystery, wave-mystery, silk-mystery, cube-cave\nПод видео: площадки, новый визуал, смена песни, удаление черновика.\nПлановые публикации: по два случайных времени в день для каждого артиста (Томск), интервал 10–14 часов.\n/setsnippets — посмотреть расписания обоих артистов\n/song [query] — найти и скачать песню\n/chatid — показать ID чата";
 pub fn command_args(args: &str) -> Result<(String, i32)> {
     let parts: Vec<_> = args.split_whitespace().collect();
     ensure!(
@@ -384,15 +384,18 @@ impl Bot {
                 return Ok(None);
             }
             "random" => {
+                let recent = match crate::model::publication_artist(&d.song.author) {
+                    Ok(artist) => snippet::recent_songs(&self.svc.store, artist).await?,
+                    Err(_) => Vec::new(),
+                };
                 let pool: Vec<_> = audio::songs(&self.svc.store)
                     .await?
                     .into_iter()
                     .filter(|s| s.id != d.song.id && eligible(s) && valid_video_id(&s.id) && crate::model::publication_artist(&s.author).ok() == crate::model::publication_artist(&d.song.author).ok())
                     .collect();
                 ensure!(!pool.is_empty(), "в библиотеке нет другой подходящей песни");
-                use rand::Rng;
-                let index = rand::rng().random_range(0..pool.len());
-                self.generate(chat, user, &d.style, d.variant, &pool[index].id, Some(status))
+                let song = audio::choose_song(pool, "", &recent)?;
+                self.generate(chat, user, &d.style, d.variant, &song.id, Some(status))
                     .await?;
                 return Ok(None);
             }
@@ -745,6 +748,7 @@ mod tests {
     fn validates_commands() {
         assert_eq!(command_args("").unwrap(), ("random".into(), -1));
         for style in crate::visualizer::STYLES {
+            assert!(HELP.contains(style), "style missing from help: {style}");
             for v in 0..3 {
                 assert_eq!(
                     command_args(&format!("{style} {v}")).is_ok(),

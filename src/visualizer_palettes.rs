@@ -12,6 +12,7 @@ pub(super) fn palette(style: &str, variant: usize) -> [Color; 3] {
         "ferro" | "topography" | "kinetic" => "amber",
         "cymatics" | "glass" | "lightning" => "tunnel",
         "ink" => "violet",
+        "filament" | "neural" | "chaos" => "silver",
         "interference" => "aurora",
         other => other,
     };

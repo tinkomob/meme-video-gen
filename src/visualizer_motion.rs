@@ -81,6 +81,12 @@ impl Painter {
     }
 
     pub fn prepare_audio(&mut self, frames: &[AudioFrame]) {
+        if self.style == "cube-cave" {
+            self.cave_audio = frames.to_vec();
+        }
+        if filaments::matches(&self.style) {
+            self.prepare_ink_motion(frames);
+        }
         self.rhythm = rhythm::track(frames);
         let drives: Vec<[f64; VOICES]> = (0..frames.len())
             .map(|frame| {

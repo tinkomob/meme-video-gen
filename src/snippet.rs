@@ -16,6 +16,28 @@ use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 static RECENT_VISUALS: Mutex<Vec<(String, i32)>> = Mutex::new(Vec::new());
 static RENDERER: Semaphore = Semaphore::const_new(1);
+const SONG_MEMORY: usize = 20;
+fn song_history_key(artist: &str) -> String {
+    format!("snippet-song-history-{artist}.json")
+}
+pub(crate) async fn recent_songs(store: &Storage, artist: &str) -> Result<Vec<String>> {
+    Ok(store
+        .read(&song_history_key(artist))
+        .await?
+        .unwrap_or_default())
+}
+fn remember_song(recent: &mut Vec<String>, id: &str) {
+    recent.retain(|song| song != id);
+    recent.push(id.to_owned());
+    if recent.len() > SONG_MEMORY {
+        recent.drain(..recent.len() - SONG_MEMORY);
+    }
+}
+async fn record_song(store: &Storage, artist: &str, id: &str) -> Result<()> {
+    let mut recent = recent_songs(store, artist).await?;
+    remember_song(&mut recent, id);
+    store.write(&song_history_key(artist), &recent).await
+}
 pub struct Generated {
     pub dir: tempfile::TempDir,
     pub song: Song,
@@ -174,7 +196,7 @@ pub async fn generate(
 ) -> Result<Generated> {
     validate(style, variant)?;
     let mut songs = audio::songs(store).await?;
-    let artist = if matches!(song_id, "eenfinit" | "deebill") {
+    let artist_id = if matches!(song_id, "eenfinit" | "deebill") {
         Some(song_id.to_owned())
     } else {
         songs
@@ -183,7 +205,7 @@ pub async fn generate(
             .and_then(|s| crate::model::publication_artist(&s.author).ok())
             .map(str::to_owned)
     };
-    if let Some(artist) = &artist {
+    if let Some(artist) = &artist_id {
         songs.retain(|s| crate::model::publication_artist(&s.author).ok() == Some(artist.as_str()));
     }
     let selection = if matches!(song_id, "eenfinit" | "deebill") {
@@ -191,7 +213,11 @@ pub async fn generate(
     } else {
         song_id
     };
-    let mut song = audio::choose_song(songs.clone(), selection)?;
+    let recent = match &artist_id {
+        Some(artist) => recent_songs(store, artist).await?,
+        None => Vec::new(),
+    };
+    let mut song = audio::choose_song(songs.clone(), selection, &recent)?;
     let dir = tempfile::tempdir()?;
     let cover = loop {
         match cover(store, &song.id, dir.path()).await {
@@ -199,7 +225,7 @@ pub async fn generate(
             Err(e) => {
                 tracing::warn!(song_id = %song.id, "cover unavailable, selecting another song: {e}");
                 songs.retain(|candidate| candidate.id != song.id);
-                song = audio::choose_song(songs.clone(), "")
+                song = audio::choose_song(songs.clone(), "", &recent)
                     .context("no eligible songs with an available cover")?;
             }
         }
@@ -298,7 +324,13 @@ pub async fn generate(
     })
     .await?;
     guard.disarm();
-    result
+    let generated = result?;
+    if let Some(artist) = &artist_id
+        && let Err(e) = record_song(store, artist, &generated.song.id).await
+    {
+        tracing::warn!("song history for {artist}: {e}");
+    }
+    Ok(generated)
 }
 pub const FADE: &str = "afade=t=in:d=0.15,afade=t=out:st=19.5:d=0.5";
 fn font(serif: bool) -> String {
@@ -356,6 +388,11 @@ fn render(
     let frames = visualizer::smooth_material_audio(&painter, frames);
     painter.prepare_audio(&frames);
     let graph = filter(&painter.accent(), dir, start, duration, size);
+    // Share all available cores between painting, filtering and encoding. A container
+    // CPU quota (90% of host capacity) caps their aggregate CPU time, not each pool.
+    let threads = std::thread::available_parallelism()
+        .map_or(1, std::num::NonZeroUsize::get)
+        .to_string();
     let gpu_liquid = use_gpu_liquid
         .then(crate::gpu_liquid::Liquid::new)
         .transpose()?;
@@ -400,7 +437,7 @@ fn render(
             .arg(cover)
             .args([
                 "-filter_complex_threads",
-                "1",
+                &threads,
                 "-filter_complex",
                 &graph,
                 "-map",
@@ -413,6 +450,8 @@ fn render(
                 "30",
                 "-c:v",
                 "libx264",
+                "-threads:v",
+                &threads,
                 "-preset",
                 "fast",
                 "-crf",
@@ -510,6 +549,20 @@ mod cover_tests {
     use super::*;
 
     #[test]
+    fn song_history_keeps_the_last_twenty_generations() {
+        let mut recent = Vec::new();
+        for id in 0..25 {
+            remember_song(&mut recent, &id.to_string());
+        }
+        assert_eq!(recent.len(), SONG_MEMORY);
+        assert_eq!(recent.first().map(String::as_str), Some("5"));
+        assert_eq!(recent.last().map(String::as_str), Some("24"));
+        remember_song(&mut recent, "10");
+        assert_eq!(recent.len(), SONG_MEMORY);
+        assert_eq!(recent.last().map(String::as_str), Some("10"));
+    }
+
+    #[test]
     fn random_visuals_skip_the_last_three_styles() {
         let mut recent = Vec::new();
         for _ in 0..1000 {
@@ -518,6 +571,23 @@ mod cover_tests {
             assert!(!previous.iter().any(|(s, _)| s == &style));
             assert!(validate(&style, variant).is_ok());
             assert!(recent.len() <= 3);
+        }
+    }
+
+    #[test]
+    fn random_pool_includes_every_cpu_family_including_mystery() {
+        // Leave exactly one eligible family; proves reachability without a
+        // probabilistic test that can occasionally fail to sample a rare style.
+        for expected in STYLES {
+            let mut recent: Vec<_> = STYLES
+                .iter()
+                .filter(|style| **style != expected)
+                .map(|style| ((*style).to_owned(), 0))
+                .collect();
+            let (style, variant) = choose_visual("random", -1, &mut recent);
+            assert_eq!(style, expected);
+            assert_ne!(style, "gpu-liquid");
+            assert!(validate(&style, variant).is_ok());
         }
     }
 
